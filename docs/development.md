@@ -22,13 +22,13 @@ SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.
 
 This starts a real app-server with a temporary `CODEX_HOME`, reads the installed provider configuration, and completes three turns in the same thread/process through local mock upstreams. It verifies manual switching, then an HTTP 403 quota rejection followed by transparent fallback with identical conversation input. The default test command skips this opt-in test.
 
-GitHub Actions defines a Node.js 22/24 matrix across Linux, macOS, and Windows. Configuration of a CI matrix is not evidence that each platform has passed. The installer targets Linux systemd even though core tests are cross-platform.
+The installer targets Linux systemd. Run the checks above locally before submitting changes.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pull request guidelines.
 
 ## Publish to GitHub
 
-GitHub hosts the source and CI; the proxy runs on the user's server, not GitHub Pages. Create an empty repository and replace the remote below:
+GitHub hosts the source; the proxy runs on the user's server, not GitHub Pages. Create an empty repository and replace the remote below:
 
 ```bash
 git init -b main
