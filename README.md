@@ -2,22 +2,31 @@
 
 # easy-switch: A better AI conversation experience
 
-easy-switch lets you switch between ChatGPT subscription accounts, the official OpenAI API, and third-party APIs while keeping your Codex session running. Choose a provider with one command, arrange fallback priority with your keyboard, and automatically retry eligible quota failures through available alternatives. A local background service handles routing while you continue using your terminal or server-side VS Code extension.
+![Node.js](https://img.shields.io/badge/Node.js-22%2B-417E38?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%2B%20systemd-2563EB?style=flat-square)
+![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](docs/LICENSE)
+
+easy-switch is a command-line account and API routing tool for Codex, bringing **ChatGPT subscription accounts, the official OpenAI API, and third-party compatible APIs** into one workflow. It switches providers at model request boundaries while preserving the client process and conversation. Eligible quota or authentication rejections trigger retries through alternatives in the configured priority order.
+
+🔄 **In-session switching** · 🎛️ **Interactive priority management** · ⚙️ **Background operation and automatic failover**
 
 [Quick start](#quick-start) · [Why easy-switch?](#why-easy-switch) · [FAQ](#faq) · [Disclaimer](#disclaimer) · [Contributing](#contributing) · [License](#license)
 
-## Quick start
+<a id="quick-start"></a>
+
+## 🚀 Quick start
 
 Requires **Linux with systemd/logind, Node.js 22+, npm, Git, and Codex CLI**. Install as the server user that runs Codex or the remote extension.
 
-### 1. Clone the project
+### 1. 📦 Clone the project
 
 ```bash
 git clone https://github.com/JasperRoc/easy-switch.git
 cd easy-switch
 ```
 
-### 2. Install the tool
+### 2. ⚙️ Install the tool
 
 ```bash
 ./install.sh
@@ -25,25 +34,12 @@ cd easy-switch
 
 The installer registers `switch`, starts the systemd background service, enables boot startup, and backs up and updates Codex configuration. If boot startup requires administrator assistance, follow the installer's instructions. Restart Codex or reload the remote editor window once after installation; subsequent provider switches do not require a restart.
 
-For VS Code Remote, the Codex extension must run on the server and read the same user's Codex configuration.
-
-### 3. Use the commands
-
-```bash
-switch add account personal  # Add a ChatGPT subscription account
-switch add api relay         # Add an official or third-party API
-switch personal              # Select a provider
-codex                        # Start Codex normally
-```
-
-Account setup uses the official device sign-in flow; device code login must be enabled for your account or workspace. API setup prompts for the Base URL, API key, and optional model name. Leave Base URL blank for the official OpenAI API (`https://api.openai.com/v1`), or enter a third-party endpoint. Use the API key issued by the selected provider. Providers must support **Responses API, SSE, and Codex tool calls**. Use a Base URL such as `https://your-provider.example/v1`, without `/responses`.
-
-While a task is running, execute `switch relay` in another terminal on the same server. Subsequent model requests use the selected provider in the existing conversation. Responses already streaming finish on their original provider.
+### 3. ⌨️ Use the commands
 
 | Command | Purpose |
 | --- | --- |
 | `switch add account <alias>` | Add a subscription account |
-| `switch add api <alias>` | Add an API provider |
+| `switch add api <alias>` | Add an official or third-party API |
 | `switch <alias>` | Select the provider for subsequent requests |
 | `switch list` | Show fallback priority and the active provider (`*`) |
 | `switch order` | Adjust priority with the keyboard |
@@ -53,13 +49,17 @@ While a task is running, execute `switch relay` in another terminal on the same 
 | `switch service uninstall` | Restore configuration and remove the service |
 | `switch help` | Show command help |
 
+When adding an API, **leave Base URL blank to use the official OpenAI API** (`https://api.openai.com/v1`) and enter the corresponding OpenAI API key. For a third-party service, enter its Base URL and API key. Third-party URLs should omit `/responses`, and the service must support Responses API, SSE, and Codex tool calls.
+
 In `switch order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
 
 See the [operations guide](docs/usage.md) for authentication, data storage, and failover rules.
 
-## Why easy-switch?
+<a id="why-easy-switch"></a>
 
-easy-switch focuses on one workflow: keeping a personal Codex task moving while switching accounts and APIs on a Linux server. Its advantages are terminal access, a small deployment footprint, and direct control over fallback order.
+## 🔎 Why easy-switch?
+
+easy-switch targets personal Codex workflows on Linux servers, focusing on conversation continuity when switching accounts and APIs. Its design emphasizes **operation over SSH, fewer deployment dependencies, and explicit control over failover priority**.
 
 | Project | Focus | Where easy-switch fits |
 | --- | --- | --- |
@@ -67,13 +67,15 @@ easy-switch focuses on one workflow: keeping a personal Codex task moving while 
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | Subscription gateway with account management and sharing; its documented stack includes PostgreSQL and Redis | Run a personal switching service with local files and Node.js, without deploying a database, cache, or web administration panel. |
 | [New API](https://github.com/QuantumNous/new-api) | Unified model aggregation, distribution, and protocol conversion | Connect existing Responses-compatible providers directly to a Codex workflow, without configuring a broader distribution platform. |
 
-The practical benefit is a short path from adding an account to switching a running task: **install once, add aliases, choose an order, and continue using Codex**. These projects also provide routing capabilities; easy-switch's distinction is its focused CLI workflow, not an exclusive hot-switching mechanism. It currently supports fewer tools, protocols, and operating systems.
+easy-switch brings account configuration, routing selection, and fallback ordering into one command-line interface, reducing configuration and maintenance steps for individual users. Its distinction lies primarily in deployment and interaction design; request-level hot switching is not unique to this project.
 
-## FAQ
+<a id="faq"></a>
+
+## ❓ FAQ
 
 ### Will other AI providers be supported?
 
-Responses-compatible third-party APIs can already be added with `switch add api`. Native Claude, Gemini, and other subscription login flows are not implemented. Broader provider support is a possible direction, but has no committed release date; it requires authentication, protocol, and tool-call compatibility work.
+The official OpenAI API and Responses-compatible third-party APIs can already be added with `switch add api`. Native Claude, Gemini, and other subscription login flows are not implemented. Broader provider support is a possible direction, but has no committed release date; it requires authentication, protocol, and tool-call compatibility work.
 
 ### Will macOS and Windows be supported?
 
@@ -81,28 +83,26 @@ The supported installation target is currently Linux with systemd. Native macOS 
 
 ### Does switching interrupt the current task?
 
-Manual changes apply to subsequent model requests in the same session. Eligible HTTP 401, 402, 429, and quota-related 403 rejections can be retried through the fallback queue before a successful stream starts. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task. This is not a guarantee of recovery from every failure.
+Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives before a successful response stream starts. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task. This is not a guarantee of recovery from every failure.
 
-### Does each conversation have its own provider?
+<a id="disclaimer"></a>
 
-No. All sessions connected to one easy-switch service share the selected alias and fallback order. Switching affects subsequent requests from all of them.
-
-### Do I need to keep a terminal open? What happens when login expires?
-
-The proxy runs under systemd and continues after logout. If local subscription credentials expire, or an account returns 401 without an available fallback, it starts official device authentication and returns the verification link and code in the request error. Complete authentication and retry; it does not silently renew tokens.
-
-## Disclaimer
+## ⚠️ Disclaimer
 
 easy-switch is an independent community project, not affiliated with or endorsed by OpenAI. Use only accounts and APIs you are authorized to access, and follow the applicable providers' terms. Switching providers sends the required conversation history to the selected provider. Credentials are stored locally with file-permission protection.
 
 This project is experimental. Same-session switching is tested with a real Codex process and simulated upstreams; real-provider access, the VS Code Remote interface, and server reboot recovery still require end-to-end validation. Read the full [disclaimer](docs/DISCLAIMER.md) and [operational limits](docs/usage.md#protocol-support-and-limits) before deployment.
 
-## Contributing
+<a id="contributing"></a>
+
+## 🤝 Contributing
 
 Bug reports, compatibility results, documentation improvements, and focused pull requests are welcome. Include reproduction steps and your environment when reporting an issue; remove credentials and private conversation content from logs.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution guidelines.
 
-## License
+<a id="license"></a>
+
+## 📄 License
 
 [MIT](docs/LICENSE) © 2026 easy-switch contributors.
