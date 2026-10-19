@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
-const reserved = new Set(['add', 'list', 'current', 'help', 'service', 'order']);
+const reserved = new Set(['add', 'list', 'current', 'help', 'service', 'order', 'update']);
 export function aliasName(value) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) || reserved.has(value)) throw new Error('别名须为 1–64 位字母、数字、_、-，且不能是命令名');
   return value;

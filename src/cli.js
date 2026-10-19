@@ -6,6 +6,8 @@ import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { home, init, aliasName, addProvider, activate, baseURL, accountAuth, providerOrder, setOrder } from './store.js';
 import { editOrder } from './order.js';
+import { candidates } from './completion.js';
+import { updateTool } from './update.js';
 import { service } from './install.js';
 
 const help = `easy-switch
@@ -14,9 +16,10 @@ const help = `easy-switch
   switch <alias>               下一次模型请求切到该上游
   switch order [alias ...]    键盘调整自动切换优先级（从高到低）
   switch list | current       查看配置（不显示密钥）
+  switch update               更新至官方仓库最新版本
   switch service status|restart|uninstall
 环境：SWITCH_HOME、SWITCH_PORT（默认 18345）、SWITCH_CODEX_BIN
-安装与更新：./install.sh`;
+首次安装：./install.sh；后续更新：switch update`;
 const args = process.argv.slice(2);
 const root = home();
 async function ask(label, secret = false) {
@@ -44,6 +47,11 @@ async function login(accountHome) {
 async function main() {
   const [command, type, name] = args;
   if (!command || ['help', '--help', '-h'].includes(command)) return console.log(help);
+  if (command === '__complete') return console.log(candidates(args.slice(1), root).join('\n'));
+  if (command === 'update') {
+    if (args.length !== 1) throw new Error('用法：switch update');
+    return updateTool(root);
+  }
   if (command === 'service') return service(type, root);
   if (command === 'order') {
     if (args.length > 1) setOrder(args.slice(1), root);
@@ -67,8 +75,7 @@ async function main() {
       const baseUrl = baseURL(await ask('Base URL（留空使用 OpenAI 官方 API；第三方例如 https://example.com/v1）：'));
       const apiKey = await ask('API Key（隐藏输入）：', true);
       if (!apiKey) throw new Error('API Key 不能为空');
-      const model = await ask('上游模型名（留空沿用 Codex 模型）：');
-      provider = { type, baseUrl, apiKey, model };
+      provider = { type, baseUrl, apiKey };
     } else {
       const accountHome = path.join(root, 'accounts', alias);
       await login(accountHome);

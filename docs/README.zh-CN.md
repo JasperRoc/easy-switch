@@ -43,6 +43,7 @@ cd easy-switch
 | `switch <alias>` | 切换后续请求使用的上游 |
 | `switch list` | 查看备用优先级及当前上游（`*`） |
 | `switch order` | 用键盘调整切换优先级 |
+| `switch update` | 更新至官方仓库 main 分支并重启服务 |
 | `switch current` | 查看当前别名 |
 | `switch service status` | 查看后台服务状态 |
 | `switch service restart` | 重启服务，会中断进行中的请求 |
@@ -52,6 +53,10 @@ cd easy-switch
 添加 API 时，**Base URL 留空即使用 OpenAI 官方 API**（`https://api.openai.com/v1`），并填写对应的 OpenAI API Key；接入第三方服务时，填写其 Base URL 与 API Key。第三方地址不应附加 `/responses`，且需支持 Responses API、SSE 与 Codex 工具调用。
 
 进入 `switch order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
+
+安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，模型默认沿用 Codex 当前配置。
+
+后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。
 
 账号认证、数据存储和自动切换规则详见[运维指南](usage.md)。
 

@@ -14,7 +14,11 @@ sudo loginctl enable-linger <server-user>
 
 Then rerun `./install.sh` as the original user. Linger allows the user's service manager to start at boot and remain running after logout.
 
-To update, update the checkout and rerun `./install.sh`. This also updates the service entry point; restarting an old service alone does not update its unit file. The service stores absolute Node, application, and Codex paths plus the installation PATH. Rerun the installer after changing those paths. Do not remove the referenced runtime or checkout while the service depends on it. If Codex configuration has changed since installation, the installer refuses to overwrite it; merge or restore the configuration first.
+Run `switch update` to install the latest code from `https://github.com/JasperRoc/easy-switch.git` on the `main` branch. Git and npm must be available, and the global npm prefix must be writable by the current user. The command downloads a temporary checkout, installs a packed archive, and reruns service setup using the recorded state directory, Codex configuration location, and port. Accounts and priority remain in place. It does not modify your source checkout. Updates restart the proxy and interrupt in-flight requests; run them between tasks.
+
+Configuration conflicts are checked before replacing the installed package. Download failures leave the installed package unchanged. A failure after package replacement may require rerunning `./install.sh`; updates do not provide automatic rollback. Older installations without `switch update` need one `git pull --ff-only` followed by `./install.sh` first.
+
+The service stores absolute Node, application, and Codex paths plus the installation PATH. Keep those runtimes installed. Packages are installed from archives, so the service does not depend on the source checkout. If Codex configuration has changed since installation, setup refuses to overwrite it; merge or restore the configuration first.
 
 Only Linux systemd installation is supported. Other platforms can run core tests, but do not have automatic service installation. Containers without systemd need an external process supervisor.
 
@@ -26,9 +30,15 @@ In the Codex extension, open Codex Settings → Open config.toml and check that 
 
 If the extension runs on your local machine, its `127.0.0.1` points to your local machine. It will not reach the server proxy automatically. Profiles or command-line provider overrides can also bypass the installed route.
 
+## Shell completion
+
+Setup installs Bash and Zsh completion scripts under `~/.local/share/easy-switch/completions` and adds a managed source block to `~/.bashrc` and `${ZDOTDIR:-$HOME}/.zshrc`. Existing configuration is preserved; repeated setup replaces the same block. Open a new shell or source its rc file to activate completion. Zsh completion initializes `compinit` if needed.
+
+Tab completes command names, `add api/account`, service actions, and saved aliases; `order` excludes aliases already supplied. It reads only alias names for suggestions, never keys. Fish and other shells are not currently supported. Service uninstall retains these shell settings along with account data.
+
 ## API providers
 
-`switch add api <alias>` supports OpenAI's official API and third-party Responses-compatible endpoints. Leave Base URL blank to use `https://api.openai.com/v1`, then enter your OpenAI API key. For another provider, enter its Base URL (without `/responses`) and its corresponding key. The resolved URL is saved with the alias and shown by `switch list`.
+`switch add api <alias>` supports OpenAI's official API and third-party Responses-compatible endpoints. Leave Base URL blank to use `https://api.openai.com/v1`, then enter your OpenAI API key. For another provider, enter its Base URL (without `/responses`) and its corresponding key. The resolved URL is saved with the alias and shown by `switch list`. New API entries inherit the request model selected in Codex; setup does not ask for a model override. Existing saved overrides remain compatible.
 
 ## Account authentication
 

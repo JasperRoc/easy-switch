@@ -43,6 +43,7 @@ The installer registers `switch`, starts the systemd background service, enables
 | `switch <alias>` | Select the provider for subsequent requests |
 | `switch list` | Show fallback priority and the active provider (`*`) |
 | `switch order` | Adjust priority with the keyboard |
+| `switch update` | Update from the official main branch and restart the service |
 | `switch current` | Show the active alias |
 | `switch service status` | Inspect the background service |
 | `switch service restart` | Restart the service; interrupts in-flight requests |
@@ -52,6 +53,10 @@ The installer registers `switch`, starts the systemd background service, enables
 When adding an API, **leave Base URL blank to use the official OpenAI API** (`https://api.openai.com/v1`) and enter the corresponding OpenAI API key. For a third-party service, enter its Base URL and API key. Third-party URLs should omit `/responses`, and the service must support Responses API, SSE, and Codex tool calls.
 
 In `switch order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
+
+After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration.
+
+Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`.
 
 See the [operations guide](docs/usage.md) for authentication, data storage, and failover rules.
 
