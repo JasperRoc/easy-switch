@@ -8,12 +8,33 @@ Download an installer from [GitHub Releases](https://github.com/JasperRoc/easy-s
 
 Node.js, Electron and a pinned official Codex executable are bundled. No terminal, npm installation or Linux service setup is needed. Install your normal Codex conversation client separately. The bundled Codex executable handles official device authentication and reads the model catalog; easy-switch itself is a routing/settings application.
 
-The current packages have no publisher certificate; macOS packages are not notarized. Windows SmartScreen or macOS Gatekeeper may request first-launch approval. Obtain packages only from the project's releases and compare their SHA-256 sums with `SHA256SUMS.txt`. macOS first-launch approval is in System Settings → Privacy & Security when the system offers it. A managed device can prohibit unsigned software; these builds do not bypass organization policy.
+The current packages have no publisher certificate; macOS uses ad hoc code signing for bundle integrity and is not notarized. Windows SmartScreen or macOS Gatekeeper may request first-launch approval. Obtain packages only from the project's releases and compare their SHA-256 sums with `SHA256SUMS.txt`. For macOS first-launch approval and the previous damaged-app alert, follow the instructions below. A managed device can prohibit unsigned software; these builds do not bypass organization policy.
 
 Apple silicon macOS packaged-app tests cover adding an API, model discovery, model/effort selection, routing start/stop, window hiding, normal exit and forced-process-exit recovery. Intel macOS and Windows packages are built, but have not been run on those systems. This release is experimental.
 
+## macOS preview and the damaged-app alert
+
+Version 0.3.0 skipped signing after modifying Electron’s application bundle, leaving invalid resource signatures. This could produce “easy-switch is damaged and can’t be opened.” Version 0.3.1 re-signs the app and its nested code, fails the build if strict signature validation fails, and verifies the final DMG’s mounted application before release. Replace the old application with a fresh 0.3.1 or later download.
+
+An ad hoc signature verifies integrity; it does **not** establish an Apple-trusted publisher identity or replace notarization. Gatekeeper can still block these preview downloads. First compare the installer with `SHA256SUMS.txt`, install it into Applications, and verify the copied app:
+
+```bash
+codesign --verify --deep --strict "/Applications/easy-switch.app"
+```
+
+A successful command exits without an error. Then use **System Settings → Privacy & Security → Open Anyway** if offered. If macOS does not offer approval for this ad hoc preview, after verifying that you trust this specific download, remove the quarantine attribute from this application only:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/easy-switch.app"
+```
+
+Launch easy-switch again. Adjust the path if installed elsewhere. This does not turn off system-wide Gatekeeper. A managed device may prevent this; organization policy is not bypassed. Do not use the command to hide a failed `codesign` check. For public distribution without this manual step, the publisher still needs an Apple Developer ID certificate and notarization credentials.
+
+中文版：0.3.0 跳过了修改后的 Electron 应用重签名，造成资源签名失效。请下载 0.3.1 或更新版本，替换旧软件。新版采用临时签名验证完整性，但没有 Developer ID 和 Apple 公证，系统仍可能阻止首次打开。核对安装包 SHA-256 并通过上面的 `codesign` 检查后，可到「系统设置 → 隐私与安全性 → 仍要打开」允许；若没有入口，可对已确认可信的这一个应用执行上面的 `xattr` 命令，然后重新打开。无需关闭系统全局安全检查；签名检查失败时不要使用该命令掩盖错误。
+
 ## Everyday use
 
+- **Language and appearance**: choose English or Simplified Chinese, and System, Light or Dark in the top toolbar. Changes apply immediately and persist across restarts. Tray menus and quit confirmations use the same language. System mode follows OS appearance changes. Ocean-blue glass surfaces use `RGB(0,63,136)` as the brand color, with restrained transitions that respect reduced-motion settings.
 - **Add provider**: sign in with ChatGPT through the official device authentication page, import an existing file-based Codex sign-in, or enter an API key. A blank Base URL selects `https://api.openai.com/v1`. Third-party APIs must support Responses, SSE and Codex tool calls.
 - **Tray/menu bar**: right-click the icon and select an alias. On Windows, double-click opens settings. Use “Providers & settings…” on either platform to open the window.
 - **Priority**: use the up/down buttons next to providers. Changes do not change the currently selected alias. Eligible quota/authentication failures use this order, subject to the same cooldown and retry rules as the CLI.
@@ -45,7 +66,7 @@ Data is stored in `~/.codex-switch` (`%USERPROFILE%\.codex-switch` on Windows), 
 | `accounts/<alias>/auth.json` | File-based ChatGPT credentials |
 | `network.json` | Saved outbound proxy settings, which can contain proxy credentials |
 | `desktop-session.json` | Temporary configuration backup while routing is active |
-| `desktop.json` | Desktop preferences |
+| `desktop.json` | Language, appearance and desktop preferences |
 | `desktop-ui/` | Electron window/profile data |
 
 Credentials remain local plaintext. Unix directory/file permissions or a Windows ACL restrict access; this is not encryption or OS keychain storage. The renderer receives provider metadata, not API keys or ChatGPT tokens. Authentication codes appear only in the sign-in UI and the corresponding request's authentication prompt.
@@ -61,4 +82,5 @@ Use **Downloads & updates** to open Releases. Quit the old application, install 
 - 异常恢复：主进程崩溃后由独立助手恢复；断电等情况在下次启动时恢复。保留用户新增的普通设置；托管 provider 被修改时会保留备份并提示冲突，正常退出会取消。`desktop-session.json` 可能包含凭据，请勿公开。
 - 网络：不会自动读取操作系统代理/PAC，可在 **Network** 填写 HTTP/HTTPS 代理地址，始终绕过 localhost。保存网络设置会重启代理并中断当前请求。远程服务器上的 Codex 仍需在服务器安装 Linux 版，桌面版无法直接接管 SSH 远端。
 - 更新：点击 **Downloads & updates**，退出旧软件后安装新版本；账号与设置保留。`switch update` 是 Linux CLI 的更新方式。卸载前先关闭自启动并退出软件；默认保留本地账号数据，需要时可自行删除。
-- 发布状态：尚未签名/公证，首次运行可能需要系统允许；不支持绕过企业设备策略。Apple 芯片 macOS 已完成打包程序测试，Windows 和 Intel macOS 目前仅完成构建，仍需对应系统实际验证。
+- 语言外观：顶部可切换中英文及跟随系统/浅色/深色，立即生效并自动保存；托盘菜单及退出提示同步切换语言。海洋蓝主题采用磨砂玻璃质感，并尊重系统减少动态效果设置。
+- 发布状态：macOS 已采用临时签名验证完整性，但尚无 Developer ID/公证；Windows 尚无发布者签名，首次运行可能需要系统允许；不支持绕过企业设备策略。Apple 芯片 macOS 已完成打包程序测试，Windows 和 Intel macOS 目前仅完成构建，仍需对应系统实际验证。

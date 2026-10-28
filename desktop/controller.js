@@ -19,7 +19,13 @@ export class DesktopController {
     try { return JSON.parse(fs.readFileSync(this.preferencesFile, 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
   }
-  setPreferences(patch) { atomic(this.preferencesFile, { ...this.preferences(), ...patch }); }
+  setPreferences(patch) {
+    for (const [key, value] of Object.entries(patch)) {
+      const valid = key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : key === 'startAtLogin' && typeof value === 'boolean';
+      if (!valid) throw new Error('Invalid desktop preference.');
+    }
+    atomic(this.preferencesFile, { ...this.preferences(), ...patch });
+  }
   async start() {
     process.env.SWITCH_CODEX_BIN = this.binary;
     Object.assign(process.env, networkEnvironment(this.root));

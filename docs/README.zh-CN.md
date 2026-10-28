@@ -9,7 +9,7 @@
 
 easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，统一管理 **ChatGPT 订阅账号、OpenAI 官方 API 与第三方兼容 API**。它在模型请求边界切换上游，保持客户端进程与会话连续；当上游返回符合条件的额度或认证错误时，按预设优先级尝试备用服务。
 
-🔄 **会话内切换** · 🖥️ **托盘与菜单栏操作** · 🧠 **模型及 effort 选择** · ⚙️ **自动故障切换**
+🔄 **会话内切换** · 🖥️ **托盘与菜单栏操作** · 🌊 **海洋玻璃界面 · 中英切换 · 明暗主题** · 🧠 **模型及 effort 选择** · ⚙️ **自动故障切换**
 
 [快速开始](#quick-start) · [与现有工作的区别](#why-easy-switch) · [FAQ](#faq) · [免责声明](#disclaimer) · [参与贡献](#contributing) · [许可证](#license)
 
@@ -29,11 +29,12 @@ easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，�
 
 1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
 2. 点击 **Add provider**，通过 ChatGPT 官方认证添加订阅账号，或填写 API 地址和密钥。Base URL 留空使用 OpenAI 官方 API。
-3. 首次启动后，重启 Codex 或重载编辑器窗口，使其读取本地路由。右键 Windows 托盘或 macOS 菜单栏图标即可切换服务商；在设置窗口调整优先级、模型与 effort。
+3. 可在窗口顶部切换 **English / 简体中文**，以及 **跟随系统 / 浅色 / 深色**，偏好会自动保存。
+4. 首次启动后，重启 Codex 或重载编辑器窗口，使其读取本地路由。右键 Windows 托盘或 macOS 菜单栏图标即可切换服务商；在设置窗口调整优先级、模型与 effort。
 
 仅安装不会修改 Codex 配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 才会恢复原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的 Codex 客户端可能需要重启或重载；用于会话的 Codex 客户端需另外安装。
 
-当前安装包尚未签名，macOS 版本也尚未公证，首次打开可能需要在系统中明确允许。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
+Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应用完整性，但尚无 Developer ID 及 Apple 公证，首次打开仍可能需要系统手动允许。详见[macOS 预览版安装说明](desktop.md#macos-preview-and-the-damaged-app-alert)。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
 
 ### 🐧 Linux 服务器命令行
 

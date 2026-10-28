@@ -36,3 +36,10 @@ test('desktop model selection validates effort and rejects a stale provider cata
   assert.throws(()=>controller.model({model:'fixture-model',effort:'high'}),/Reload/);
   controller.model(null); assert.equal(controller.snapshot().model,null);
 });
+test('desktop appearance preferences persist and invalid choices never replace them', t => {
+  const controller = setup(t);
+  controller.setPreferences({language:'zh-CN',theme:'dark'});
+  assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
+  for (const patch of [{language:'unknown'}, {theme:'unknown'}, {extra:'unrequested'}, {startAtLogin:'yes'}]) assert.throws(()=>controller.setPreferences(patch), /Invalid/);
+  assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
+});

@@ -9,7 +9,7 @@
 
 easy-switch is a desktop and command-line account and API routing tool for Codex, bringing **ChatGPT subscription accounts, the official OpenAI API, and third-party compatible APIs** into one workflow. It switches providers at model request boundaries while preserving the client process and conversation. Eligible quota or authentication rejections trigger retries through alternatives in the configured priority order.
 
-🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🧠 **Model and effort selection** · ⚙️ **Automatic failover**
+🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🌊 **Ocean glass UI · EN / 中文 · Light / dark** · 🧠 **Model and effort selection** · ⚙️ **Automatic failover**
 
 [Quick start](#quick-start) · [Why easy-switch?](#why-easy-switch) · [FAQ](#faq) · [Disclaimer](#disclaimer) · [Contributing](#contributing) · [License](#license)
 
@@ -29,11 +29,12 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
 2. Select **Add provider** to sign in with ChatGPT or enter an API endpoint and key. An empty Base URL uses the official OpenAI API.
-3. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window for priority, model and effort.
+3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
+4. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window for priority, model and effort.
 
 Installing alone leaves Codex configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Your Codex conversation client is installed separately.
 
-Current packages are unsigned and macOS packages are not notarized. Your OS may require an explicit first-launch approval. The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
+Windows packages have no publisher signature. macOS packages use ad hoc signing with verified bundle integrity, but have no Developer ID and are not notarized. Your OS may require explicit first-launch approval; see the [macOS preview instructions](docs/desktop.md#macos-preview-and-the-damaged-app-alert). The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
 
 ### 🐧 Linux server CLI
 

@@ -55,7 +55,17 @@ npm run desktop:build:win
 
 The preparation script downloads the matching pinned official Codex platform package through npm, extracts only the executable used for login/catalog discovery, and includes its Apache-2.0 license. Build output goes to ignored `dist/`; helper downloads go to ignored `.desktop-cache/`. macOS builds require macOS. Windows NSIS installers can be cross-built on macOS. Desktop packages include their runtime dependencies and require no npm setup on the user's computer. The CLI npm package excludes desktop build tools and bundled executables.
 
-`electron-builder.yml` currently produces unsigned packages, with macOS notarization disabled by the absence of publisher credentials. For a signed distribution, configure your own publisher certificates and notarization credentials and adjust signing settings; never commit those credentials.
+`electron-builder.yml` uses ad hoc macOS signing (`identity: "-"`) with minimal JIT/library-validation entitlements. `scripts/verify-mac.cjs` runs after signing and fails packaging if the app or bundled Codex signature is invalid. Ad hoc signing is not Developer ID signing or Apple notarization; Gatekeeper approval can still be required. Windows packages have no publisher signature. For a trusted public distribution, configure publisher certificates and notarization credentials and adjust signing settings; never commit those credentials.
+
+After building, verify the actual DMGs before publishing:
+
+```bash
+node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.3.1-mac-arm64.dmg dist/easy-switch-0.3.1-mac-x64.dmg
+```
+
+This checks image checksums, mounts each image read-only without opening Finder, verifies the contained application/nested code, and detaches it. A successful `codesign` result does not mean `spctl` will trust an unnotarized ad hoc application.
+
+The editable logo lives in `desktop/assets/icon.svg`. Run `npm run desktop:icons` to render packager PNGs and the macOS template icon at 1×/2×. The background tile has standard transparent padding, so its visual size fits other macOS icons. `desktop/i18n.js` holds paired English/Chinese strings used by both the renderer and main-process tray menus. Theme and language preferences live in `desktop.json`; appearance tests verify live changes and restart persistence.
 
 Run real Electron integration tests after preparing the native helper:
 
