@@ -41,7 +41,8 @@ test('download failure stops before installation and removes temporary directory
 });
 test('configuration conflicts stop update before any command runs', t => {
   const { root, codexHome } = fixture(t);
-  fs.appendFileSync(path.join(codexHome, 'config.toml'), '\n# user edit');
+  const file = path.join(codexHome, 'config.toml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('127.0.0.1:19999', '127.0.0.1:18888'));
   let called = false;
   assert.throws(() => updateTool(root, () => { called = true; }));
   assert.equal(called, false);
@@ -65,4 +66,20 @@ test('update forwards stored proxy settings to git, npm, and service setup', t =
   } finally {
     for (const name of names) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; }
   }
+});
+
+
+test('update permits model preference changes without rewriting the configuration', t => {
+  const { root, codexHome } = fixture(t);
+  const file = path.join(codexHome, 'config.toml');
+  const changed = 'model="gpt-6.1-sol"\nmodel_reasoning_effort="low"\n' + fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, changed);
+  let calls = 0;
+  updateTool(root, (_binary, args) => {
+    calls++;
+    if (args[0] === 'pack') return '[{"filename":"easy-switch-test.tgz"}]';
+    if (args[0] === 'root') return '/global/node_modules';
+  });
+  assert.equal(calls, 6);
+  assert.equal(fs.readFileSync(file, 'utf8'), changed);
 });

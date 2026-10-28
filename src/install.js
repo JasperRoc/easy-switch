@@ -18,6 +18,13 @@ export function writeText(file, text) {
   try { fs.writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' }); fs.renameSync(tmp, file); }
   finally { fs.rmSync(tmp, { force: true }); }
 }
+function providerConfig(port, token) {
+  return {
+    name: 'easy-switch', base_url: `http://127.0.0.1:${port}/v1`,
+    wire_api: 'responses', requires_openai_auth: false, supports_websockets: false,
+    http_headers: { Authorization: `Bearer ${token}` },
+  };
+}
 export function patchedConfig(original, port, token) {
   const before = parse(original);
   if (before.model_providers?.[providerName]) throw new Error('已存在 easy_switch provider；请先卸载旧接入配置');
@@ -28,11 +35,7 @@ export function patchedConfig(original, port, token) {
     if (!pattern.test(source)) throw new Error('无法安全修改 model_provider，请将其改为单行根配置');
     source = source.replace(pattern, '');
   }
-  const provider = {
-    name: 'easy-switch', base_url: `http://127.0.0.1:${port}/v1`,
-    wire_api: 'responses', requires_openai_auth: false, supports_websockets: false,
-    http_headers: { Authorization: `Bearer ${token}` },
-  };
+  const provider = providerConfig(port, token);
   const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}" }\n`;
   const expected = { ...before, model_provider: providerName, model_providers: { ...before.model_providers, [providerName]: provider } };
   if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), JSON.parse(JSON.stringify(expected)))) throw new Error('TOML 结构复杂，无法只修改代理设置；未写入配置');
@@ -45,9 +48,15 @@ export function prepareConfig(root, codexHome, port, token) {
   const original = exists ? fs.readFileSync(file, 'utf8') : '';
   if (fs.existsSync(recordFile)) {
     const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
-    if (record.file !== file || record.port !== port || digest(original) !== record.installedHash) throw new Error('安装后配置/路径/端口发生变化，请先手动合并或卸载；不会覆盖你的修改');
-    if (parse(original).model_providers?.[providerName]?.http_headers?.Authorization !== `Bearer ${token}`) throw new Error('本地令牌发生变化，请先恢复旧安装配置再安装');
-    return { apply() {} };
+    if (record.file !== file || record.port !== port) throw new Error('安装路径或端口发生变化，请先恢复原路径/端口；未修改配置');
+    const current = parse(original);
+    if (current.model_provider !== providerName || !isDeepStrictEqual(JSON.parse(JSON.stringify(current.model_providers?.[providerName] ?? null)), providerConfig(port, token))) {
+      throw new Error('easy-switch 代理接入配置发生变化，请检查 model_provider、代理地址与本地令牌；未覆盖你的修改');
+    }
+    // Model preferences, project settings, and comments belong to the user.
+    return { apply() {
+      if (fs.readFileSync(file, 'utf8') !== original) throw new Error('安装期间配置被修改，停止写入');
+    } };
   }
   const installed = patchedConfig(original, port, token);
   return { apply() {

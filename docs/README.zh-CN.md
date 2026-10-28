@@ -56,7 +56,7 @@ cd easy-switch
 
 安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，模型默认沿用 Codex 当前配置。
 
-后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。
+后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。 如果 0.1.1 及更早版本因模型设置变化而阻止更新，也请通过上述源码安装方式升级一次。
 
 如果服务器需要外网代理，请在安装或更新前设置 `HTTP_PROXY` / `HTTPS_PROXY`。工具会保存代理设置，供后台服务和后续更新使用；本机地址始终直连。详见[外网代理配置](usage.md#outbound-network-proxy)。
 

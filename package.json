@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Switch Codex upstream accounts and APIs between requests through a local streaming proxy",
   "type": "module",
   "bin": {

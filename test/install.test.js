@@ -17,7 +17,7 @@ test('global configuration keeps comments and unrelated settings, needs no shell
   assert.equal(parsed.model_providers.easy_switch.env_key, undefined);
   assert.throws(() => patchedConfig(output, 18345, 'token'));
 });
-test('installation is idempotent, restores exact original, refuses later user edits', t => {
+test('installation is idempotent, restores exact original, refuses unsafe restoration', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-install-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
@@ -45,4 +45,27 @@ test('systemd service has stable paths, restart policy, no shell, no secret', ()
   assert.match(unit, /ExecStart="\/opt\/node\/bin\/node" "\/opt\/easy switch\/src\/daemon.js"\n/);
   assert.match(unit, /a%% b/);
   assert.doesNotMatch(unit, /Bearer/);
+});
+
+
+test('reinstallation preserves changed model preferences, unrelated settings, and comments', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-config-update-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
+  const file = path.join(codexHome, 'config.toml');
+  fs.writeFileSync(file, 'model="gpt-6-sol"\nmodel_reasoning_effort="medium"\n');
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const changed = fs.readFileSync(file, 'utf8').replace('gpt-6-sol', 'gpt-6.1-sol').replace('medium', 'low') + '\n# user preferences\n[mcp_servers.example]\ncommand="tool"\n';
+  fs.writeFileSync(file, changed);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  assert.equal(fs.readFileSync(file, 'utf8'), changed);
+  for (const [from, to] of [['model_provider = "easy_switch"', 'model_provider = "other"'], ['127.0.0.1:18345', '127.0.0.1:9999'], ['Bearer token', 'Bearer changed']]) {
+    fs.writeFileSync(file, changed.replace(from, to));
+    assert.throws(() => prepareConfig(root, codexHome, 18345, 'token'), /代理接入配置/);
+  }
+  fs.writeFileSync(file, changed);
+  assert.throws(() => prepareConfig(root, codexHome, 18346, 'token'), /路径或端口/);
+  const plan = prepareConfig(root, codexHome, 18345, 'token');
+  fs.appendFileSync(file, '# concurrent edit\n');
+  assert.throws(() => plan.apply(), /安装期间配置被修改/);
 });
