@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { init, addProvider, activate, readState, atomic, aliasName, baseURL } from '../src/store.js';
+import { init, addProvider, activate, readState, atomic, aliasName, baseURL, setModel } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 
 async function listen(t, server) {
@@ -362,4 +362,47 @@ test('disconnect cancels an upstream SSE body accepted without Content-Type', as
   await response.body.getReader().read();
   abort.abort();
   await cancellation;
+});
+
+
+test('model/effort changes apply to new requests while existing SSE and tool history survive', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  const requests = []; let finish;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: first\n\n'));
+      finish = () => { controller.enqueue(new TextEncoder().encode('data: done\n\n')); controller.close(); };
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+    return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const first = await send(proxy, token, { ...payload, reasoning: { effort: 'low', summary: 'auto' } });
+  setModel({ model: 'model-next', effort: 'high' }, root);
+  const input = [...payload.input, { type: 'function_call', name: 'shell', call_id: 'c1', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: 'done' }];
+  await (await send(proxy, token, { ...payload, input, reasoning: { effort: 'low', summary: 'auto' } })).text();
+  finish(); assert.match(await first.text(), /first/);
+  assert.equal(requests[0].model, 'test'); assert.equal(requests[0].reasoning.effort, 'low');
+  assert.equal(requests[1].model, 'model-next'); assert.deepEqual(requests[1].reasoning, { effort: 'high', summary: 'auto' });
+  assert.deepEqual(requests[1].input, input);
+  setModel(null, root);
+  await (await send(proxy, token, { ...payload, reasoning: { effort: 'medium' } })).text();
+  assert.equal(requests[2].model, 'test'); assert.equal(requests[2].reasoning.effort, 'medium');
+});
+
+test('failover keeps one model selection snapshot, including when settings change during rejection', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias, model: 'legacy-model' }, root);
+  setModel({ model: 'chosen-model', effort: 'high' }, root);
+  const requests = [];
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) { setModel({ model: 'later-model', effort: 'low' }, root); return new Response('quota', { status: 429 }); }
+    return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  await (await send(proxy, token)).text();
+  assert.equal(requests.length, 2);
+  for (const request of requests) { assert.equal(request.model, 'chosen-model'); assert.equal(request.reasoning.effort, 'high'); }
+  await (await send(proxy, token)).text();
+  assert.equal(requests[2].model, 'later-model');
 });

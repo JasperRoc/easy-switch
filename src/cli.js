@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { home, init, aliasName, addProvider, activate, baseURL, accountAuth, providerOrder, setOrder } from './store.js';
+import { home, init, aliasName, addProvider, activate, baseURL, accountAuth, providerOrder, setOrder, setModel } from './store.js';
+import { chooseModel } from './model.js';
 import { editOrder } from './order.js';
 import { candidates } from './completion.js';
 import { updateTool } from './update.js';
@@ -14,6 +15,7 @@ const help = `easy-switch
   switch add api [alias]       添加官方或第三方 Responses API
   switch add account [alias]   通过 Codex 设备认证添加订阅账号
   switch <alias>               下一次模型请求切到该上游
+  switch model [current|reset]  选择模型与 effort，下一次模型请求生效
   switch order [alias ...]    键盘调整自动切换优先级（从高到低）
   switch list | current       查看配置（不显示密钥）
   switch update               更新至官方仓库最新版本
@@ -51,6 +53,20 @@ async function main() {
   if (command === 'update') {
     if (args.length !== 1) throw new Error('用法：switch update');
     return updateTool(root);
+  }
+  if (command === 'model') {
+    if (args.length > 2 || (type && !['current', 'reset'].includes(type))) throw new Error('用法：switch model [current|reset]');
+    if (type === 'current') {
+      const selection = init(root).modelSelection;
+      return console.log(selection ? `${selection.model} · effort: ${selection.effort ?? '服务商默认'}` : '跟随 Codex');
+    }
+    if (type === 'reset') { setModel(null, root); return console.log('已取消模型与 effort 覆盖；下一次模型请求生效'); }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('请在交互终端执行 switch model；查看设置请用 switch model current');
+    const result = await chooseModel(root);
+    if (result.cancelled) return console.log('已取消，模型设置未修改');
+    if (result.notice) console.log(result.notice);
+    console.log(result.selection ? `已选择 ${result.selection.model} · effort: ${result.selection.effort ?? '服务商默认'}` : '已取消模型与 effort 覆盖，跟随 Codex');
+    return console.log('当前服务下所有会话的下一次模型请求生效；进行中的响应继续完成');
   }
   if (command === 'service') return service(type, root);
   if (command === 'order') {

@@ -8,11 +8,11 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { init, addProvider, activate, readState } from '../src/store.js';
+import { init, addProvider, activate, readState, setModel } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
 
-test('real Codex app-server: same process, same thread, manual switch and quota failover', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+test('real Codex app-server: same process, same thread, manual switch, failover, and model change within one turn', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -21,6 +21,8 @@ test('real Codex app-server: same process, same thread, manual switch and quota 
   const { token } = init(root);
   const requests = [];
   let rejectA = false;
+  let toolTurn = false, toolIssued = false, finishToolResponse, signalTool;
+  const toolReady = new Promise(resolve => { signalTool = resolve; });
   async function serve(server) {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -41,6 +43,19 @@ test('real Codex app-server: same process, same thread, manual switch and quota 
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = data => res.write(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
     event({ type: 'response.created', response: { id, status: 'in_progress', output: [] } });
+    if (toolTurn && !toolIssued) {
+      toolIssued = true;
+      const call = { type: 'function_call', id: 'fc_model_switch', call_id: 'call_model_switch', name: 'exec_command', arguments: JSON.stringify({ cmd: 'printf switch-model-tool-ok', login: false }), status: 'completed' };
+      event({ type: 'response.output_item.added', output_index: 0, item: { ...call, arguments: '', status: 'in_progress' } });
+      event({ type: 'response.function_call_arguments.delta', item_id: call.id, output_index: 0, delta: call.arguments });
+      event({ type: 'response.function_call_arguments.done', item_id: call.id, output_index: 0, arguments: call.arguments });
+      event({ type: 'response.output_item.done', output_index: 0, item: call });
+      const proceed = new Promise(resolve => { finishToolResponse = resolve; });
+      signalTool();
+      await proceed;
+      event({ type: 'response.completed', response: { id, status: 'completed', output: [call], usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } } });
+      return res.end();
+    }
     event({ type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } });
     event({ type: 'response.content_part.added', item_id: item.id, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
     event({ type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: `reply ${label}` });
@@ -107,5 +122,24 @@ test('real Codex app-server: same process, same thread, manual switch and quota 
   assert.match(JSON.stringify(requests[3].body.input), /Third turn/);
   assert.equal(readState(root).active, 'b');
   assert.equal(readState(root).reason, 'failover');
+  assert.equal(child.exitCode, null);
+  // Switch model while the same user turn is streaming a tool call; Codex must
+  // execute the tool and continue automatically, without another turn/start.
+  toolTurn = true;
+  setModel({ model: 'gpt-5.1-codex', effort: 'low' }, root);
+  const toolCompleted = new Promise(resolve => { finishTurn = resolve; });
+  const started = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Tool turn: run the tool and continue.', text_elements: [] }] });
+  await toolReady;
+  setModel({ model: 'gpt-6.1-sol', effort: 'high' }, root);
+  finishToolResponse();
+  const finished = await toolCompleted;
+  assert.equal(finished.id, started.turn.id);
+  assert.equal(finished.status, 'completed', JSON.stringify(finished) + stderr);
+  assert.equal(requests.at(-2).body.model, 'gpt-5.1-codex');
+  assert.equal(requests.at(-2).body.reasoning.effort, 'low');
+  assert.equal(requests.at(-1).body.model, 'gpt-6.1-sol');
+  assert.equal(requests.at(-1).body.reasoning.effort, 'high');
+  const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_model_switch');
+  assert.match(output.output, /switch-model-tool-ok/);
   assert.equal(child.exitCode, null);
 });

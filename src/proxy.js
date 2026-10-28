@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { readState, accountAuth, activateFallback } from './store.js';
 import { createReauth, expired } from './auth.js';
 import { alternate, recoverable, rejectionText } from './failover.js';
+import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
 
 function authorized(req, token) {
@@ -99,6 +100,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       delete payload.previous_response_id;
       payload.store = false;
       payload.stream = true;
+      const modelSelection = state.modelSelection;
       let alias = state.active;
       const attempted = new Set();
       const maxAttempts = Object.keys(state.providers).length;
@@ -106,7 +108,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         attempted.add(alias);
         const provider = state.providers[alias];
         const headers = { 'content-type': 'application/json', accept: 'text/event-stream' };
-        const outgoing = { ...payload }; // Never carry an API's model override into the fallback.
+        let outgoing = { ...payload }; // Never carry an API's model override into the fallback.
         let url;
         if (provider.type === 'account') {
           let auth;
@@ -123,6 +125,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           url = `${provider.baseUrl}/responses`;
         }
         if (provider.model) outgoing.model = provider.model;
+        outgoing = applyModel(outgoing, modelSelection);
         const upstream = await fetchImpl(url, {
           method: 'POST', headers, body: JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
         });

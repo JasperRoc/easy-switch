@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Switch Codex upstream accounts and APIs between requests through a local streaming proxy",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js"
+    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js && node --check src/catalog.js && node --check src/model.js && node --check src/select.js"
   },
   "files": [
     "src",

@@ -42,6 +42,9 @@ cd easy-switch
 | `switch add api <alias>` | 添加官方或第三方 API |
 | `switch <alias>` | 切换后续请求使用的上游 |
 | `switch list` | 查看备用优先级及当前上游（`*`） |
+| `switch model` | 交互选择模型及 effort，下一次模型请求生效 |
+| `switch model current` | 查看当前模型覆盖设置 |
+| `switch model reset` | 取消模型与 effort 覆盖 |
 | `switch order` | 用键盘调整切换优先级 |
 | `switch update` | 更新至官方仓库 main 分支并重启服务 |
 | `switch current` | 查看当前别名 |
@@ -54,7 +57,9 @@ cd easy-switch
 
 进入 `switch order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
 
-安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，模型默认沿用 Codex 当前配置。
+执行 `switch model` 后，先选择模型，再选择该模型支持的 effort；用 **↑/↓** 选择、**Enter** 确认、**Esc/Ctrl+C** 取消。选择“跟随 Codex”或运行 `switch model reset` 可取消覆盖。设置对同一服务下所有会话的后续模型请求生效，已经开始输出的响应继续完成。模型目录来自 Codex CLI；API 模式会尝试结合服务商 `/models` 结果筛选，实际支持情况仍取决于上游。此功能覆盖请求参数，不同步修改 Codex 原生界面的模型标签或客户端能力配置。详见[模型与 effort](usage.md#model-and-effort-switching)。
+
+安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，没有设置 `switch model` 覆盖时，模型沿用 Codex 当前配置。
 
 后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。 如果 0.1.1 及更早版本因模型设置变化而阻止更新，也请通过上述源码安装方式升级一次。
 
@@ -86,7 +91,7 @@ easy-switch 将账号配置、路由选择与备用排序集中在同一命令�
 
 ### 是否考虑适配其他系统？
 
-当前正式支持的安装目标是采用 systemd 的 Linux。macOS 和 Windows 的原生后台服务安装可作为后续扩展方向，暂无确定排期。核心测试可以跨平台运行，不代表这些平台已经支持完整安装。
+当前正式支持的安装目标是采用 systemd 的 Linux。Windows/macOS 桌面版尚未实现；后续设计为仅在软件运行期间接管路由，退出时恢复原配置，并由用户选择是否开机自启动。核心测试可以跨平台运行，不代表这些平台已经支持完整安装。
 
 ### 切换后，当前任务会中断吗？
 

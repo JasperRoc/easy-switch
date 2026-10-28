@@ -13,6 +13,8 @@ test('completion exposes commands and aliases, excludes used order aliases and s
   for (const alias of ['personal', 'relay']) addProvider(alias, { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'SECRET' }, root);
   assert.deepEqual(candidates(['per'], root), ['personal']);
   assert.deepEqual(candidates(['up'], root), ['update']);
+  assert.deepEqual(candidates(['mo'], root), ['model']);
+  assert.deepEqual(candidates(['model', 're'], root), ['reset']);
   assert.deepEqual(candidates(['add', 'a'], root), ['api', 'account']);
   assert.deepEqual(candidates(['service', 're'], root), ['restart']);
   assert.deepEqual(candidates(['order', 'personal', ''], root), ['relay']);

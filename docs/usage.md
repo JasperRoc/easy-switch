@@ -64,6 +64,24 @@ Tab completes command names, `add api/account`, service actions, and saved alias
 
 `switch add api <alias>` supports OpenAI's official API and third-party Responses-compatible endpoints. Leave Base URL blank to use `https://api.openai.com/v1`, then enter your OpenAI API key. For another provider, enter its Base URL (without `/responses`) and its corresponding key. The resolved URL is saved with the alias and shown by `switch list`. New API entries inherit the request model selected in Codex; setup does not ask for a model override. Existing saved overrides remain compatible.
 
+## Model and effort switching
+
+```bash
+switch model          # Interactive model, then effort selection
+switch model current  # Display the saved override
+switch model reset    # Clear both overrides without opening the picker
+```
+
+Use ↑/↓ and Enter to choose, or Esc/Ctrl+C to cancel. Settings are saved only after both steps finish; cancelling either step preserves the previous pair. Selecting Follow Codex clears the global override. Selecting provider-default effort removes the inherited `reasoning.effort` from outgoing requests; other reasoning options are retained. Model changes do not change the selected provider, reset cooldowns, or restart Codex/the service.
+
+The model catalog is read through `model/list` in an isolated Codex app-server with a local, unauthenticated custom provider. No user thread is started/resumed and account credentials are not copied. This is Codex's bundled catalog, not proof of account access. Keep Codex CLI updated to obtain newer catalog entries.
+
+For APIs, the tool also tries the configured provider's `/models` endpoint using that provider's key and the saved network proxy. If available, only model IDs shared with the Codex catalog are offered. Custom IDs not recognized by Codex are currently omitted. If discovery fails or the endpoint is unavailable, the picker shows the Codex catalog with a notice. No generation request is sent while selecting; upstream compatibility and account access must still be verified in actual use. The effort menu is populated from each model's catalog metadata, not a universal list.
+
+A model/effort pair applies globally to all sessions connected to this service. Each incoming model request snapshots the pair, including automatic failover attempts. A running SSE response keeps its original settings; the next request, including a tool-result continuation within the same task, uses the new pair. Failover does not silently replace the chosen model/effort. A provider rejecting the selected model or effort can still stop the task.
+
+This is a request-level override. It does not update the native Codex model indicator, model-specific instructions, tool definitions, context-window limits, or other client capability settings. Use compatible models and consult `switch model current` for the effective override. The Codex model catalog alone cannot guarantee full compatibility for arbitrary cross-model changes. Existing legacy per-provider model mappings, if present in old state, remain in effect when the global override is cleared.
+
 ## Account authentication
 
 Both initial account creation and automatic reauthentication use `codex login --device-auth`. Enable device code login in your ChatGPT account security settings or workspace settings first. Follow the official verification link and enter the one-time code using your browser.

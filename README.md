@@ -42,6 +42,9 @@ The installer registers `switch`, starts the systemd background service, enables
 | `switch add api <alias>` | Add an official or third-party API |
 | `switch <alias>` | Select the provider for subsequent requests |
 | `switch list` | Show fallback priority and the active provider (`*`) |
+| `switch model` | Choose model and effort for subsequent requests |
+| `switch model current` | Show the current model override |
+| `switch model reset` | Clear model and effort overrides |
 | `switch order` | Adjust priority with the keyboard |
 | `switch update` | Update from the official main branch and restart the service |
 | `switch current` | Show the active alias |
@@ -54,7 +57,9 @@ When adding an API, **leave Base URL blank to use the official OpenAI API** (`ht
 
 In `switch order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
 
-After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration.
+Run `switch model` to select a model and then one of its supported efforts. Use **↑/↓** to select, **Enter** to confirm, and **Esc/Ctrl+C** to cancel. Choose “Follow Codex” or run `switch model reset` to clear overrides. The setting applies to subsequent requests across all sessions using the service; existing response streams finish normally. The catalog comes from Codex CLI and is filtered against the API provider's `/models` endpoint when available. Actual support depends on the upstream. This overrides request parameters; it does not synchronize Codex's native model label or client capabilities. See [model and effort switching](docs/usage.md#model-and-effort-switching).
+
+After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration unless overridden with `switch model`.
 
 Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`. If version 0.1.1 or earlier blocks an update after changing model settings, use the same source-install steps once.
 
@@ -86,7 +91,7 @@ The official OpenAI API and Responses-compatible third-party APIs can already be
 
 ### Will macOS and Windows be supported?
 
-The supported installation target is currently Linux with systemd. Native macOS and Windows service installation are possible future extensions, without a committed schedule. Cross-platform core tests do not mean background installation is supported on those platforms.
+The supported installation target is currently Linux with systemd. Windows/macOS desktop support is not implemented yet. Its planned lifecycle is to enable routing only while the application runs, restore the original configuration on exit, and let users opt into login startup. Cross-platform core tests do not mean desktop installation is already supported.
 
 ### Does switching interrupt the current task?
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
-const reserved = new Set(['add', 'list', 'current', 'help', 'service', 'order', 'update']);
+const reserved = new Set(['add', 'list', 'current', 'help', 'service', 'order', 'update', 'model']);
 export function aliasName(value) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) || reserved.has(value)) throw new Error('别名须为 1–64 位字母、数字、_、-，且不能是命令名');
   return value;
@@ -61,6 +61,17 @@ export function setOrder(aliases, root = home()) {
       throw new Error('请按优先级列出全部别名，每个恰好一次：switch order <alias> ...');
     }
     s.order = [...aliases];
+  }, root);
+}
+export function setModel(selection, root = home(), expectedAlias) {
+  if (selection && (typeof selection.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(selection.model) ||
+      (selection.effort !== null && (typeof selection.effort !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(selection.effort))))) {
+    throw new Error('无效的模型或 effort');
+  }
+  return update(s => {
+    if (expectedAlias !== undefined && s.active !== expectedAlias) throw new Error('选择期间上游已变化，请重新执行 switch model');
+    if (selection) s.modelSelection = { model: selection.model, effort: selection.effort };
+    else delete s.modelSelection;
   }, root);
 }
 export function activate(alias, root = home()) {

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { addProvider, readState } from '../src/store.js';
+import { addProvider, readState, setModel } from '../src/store.js';
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
 test('CLI switches persistent selection; list hides credentials; unknown names preserve selection', t => {
@@ -51,4 +51,19 @@ test('order persists a complete permutation, preserves active selection, and app
   addProvider('d', provider, root);
   const list = spawnSync(process.execPath, [cli, 'list'], { env: { ...process.env, SWITCH_HOME: root }, encoding: 'utf8' });
   assert.deepEqual(list.stdout.trim().split('\n').map(line => line.split('\t')[0]), ['1.   c', '2. * a', '3.   b', '4.   d']);
+});
+
+
+test('model status and reset work without a TTY; interactive selection requires a terminal', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-model-cli-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const run = args => spawnSync(process.execPath, [cli, ...args], { env: { ...process.env, SWITCH_HOME: root }, encoding: 'utf8' });
+  assert.match(run(['model', 'current']).stdout, /跟随 Codex/);
+  setModel({ model: 'model-a', effort: 'high' }, root);
+  assert.match(run(['model', 'current']).stdout, /model-a.*high/);
+  assert.equal(run(['model']).status, 1);
+  assert.equal(run(['model', 'unknown']).status, 1);
+  assert.equal(readState(root).modelSelection.model, 'model-a');
+  assert.equal(run(['model', 'reset']).status, 0);
+  assert.equal(readState(root).modelSelection, undefined);
 });
