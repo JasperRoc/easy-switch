@@ -35,11 +35,13 @@ Launch easy-switch again. Adjust the path if installed elsewhere. This does not 
 ## Everyday use
 
 - **Language and appearance**: choose English or Simplified Chinese, and System, Light or Dark in the top toolbar. Changes apply immediately and persist across restarts. Tray menus and quit confirmations use the same language. System mode follows OS appearance changes. Ocean-blue glass surfaces use `RGB(0,63,136)` as the brand color, with restrained transitions that respect reduced-motion settings.
-- **Add provider**: sign in with ChatGPT through the official device authentication page, import an existing file-based Codex sign-in, or enter an API key. A blank Base URL selects `https://api.openai.com/v1`. Third-party APIs must support Responses, SSE and Codex tool calls.
+- **Add subscription**: choose an alias and complete official ChatGPT device authentication. **Import existing sign-in** is a separate action outside the add-subscription flow; it copies the file-based Codex sign-in already on this computer. **Add API** is for official or third-party API keys. A blank Base URL selects `https://api.openai.com/v1`. Third-party APIs must support Responses, SSE and Codex tool calls.
 - **Tray/menu bar**: right-click the icon and select an alias. On Windows, double-click opens settings. Use “Providers & settings…” on either platform to open the window.
-- **Priority**: use the up/down buttons next to providers. Changes do not change the currently selected alias. Eligible quota/authentication failures use this order, subject to the same cooldown and retry rules as the CLI.
+- **Priority**: hold the six-dot grip on the left of a provider and drag it. Keyboard users can focus the grip and use ↑/↓. The trash button removes the provider; deleting an account removes only the credential copy owned by easy-switch, while deleting an API removes its saved key. The active provider changes to the next ordered provider. Changes do not change the currently selected alias. Eligible quota/authentication failures use this order, subject to the same cooldown and retry rules as the CLI.
 - **Model & effort**: refresh the catalog, select both values, then apply. “Follow Codex” removes overrides. Changes apply globally to the next model request, including a tool continuation in the same task. Existing streams finish with their original selection. Native Codex model labels and capabilities are not changed.
-- **Network**: enter an optional HTTP/HTTPS proxy and bypass hosts. The app does not automatically import OS proxy/PAC settings. Localhost always bypasses the outbound proxy. Saving network settings restarts routing and interrupts active requests. A SOCKS-only port is not supported; use your proxy application's HTTP or mixed port.
+- **Connection settings**: this is an optional outbound Internet proxy for reaching OpenAI or a third-party provider, such as the HTTP port exposed by Clash or V2Ray. Leave it blank when the provider is directly reachable. It is separate from easy-switch’s local account-routing proxy. Localhost always bypasses it. The app does not automatically import OS proxy/PAC settings. Localhost always bypasses the outbound proxy. Saving network settings restarts routing and interrupts active requests. A SOCKS-only port is not supported; use your proxy application's HTTP or mixed port.
+- **Language and appearance**: use the globe and appearance icons in the top-right; no large selector boxes. English/简体中文 and System/Light/Dark are saved.
+- **Star**: the star button opens the GitHub repository without exposing credentials.
 - **Start at login**: opt in using the checkbox or tray menu. It is off by default. OS login-item permissions may need approval. Turning it off does not stop an app that is already running.
 
 Provider, priority and model settings are shared with `switch` when both use the same `SWITCH_HOME`. The desktop installer does not register a global terminal `switch` command. Existing Linux installations continue to use their CLI and systemd service independently.
@@ -71,16 +73,16 @@ Data is stored in `~/.codex-switch` (`%USERPROFILE%\.codex-switch` on Windows), 
 
 Credentials remain local plaintext. Unix directory/file permissions or a Windows ACL restrict access; this is not encryption or OS keychain storage. The renderer receives provider metadata, not API keys or ChatGPT tokens. Authentication codes appear only in the sign-in UI and the corresponding request's authentication prompt.
 
-Use **Downloads & updates** to open Releases. Quit the old application, install the new package and launch it. Saved providers and preferences are retained. The desktop application does not silently download or install updates; `switch update` remains the Linux CLI updater. To uninstall, turn off Start at login, quit the app to restore configuration, then use Windows Installed apps or move the macOS application to Trash. Data is retained; remove the data directory yourself if you also want to delete saved credentials.
+Use **Check for updates** to query the official GitHub release API. The window shows the release notes first; no package is downloaded while checking. Choose **Download update**, then **Install & restart** after the package’s size, SHA-256 digest and (on macOS) application identity/signature have been verified. macOS installation stages the new app, launches it, waits for a startup receipt and rolls back if startup is not confirmed. Windows uses the per-user installer after the existing app exits. Active requests require explicit confirmation before installation. Providers and preferences are retained. `switch update` remains the Linux CLI updater. To uninstall, turn off Start at login, quit the app to restore configuration, then use Windows Installed apps or move the macOS application to Trash. Data is retained; remove the data directory yourself if you also want to delete saved credentials.
 
 ## 简体中文
 
 - 安装：Windows 下载 x64 `.exe`；macOS 13+ 根据 Apple 芯片或 Intel 下载对应 `.dmg`，拖入 Applications 后启动。无需安装 Node.js，也无需运行 `install.sh`；会话仍使用你自己的 Codex 客户端。
 - 首次使用：点击 **Add provider** 添加订阅账号或 API，Base URL 留空使用官方 API；首次启用代理后重启 Codex 或重载编辑器窗口。
-- 日常切换：右键托盘或菜单栏图标选择服务商；设置窗口可调整备用顺序、模型与 effort。修改在下一次模型请求生效，包括任务中的工具调用续接；已经开始的流不会中途迁移。
+- 日常切换：右键托盘或菜单栏图标选择服务商；设置窗口可按住服务商左侧六点拖拽柄调整备用顺序，也可删除服务商。**添加订阅**、**导入现有登录**、**添加 API** 分开操作。修改在下一次模型请求生效，包括任务中的工具调用续接；已经开始的流不会中途迁移。
 - 运行周期：仅安装不会接管配置；启动软件后接管，关闭窗口继续留在托盘，**Stop routing / Quit easy-switch** 恢复原连接设置。开机自启动默认关闭，可勾选 **Start at login**。原生客户端缓存了地址时，停止代理后可能需要重启客户端。
 - 异常恢复：主进程崩溃后由独立助手恢复；断电等情况在下次启动时恢复。保留用户新增的普通设置；托管 provider 被修改时会保留备份并提示冲突，正常退出会取消。`desktop-session.json` 可能包含凭据，请勿公开。
-- 网络：不会自动读取操作系统代理/PAC，可在 **Network** 填写 HTTP/HTTPS 代理地址，始终绕过 localhost。保存网络设置会重启代理并中断当前请求。远程服务器上的 Codex 仍需在服务器安装 Linux 版，桌面版无法直接接管 SSH 远端。
-- 更新：点击 **Downloads & updates**，退出旧软件后安装新版本；账号与设置保留。`switch update` 是 Linux CLI 的更新方式。卸载前先关闭自启动并退出软件；默认保留本地账号数据，需要时可自行删除。
-- 语言外观：顶部可切换中英文及跟随系统/浅色/深色，立即生效并自动保存；托盘菜单及退出提示同步切换语言。海洋蓝主题采用磨砂玻璃质感，并尊重系统减少动态效果设置。
+- 连接设置：不会自动读取操作系统代理/PAC；只有需要外网代理访问服务商时才在 **Connection** 填写 HTTP/HTTPS 地址，例如 Clash/V2Ray 的 HTTP 端口。能够直连时留空。它不同于 easy-switch 的本地账号路由代理，始终绕过 localhost。保存网络设置会重启代理并中断当前请求。远程服务器上的 Codex 仍需在服务器安装 Linux 版，桌面版无法直接接管 SSH 远端。
+- 更新：点击 **Check for updates**，先查看版本说明；确认后下载并校验，再点击 **Install & restart**。macOS 启动失败会自动回滚，账号与设置保留。`switch update` 是 Linux CLI 的更新方式。卸载前先关闭自启动并退出软件；默认保留本地账号数据，需要时可自行删除。
+- 语言外观：顶部使用地球与外观图标切换中英文及跟随系统/浅色/深色，立即生效并自动保存；托盘菜单及退出提示同步切换语言。点击 ⭐️ 可打开 GitHub 仓库。海洋蓝主题采用磨砂玻璃质感，并尊重系统减少动态效果设置。
 - 发布状态：macOS 已采用临时签名验证完整性，但尚无 Developer ID/公证；Windows 尚无发布者签名，首次运行可能需要系统允许；不支持绕过企业设备策略。Apple 芯片 macOS 已完成打包程序测试，Windows 和 Intel macOS 目前仅完成构建，仍需对应系统实际验证。

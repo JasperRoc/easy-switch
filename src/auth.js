@@ -83,6 +83,7 @@ export function createReauth({ spawnImpl = spawn, timeoutMs = 300000, promptWait
     return session;
   }
   return {
+    cancel(provider) { const session = sessions.get(provider.accountHome); session?.stop(); sessions.delete(provider.accountHome); },
     start(provider) { const session = begin(provider); return { ready: session.ready.then(() => session.message), completed: session.completed }; },
     async prompt(provider) { const session = begin(provider); await session.ready; return session.message; },
     close() { for (const session of sessions.values()) session.stop(); sessions.clear(); },

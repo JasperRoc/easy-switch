@@ -21,7 +21,7 @@ async function launch(t) {
   fs.writeFileSync(file, original);
   // Never touch the developer's credentials, configuration or login items.
   const options = { ...(executable ? { executablePath: executable, args: [] } : { args: [project] }),
-    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, SWITCH_CODEX_BIN: '', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*' }, timeout: 20000 };
+    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*' }, timeout: 20000 };
   const app = await _electron.launch(options);
   app.process().stderr?.resume();
   t.after(async () => { await app.close().catch(() => {}); fs.rmSync(directory, { recursive: true, force: true }); });
@@ -37,7 +37,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   t.after(() => upstream.close());
   const { app,page,file,original } = await launch(t);
   const uiErrors = []; page.on('pageerror', error => uiErrors.push(error.message));
-  await page.click('#add-provider'); await page.fill('#provider-alias','personal'); await page.selectOption('#provider-type','api');
+  await page.click('#add-api'); await page.fill('#provider-alias','personal');
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
   await page.click('[data-tab="model"]');
@@ -69,23 +69,24 @@ test('Electron recovery helper restores configuration after main process is kill
 
 test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {
   const { app, page, root, options } = await launch(t);
-  await page.selectOption('#language-select', 'zh-CN');
-  await page.locator('#add-provider').filter({hasText:'添加服务商'}).waitFor();
-  await page.selectOption('#theme-select', 'dark');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.locator('#add-subscription').filter({hasText:'添加订阅'}).waitFor();
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
-  await page.click('#add-provider');
-  assert.equal(await page.locator('#save-provider').innerText(), '使用 ChatGPT 登录');
-  await page.selectOption('#provider-type', 'api');
+  await page.click('#add-subscription');
+  assert.equal(await page.locator('#save-provider').innerText(), '添加订阅');
+  await page.click('#close-dialog'); await page.click('#add-api');
   assert.equal(await page.locator('#save-provider').innerText(), '添加 API 服务商');
   await page.click('#close-dialog');
-  assert.ok(await page.locator('#quit').isVisible());
+  assert.equal(await page.locator('#quit').count(),0);
+  assert.match(await page.locator('#version').innerText(),/^easy-switch /);
   assert.match(await page.locator('.glass').first().evaluate(element=>getComputedStyle(element).backdropFilter), /blur/);
   const folder=path.join(project,'.desktop-test'); fs.mkdirSync(folder,{recursive:true});
   await page.screenshot({path:path.join(folder,'ocean-dark-zh.png')});
-  await page.selectOption('#theme-select','light'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
+  await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
   await page.screenshot({path:path.join(folder,'ocean-light-zh.png')});
-  await page.selectOption('#theme-select','dark'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'desktop.json'))), {language:'zh-CN',theme:'dark'});
   await app.close();
   const {_electron}=await import('playwright-core'); const reopened=await _electron.launch(options);
@@ -94,6 +95,23 @@ test('desktop language and glass themes update live and persist across applicati
     await second.locator('#status').filter({hasText:'路由已启用'}).waitFor();
     assert.equal(await second.locator('html').getAttribute('lang'),'zh-CN');
     assert.equal(await second.locator('html').getAttribute('data-theme'),'dark');
-    await second.selectOption('#language-select','en'); await second.locator('#add-provider').filter({hasText:'Add provider'}).waitFor();
+    await second.click('#language-button'); await second.click('[data-language="en"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
   } finally {await reopened.close();}
+});
+test('grip dragging, deletion, explicit import and in-app release review work without opening Releases', {skip:!enabled,timeout:60000},async t=>{
+ const {app,page,root}=await launch(t);
+ for(const alias of ['alpha','beta','gamma']) await page.evaluate(alias=>window.easySwitch.call('add-api',{alias,key:'fixture-'+alias}),alias);
+ await page.locator('.provider').nth(2).waitFor();
+ await page.locator('.drag-handle').nth(2).dragTo(page.locator('.provider').first(),{targetPosition:{x:100,y:3}});
+ await page.waitForFunction(async()=>JSON.stringify((await window.easySwitch.call('state')).providers.map(p=>p.alias))===JSON.stringify(['gamma','alpha','beta']));
+ await page.waitForFunction(()=>document.querySelector('.provider')?.dataset.alias==='gamma');
+ page.once('dialog',dialog=>dialog.accept());await page.locator('.provider[data-alias="gamma"] .delete-provider').click();
+ await page.waitForFunction(async()=>(await window.easySwitch.call('state')).providers.length===2);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
+ await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import existing/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
+
+ await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
+ await page.click('#close-update'); await page.click('#star');
+ const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'liquid-light.png')});
+ await page.click('#theme-button');await page.click('button[data-theme="dark"]');await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
 });

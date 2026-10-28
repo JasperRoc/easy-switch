@@ -53,6 +53,18 @@ export function addProvider(alias, provider, root = home()) {
 export function providerOrder(state) {
   return state.order || Object.keys(state.providers);
 }
+export function removeProvider(alias, root = home()) {
+  return update(s => {
+    if (!Object.hasOwn(s.providers, alias)) throw new Error('未知别名');
+    s.order = providerOrder(s).filter(name => name !== alias);
+    delete s.providers[alias];
+    if (s.active === alias) s.active = s.order[0] || null;
+    s.generation = (s.generation || 0) + 1;
+    s.manualGeneration = (s.manualGeneration || 0) + 1;
+    s.reason = 'manual';
+    if (s.lastFailover?.from === alias || s.lastFailover?.to === alias) delete s.lastFailover;
+  }, root);
+}
 export function setOrder(aliases, root = home()) {
   return update(s => {
     if (aliases.length !== Object.keys(s.providers).length ||

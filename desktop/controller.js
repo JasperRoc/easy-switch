@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { init, aliasName, addProvider, activate, readState, providerOrder, setOrder, setModel, baseURL, accountAuth, atomic } from '../src/store.js';
+import { init, aliasName, addProvider, removeProvider, activate, readState, providerOrder, setOrder, setModel, baseURL, accountAuth, atomic } from '../src/store.js';
 import { createReauth, expired } from '../src/auth.js';
 import { codexModels, discoverModels } from '../src/catalog.js';
 import { networkSettings, saveNetwork, networkEnvironment } from '../src/network.js';
@@ -12,6 +12,9 @@ export class DesktopController {
     protectDirectory(root);
     this.login = null; this.catalog = null;
     this.reauth = createReauth();
+    const prompt = this.reauth.prompt;
+    this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
+      ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
     this.runtime = new DesktopRuntime({ root, codexHome, port, reauth: this.reauth, guardExec });
     this.preferencesFile = path.join(root, 'desktop.json');
   }
@@ -46,6 +49,20 @@ export class DesktopController {
   }
   switchProvider(alias) { activate(aliasName(alias), this.root); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.root); return this.snapshot(); }
+  remove(alias) {
+    const provider = readState(this.root).providers[alias];
+    if (!provider) throw new Error('Unknown provider.');
+    removeProvider(alias, this.root); this.catalog = null;
+    if (provider.type === 'account') {
+      this.reauth.cancel(provider);
+      if (this.login?.alias === alias) this.login = null;
+      const owned = path.join(this.root, 'accounts', alias);
+      if (path.resolve(provider.accountHome) === owned && fs.existsSync(owned) && !fs.lstatSync(owned).isSymbolicLink() &&
+          fs.realpathSync(path.dirname(owned)) === path.join(fs.realpathSync(this.root), 'accounts') &&
+          !Object.values(readState(this.root).providers).some(item => item.accountHome === provider.accountHome)) fs.rmSync(owned, { recursive: true, force: true });
+    }
+    return this.snapshot();
+  }
   addAPI({ alias, url = '', key }) {
     aliasName(alias);
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) throw new Error('Enter a valid API key.');

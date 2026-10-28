@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DesktopController } from '../desktop/controller.js';
-import { readState } from '../src/store.js';
+import { readState, addProvider, atomic } from '../src/store.js';
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-controller-'));
@@ -42,4 +42,19 @@ test('desktop appearance preferences persist and invalid choices never replace t
   assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
   for (const patch of [{language:'unknown'}, {theme:'unknown'}, {extra:'unrequested'}, {startAtLogin:'yes'}]) assert.throws(()=>controller.setPreferences(patch), /Invalid/);
   assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
+});
+test('deleting providers removes their secret and selects the next alias', t => {
+ const controller=setup(t);
+ controller.addAPI({alias:'first',key:'fixture-first'});controller.addAPI({alias:'second',key:'fixture-second'});
+ controller.remove('first');assert.equal(controller.snapshot().active,'second');assert.equal(fs.readFileSync(path.join(controller.root,'state.json'),'utf8').includes('fixture-first'),false);
+ controller.remove('second');assert.equal(controller.snapshot().active,null);assert.deepEqual(controller.snapshot().providers,[]);
+});
+
+test('account deletion removes owned credential copies while retaining external Codex credentials',t=>{
+ const controller=setup(t),owned=path.join(controller.root,'accounts','owned'),external=controller.codexHome;
+ atomic(path.join(owned,'auth.json'),{tokens:{access_token:'fixture',account_id:'fixture'}});
+ atomic(path.join(external,'auth.json'),{tokens:{access_token:'fixture',account_id:'fixture'}});
+ addProvider('owned',{type:'account',accountHome:owned},controller.root);addProvider('external',{type:'account',accountHome:external},controller.root);
+ controller.remove('owned');assert.equal(fs.existsSync(owned),false);
+ controller.remove('external');assert.equal(fs.existsSync(path.join(external,'auth.json')),true);
 });
