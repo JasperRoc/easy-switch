@@ -58,6 +58,8 @@ After installation, open a new Bash/Zsh terminal to enable **Tab completion**, s
 
 Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`.
 
+If your server needs an Internet proxy, set `HTTP_PROXY` / `HTTPS_PROXY` before installation or update. The tool saves these settings for the background service and future updates; loopback addresses always connect directly. See [outbound proxy configuration](docs/usage.md#outbound-network-proxy).
+
 See the [operations guide](docs/usage.md) for authentication, data storage, and failover rules.
 
 <a id="why-easy-switch"></a>

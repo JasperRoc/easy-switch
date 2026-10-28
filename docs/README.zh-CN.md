@@ -58,6 +58,8 @@ cd easy-switch
 
 后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。
 
+如果服务器需要外网代理，请在安装或更新前设置 `HTTP_PROXY` / `HTTPS_PROXY`。工具会保存代理设置，供后台服务和后续更新使用；本机地址始终直连。详见[外网代理配置](usage.md#outbound-network-proxy)。
+
 账号认证、数据存储和自动切换规则详见[运维指南](usage.md)。
 
 <a id="why-easy-switch"></a>

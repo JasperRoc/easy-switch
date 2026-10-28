@@ -7,3 +7,4 @@ coverage/
 .switch/
 auth.json
 state.json
+network.json

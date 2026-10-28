@@ -6,6 +6,7 @@ import path from 'node:path';
 import { init } from '../src/store.js';
 import { prepareConfig } from '../src/install.js';
 import { updateTool } from '../src/update.js';
+import { saveNetwork } from '../src/network.js';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-update-test-'));
@@ -44,4 +45,24 @@ test('configuration conflicts stop update before any command runs', t => {
   let called = false;
   assert.throws(() => updateTool(root, () => { called = true; }));
   assert.equal(called, false);
+});
+
+
+test('update forwards stored proxy settings to git, npm, and service setup', t => {
+  const { root } = fixture(t);
+  saveNetwork(root, { HTTPS_PROXY: 'http://127.0.0.1:20000' });
+  const names = ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'];
+  const old = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  try {
+    updateTool(root, (_binary, args, options) => {
+      assert.equal(options.env.HTTPS_PROXY, 'http://127.0.0.1:20000');
+      assert.equal(options.env.https_proxy, 'http://127.0.0.1:20000');
+      assert.ok(options.env.NO_PROXY.includes('127.0.0.1'));
+      if (args[0] === 'pack') return '[{"filename":"easy-switch-test.tgz"}]';
+      if (args[0] === 'root') return '/global/node_modules';
+    });
+  } finally {
+    for (const name of names) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; }
+  }
 });

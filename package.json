@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Switch Codex upstream accounts and APIs between requests through a local streaming proxy",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js"
+    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js"
   },
   "files": [
     "src",
@@ -22,7 +22,8 @@
   ],
   "private": true,
   "dependencies": {
-    "smol-toml": "^1.9.1"
+    "smol-toml": "^1.9.1",
+    "undici": "^7.30.1"
   },
   "license": "MIT"
 }

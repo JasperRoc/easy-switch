@@ -22,6 +22,30 @@ The service stores absolute Node, application, and Codex paths plus the installa
 
 Only Linux systemd installation is supported. Other platforms can run core tests, but do not have automatic service installation. Containers without systemd need an external process supervisor.
 
+## Outbound network proxy
+
+The local switching proxy and an outbound Internet proxy have separate roles:
+
+```text
+Codex → easy-switch (127.0.0.1:18345) → HTTP/HTTPS proxy → selected provider
+```
+
+If the server needs a proxy to reach ChatGPT or an API, export its address in the terminal before installing or updating:
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:20000
+export HTTPS_PROXY=http://127.0.0.1:20000
+switch update
+```
+
+For a first installation, run `./install.sh` instead of `switch update`. Replace the example port with your proxy's HTTP or mixed port. SOCKS-only URLs are not supported. Lowercase `http_proxy`, `https_proxy`, `all_proxy`, and `no_proxy` take precedence over their uppercase variants. `ALL_PROXY` is a fallback when the corresponding HTTP/HTTPS setting is absent.
+
+Setup saves the effective settings in `$SWITCH_HOME/network.json` with mode `0600`. The daemon reads this file on startup, so systemd does not need to inherit your terminal environment. Subsequent updates also pass the saved settings to Git, npm, and device-login processes. If there are no saved settings, the first update still needs a terminal with working proxy variables so the old updater can download this fix.
+
+`NO_PROXY` supports hostnames, domain suffixes, optional ports, and `*` to bypass all proxies. CIDR ranges are not supported by the outbound HTTP client; list the required hosts or domain suffixes instead. `localhost`, `127.0.0.1`, and `::1` always bypass the proxy. Proxy authentication remains separate from the upstream API/account credentials, and TLS certificate validation stays enabled. The proxy does not fall back to a direct connection if the configured Internet proxy fails.
+
+To change the proxy, export new values and run `switch update` or rerun `./install.sh`. To disable it, export empty values for both uppercase and lowercase HTTP/HTTPS/ALL proxy variables before setup. Service uninstall retains the saved network settings along with account data. Keep `network.json` private because proxy URLs may contain credentials.
+
 ## Remote editor configuration
 
 The Codex extension must actually run on the server under the same user and `CODEX_HOME` as the CLI. A Remote SSH window does not by itself prove that an extension runs remotely.
@@ -81,6 +105,7 @@ Use the same `SWITCH_HOME` when installing and switching. Each server user curre
 ~/.codex-switch/
 ├── installation.json       # Original Codex configuration and installation metadata
 ├── state.json              # Aliases, API keys, selection, local proxy token
+├── network.json            # Saved outbound proxy settings
 └── accounts/
     └── personal/
         └── auth.json       # Subscription credentials

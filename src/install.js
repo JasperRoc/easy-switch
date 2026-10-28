@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { parse } from 'smol-toml';
 import { init, atomic } from './store.js';
+import { saveNetwork } from './network.js';
 
 const providerName = 'easy_switch';
 const unitName = 'easy-switch.service';
@@ -98,6 +99,7 @@ export async function install(root, port) {
     if (command('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger', '--value']) !== 'yes') throw new Error('linger 未启用');
   } catch { throw new Error(`无法启用开机自启。请管理员运行 sudo loginctl enable-linger ${os.userInfo().username}，然后重新运行 ./install.sh`); }
   if (fs.existsSync(unitFile()) && !fs.readFileSync(unitFile(), 'utf8').includes(`Environment=${quote('SWITCH_HOME=' + root)}\n`)) throw new Error('服务已绑定其他 SWITCH_HOME，拒绝覆盖');
+  saveNetwork(root);
   writeText(unitFile(), unitText(root, port, process.execPath, fileURLToPath(new URL('./daemon.js', import.meta.url)), executable));
   command('systemctl', ['--user', 'daemon-reload']);
   command('systemctl', ['--user', 'enable', unitName]);

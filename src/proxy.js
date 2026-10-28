@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { readState, accountAuth, activateFallback } from './store.js';
 import { createReauth, expired } from './auth.js';
 import { alternate, recoverable, rejectionText } from './failover.js';
+import { createUpstreamFetch } from './network.js';
 
 function authorized(req, token) {
   const a = Buffer.from(req.headers.authorization || '');
@@ -27,7 +28,9 @@ async function body(req) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('请求必须是 JSON 对象');
   return data;
 }
-export function createProxy({ root, fetchImpl = fetch, reauth = createReauth(), now = () => performance.now() }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now() }) {
+  const outbound = fetchImpl ? null : createUpstreamFetch(root);
+  fetchImpl ??= outbound.fetch;
   const cooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
@@ -122,7 +125,10 @@ export function createProxy({ root, fetchImpl = fetch, reauth = createReauth(), 
       else error(res, e instanceof SyntaxError ? 400 : 502, e instanceof SyntaxError ? '无效 JSON' : '代理请求失败；检查配置、账号登录或上游连接');
     }
   });
-  server.on('close', () => reauth.close());
+  server.on('close', () => {
+    reauth.close();
+    outbound?.close().catch(() => {});
+  });
   server.on('upgrade', (_req, socket) => socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n'));
   return server;
 }
