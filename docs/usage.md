@@ -117,6 +117,7 @@ The proxy binds only to IPv4 loopback and requires a random local token. It reco
 
 ## Protocol support and limits
 
+- Accepts SSE responses with a missing `Content-Type` only after checking the initial body bytes for SSE fields. Explicit non-SSE content types and HTML/JSON bodies without the header are rejected. Buffered bytes are preserved and client cancellation still stops forwarding.
 - Supports HTTP SSE at `POST /v1/responses`; does not proxy WebSockets, convert Chat Completions, discover models, or implement remote compaction.
 - Replays ordinary messages and complete tool calls/results. Removes `reasoning` items, so hidden reasoning continuity and cache efficiency may differ from direct use.
 - Rejects `previous_response_id`, server-side conversations, item references, and encrypted compaction items. Long or previously compacted conversations may require a new thread with a readable summary.

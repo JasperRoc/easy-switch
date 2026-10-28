@@ -301,3 +301,65 @@ test('manual selection during a rejected request continues on the selected upstr
   assert.deepEqual(calls, ['a', 'c']);
   assert.equal(readState(root).reason, 'manual');
 });
+
+test('missing Content-Type accepts split SSE prefixes without losing response bytes', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  const chunks = ['\uFEFF', 'ev', 'ent: response.created\n', 'data: {"type":"response.created"}\n\n', 'data: {"type":"response.completed"}\n\n'];
+  const expected = chunks.join('');
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    const pending = [...chunks];
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (pending.length) controller.enqueue(new TextEncoder().encode(pending.shift()));
+        else controller.close();
+      },
+    }));
+  } }));
+  const response = await send(proxy, token);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), expected);
+});
+
+test('missing Content-Type still rejects HTML, JSON, empty and oversized preambles', async t => {
+  for (const body of ['<html><title>Login</title></html>', '{"error":{"message":"mock"}}', '', ' '.repeat(16384) + 'data: too late\n\n']) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+    let cancelled = false;
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) { if (body) controller.enqueue(new TextEncoder().encode(body)); else controller.close(); },
+      cancel() { cancelled = true; },
+    })) }));
+    const response = await send(proxy, token);
+    assert.equal(response.status, 502);
+    assert.match(await response.text(), /上游未返回 Responses SSE 流/);
+    if (body) assert.equal(cancelled, true);
+  }
+});
+
+test('Content-Type comparison is case insensitive but does not override explicit JSON', async t => {
+  for (const [type, status] of [['Text/Event-Stream; charset=utf-8', 200], ['application/json', 502], ['text/event-stream-invalid', 502]]) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response('data: {}\n\n', { headers: { 'content-type': type } }) }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, status);
+  }
+});
+
+test('disconnect cancels an upstream SSE body accepted without Content-Type', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  let cancelled;
+  const cancellation = new Promise(resolve => { cancelled = resolve; });
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('event: response.created\n\n')); },
+    cancel() { cancelled(); },
+  })) }));
+  const abort = new AbortController();
+  const response = await fetch(proxy + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: abort.signal });
+  await response.body.getReader().read();
+  abort.abort();
+  await cancellation;
+});

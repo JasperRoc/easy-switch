@@ -81,7 +81,7 @@ test('explicit HTTP proxy tunnels SSE, bypasses loopback, and separates proxy cr
   assert.equal(received[1].url, '/health');
 });
 
-test('saved proxy handles a subscription HTTPS request with TLS verification and no shell proxy variables', async t => {
+test('saved proxy handles subscription HTTPS SSE without Content-Type or shell proxy variables', async t => {
   const root = fixture(t);
   if (spawnSync('openssl', ['version']).error?.code === 'ENOENT') return t.skip('OpenSSL is required for this TLS integration test');
   const key = path.join(root, 'test.key'), cert = path.join(root, 'test.crt');
@@ -93,7 +93,7 @@ test('saved proxy handles a subscription HTTPS request with TLS verification and
   const upstream = await listen(t, https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     received = { url: req.url, headers: req.headers, body: JSON.parse(body) };
-    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: {"text":"subscription via TLS"}\n\n');
+    res.writeHead(200); res.end('data: {"text":"subscription via TLS"}\n\n');
   }));
   const authorities = [];
   const proxyServer = http.createServer();

@@ -28,6 +28,49 @@ async function body(req) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('请求必须是 JSON 对象');
   return data;
 }
+// Some subscription responses omit Content-Type despite sending valid SSE.
+async function sseBody(response) {
+  const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  if (type === 'text/event-stream') return response.body;
+  if (type || !response.body) {
+    await response.body?.cancel();
+    return null;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  const decoder = new TextDecoder();
+  let prefix = '';
+  let inspected = 0;
+  try {
+    while (inspected < 16384) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      const part = value.subarray(0, 16384 - inspected);
+      inspected += part.length;
+      prefix += decoder.decode(part, { stream: true });
+      const first = prefix.trimStart();
+      if (/^(?:data:|event:|id:|retry:|:)/.test(first)) {
+        return new ReadableStream({
+          start(controller) { for (const chunk of chunks) controller.enqueue(chunk); },
+          async pull(controller) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) controller.close(); else controller.enqueue(value);
+            } catch (error) { controller.error(error); }
+          },
+          cancel(reason) { return reader.cancel(reason); },
+        });
+      }
+      if (first && !['data:', 'event:', 'id:', 'retry:', ':'].some(field => field.startsWith(first))) break;
+    }
+    await reader.cancel();
+    return null;
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+}
 export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now() }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
@@ -109,14 +152,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           if (upstream.status === 401 && provider.type === 'account') return error(res, 401, await reauth.prompt(provider));
           return error(res, upstream.status, `上游 ${alias} 返回 HTTP ${upstream.status}`);
         }
-        if (!upstream.headers.get('content-type')?.includes('text/event-stream')) {
-          await upstream.body?.cancel();
-          return error(res, 502, '上游未返回 Responses SSE 流');
-        }
+        const stream = await sseBody(upstream);
+        if (!stream) return error(res, 502, '上游未返回 Responses SSE 流');
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-switch-alias': alias });
         res.flushHeaders();
         // Once accepted, including errors inside SSE, this response is never replayed.
-        await pipeline(Readable.fromWeb(upstream.body), res);
+        await pipeline(Readable.fromWeb(stream), res);
         return;
       }
     } catch (e) {
