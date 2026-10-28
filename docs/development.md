@@ -22,7 +22,7 @@ SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.
 
 This starts a real app-server with a temporary `CODEX_HOME`, reads the installed provider configuration, and completes turns in the same thread/process through local mock upstreams. It verifies manual switching, an HTTP 403 quota rejection followed by transparent fallback with identical conversation input, and model/effort switching within one active turn. The latter emits a real shell tool call, changes the selection while its response is streaming, and checks that Codex executes the tool and continues on the new model without a second user turn. The default test command skips this opt-in test.
 
-The installer targets Linux systemd. Run the checks above locally before submitting changes.
+The shell installer targets Linux systemd. The desktop build targets Windows and macOS. Run the checks above locally before submitting changes.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pull request guidelines.
 
@@ -43,8 +43,27 @@ Review staged files before committing. Do not include real authentication caches
 The project uses the [MIT License](LICENSE). English and Simplified Chinese READMEs, the license, contribution guide, disclaimer, and operations documentation are included in the package file list.
 
 
-## Desktop lifecycle requirements (planned)
+## Desktop development and packaging
 
-Windows/macOS GUI support is not implemented in this release. Its lifecycle must be application-scoped: installation alone does not enable routing, starting the application backs up and activates its connection settings, and exiting restores the user's configuration. Login startup is an explicit user choice. Closing a settings window may leave the application running in the tray; quitting the application ends routing.
+Use Node.js 22.12+ and run `npm ci`. Electron is a development dependency; Linux server installs use `--omit=dev` so they do not download the desktop toolchain.
 
-Restoration must preserve unrelated user edits and provide recovery after an abnormal exit. Existing Codex clients can cache their endpoint, so desktop acceptance tests must cover clients still pointing at the local proxy during shutdown; restoring a file alone is not evidence that those clients can continue. The existing Linux systemd lifecycle remains independent of this planned desktop behavior.
+```bash
+npm run desktop:start
+npm run desktop:build:mac
+npm run desktop:build:win
+```
+
+The preparation script downloads the matching pinned official Codex platform package through npm, extracts only the executable used for login/catalog discovery, and includes its Apache-2.0 license. Build output goes to ignored `dist/`; helper downloads go to ignored `.desktop-cache/`. macOS builds require macOS. Windows NSIS installers can be cross-built on macOS. Desktop packages include their runtime dependencies and require no npm setup on the user's computer. The CLI npm package excludes desktop build tools and bundled executables.
+
+`electron-builder.yml` currently produces unsigned packages, with macOS notarization disabled by the absence of publisher credentials. For a signed distribution, configure your own publisher certificates and notarization credentials and adjust signing settings; never commit those credentials.
+
+Run real Electron integration tests after preparing the native helper:
+
+```bash
+npm run desktop:prepare
+SWITCH_TEST_DESKTOP=1 node --test test/desktop.integration.test.js
+```
+
+On Windows PowerShell, set `$env:SWITCH_TEST_DESKTOP='1'` before the Node command. To test a packaged application, also set `SWITCH_TEST_DESKTOP_EXE` to its executable path. Tests isolate configuration/credentials with temporary `SWITCH_HOME` and `CODEX_HOME`, do not change login items, and do not make paid model requests. They verify the bundled native model catalog, API setup, model/effort selection, tray lifetime, restoration on exit and independent recovery after a forced main-process crash. Test screenshots are written to ignored `.desktop-test/`.
+
+`desktop/main.cjs` owns Electron's tray/window and a narrow IPC interface; `preload.cjs` exposes only approved actions. `controller.js` connects those actions to the shared provider/model/auth core. `runtime.js` manages proxy lifetime and the independent recovery helper, while `config.js` records and restores configuration without discarding unrelated edits. The static renderer has no Node.js access. See [desktop.md](desktop.md) for runtime limits and recovery instructions.

@@ -28,10 +28,11 @@ export function createReauth({ spawnImpl = spawn, timeoutMs = 300000, promptWait
     fs.chmodSync(temp, 0o700);
     const session = { message: 'Starting account authentication. Retry this request shortly to display the sign-in link.' };
     sessions.set(key, session);
-    let ready;
+    let ready, complete;
+    session.completed = new Promise(resolve => { complete = resolve; });
     session.ready = new Promise(resolve => { ready = resolve; });
     const child = spawnImpl(process.env.SWITCH_CODEX_BIN || 'codex', ['-c', 'cli_auth_credentials_store="file"', 'login', '--device-auth'], {
-      env: { ...process.env, CODEX_HOME: temp }, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CODEX_HOME: temp }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     session.child = child;
     let output = '';
@@ -57,16 +58,19 @@ export function createReauth({ spawnImpl = spawn, timeoutMs = 300000, promptWait
       if (finished) return;
       finished = true;
       clearTimeout(promptTimer); clearTimeout(deadline);
+      let accepted = false;
       if (success) {
         try {
           const auth = accountAuth({ accountHome: temp });
           if ((expected && auth.tokens.account_id !== expected) || (expectedSubject && subject(auth) !== expectedSubject)) throw new Error('Different account');
           atomic(path.join(key, 'auth.json'), auth);
           sessions.delete(key);
+          accepted = true;
           session.message = 'Authentication complete. Retry your request.';
         } catch { session.message = 'Authentication did not restore the same account. Original credentials were preserved. Retry to sign in again.'; }
       } else session.message = message;
       ready();
+      complete({ success: accepted, message: session.message });
       fs.rmSync(temp, { recursive: true, force: true });
       if (sessions.has(key)) {
         session.cleanup = setTimeout(() => sessions.delete(key), 10000);
@@ -79,6 +83,7 @@ export function createReauth({ spawnImpl = spawn, timeoutMs = 300000, promptWait
     return session;
   }
   return {
+    start(provider) { const session = begin(provider); return { ready: session.ready.then(() => session.message), completed: session.completed }; },
     async prompt(provider) { const session = begin(provider); await session.ready; return session.message; },
     close() { for (const session of sessions.values()) session.stop(); sessions.clear(); },
   };

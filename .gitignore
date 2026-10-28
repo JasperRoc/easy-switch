@@ -8,3 +8,7 @@ coverage/
 auth.json
 state.json
 network.json
+
+.desktop-cache/
+dist/
+.desktop-test/

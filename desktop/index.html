@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <title>easy-switch</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><img src="assets/icon.png" alt="" width="42" height="42"><div><h1>easy-switch</h1><p>Keep the conversation going.</p></div><span id="status" class="badge">Starting…</span></header>
+  <main>
+    <div id="error" class="notice error" hidden></div>
+    <section class="summary"><div><span class="eyebrow">CURRENT PROVIDER</span><strong id="current-provider">—</strong></div><div><span class="eyebrow">MODEL & EFFORT</span><strong id="current-model">Follow Codex</strong></div><button id="routing-toggle" class="secondary">Stop routing</button></section>
+    <nav><button data-tab="providers" class="selected">Providers</button><button data-tab="model">Model & effort</button><button data-tab="network">Network</button></nav>
+    <section id="providers" class="panel">
+      <div class="section-heading"><div><h2>Your providers</h2><p>Top to bottom: automatic fallback priority.</p></div><button id="add-provider">+ Add provider</button></div>
+      <div id="provider-list"></div>
+      <p id="empty" class="empty" hidden>Add a ChatGPT account or API to get started.</p>
+      <div id="failover" class="notice" hidden></div>
+      <div id="login-status" class="notice" hidden><strong id="login-alias"></strong><p id="login-message"></p><div class="login-code"><code id="login-code"></code><button id="open-login">Open official sign-in</button></div></div>
+    </section>
+    <section id="model" class="panel" hidden>
+      <div class="section-heading"><div><h2>Choose how Codex thinks</h2><p>Applies to the next model request, including tool continuations.</p></div><button id="refresh-models" class="secondary">Refresh catalog</button></div>
+      <p id="model-notice" class="notice">Load the catalog to choose a model.</p>
+      <form id="model-form"><label>Model<select id="model-select"><option value="">Follow Codex</option></select></label><label>Reasoning effort<select id="effort-select"><option value="">Provider default</option></select></label><div class="actions"><button type="submit">Apply selection</button><button type="button" id="reset-model" class="secondary">Follow Codex</button></div></form>
+      <p class="help">Applies to all sessions using this service. Codex's own model indicator and capability settings are not changed. Actual model access depends on the provider.</p>
+    </section>
+    <section id="network" class="panel" hidden>
+      <h2>Internet access</h2><p class="help">Optional HTTP/HTTPS proxy for reaching your providers. Local connections always bypass it.</p>
+      <form id="network-form"><label>Proxy URL<input id="proxy-url" type="password" autocomplete="off" placeholder="http://127.0.0.1:7890"></label><label>Bypass hosts<input id="no-proxy" placeholder="localhost,127.0.0.1,::1"></label><button type="submit">Save & restart routing</button></form>
+      <p class="help">Use an HTTP or mixed proxy port. Saving restarts routing and interrupts active requests. SOCKS-only URLs are not supported.</p>
+    </section>
+    <div class="footnote">Routing is enabled while easy-switch runs. Quit from the tray to restore your original configuration. Existing Codex clients may need a restart or reload when routing starts or stops.</div>
+  </main>
+  <footer><label class="checkbox"><input type="checkbox" id="autostart"> Start at login</label><button id="updates" class="link">Downloads & updates</button><span id="version"></span><button id="quit" class="link">Quit</button></footer>
+  <dialog id="add-dialog"><form id="provider-form"><div class="section-heading"><h2>Add a provider</h2><button type="button" id="close-dialog" class="icon-button" aria-label="Close">×</button></div><label>Alias<input id="provider-alias" required maxlength="64" placeholder="personal or work"></label><label>Type<select id="provider-type"><option value="account">ChatGPT subscription</option><option value="api">Official / third-party API</option></select></label><div id="api-fields" hidden><label>Base URL<input id="base-url" placeholder="Blank = official OpenAI API"></label><label>API key<input id="api-key" type="password" autocomplete="off"></label></div><div id="account-help" class="help">Use official device sign-in, or import an existing file-based Codex sign-in. Your credentials stay on this computer.</div><p id="dialog-error" class="error" hidden></p><div class="actions"><button type="submit" id="save-provider">Sign in with ChatGPT</button><button type="button" id="import-login" class="secondary">Import Codex sign-in</button></div></form></dialog>
+  <script src="renderer.js"></script>
+</body>
+</html>

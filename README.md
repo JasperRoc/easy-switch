@@ -3,13 +3,13 @@
 # easy-switch: A better AI conversation experience
 
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-417E38?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%2B%20systemd-2563EB?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-2563EB?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](docs/LICENSE)
 
-easy-switch is a command-line account and API routing tool for Codex, bringing **ChatGPT subscription accounts, the official OpenAI API, and third-party compatible APIs** into one workflow. It switches providers at model request boundaries while preserving the client process and conversation. Eligible quota or authentication rejections trigger retries through alternatives in the configured priority order.
+easy-switch is a desktop and command-line account and API routing tool for Codex, bringing **ChatGPT subscription accounts, the official OpenAI API, and third-party compatible APIs** into one workflow. It switches providers at model request boundaries while preserving the client process and conversation. Eligible quota or authentication rejections trigger retries through alternatives in the configured priority order.
 
-🔄 **In-session switching** · 🎛️ **Interactive priority management** · ⚙️ **Background operation and automatic failover**
+🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🧠 **Model and effort selection** · ⚙️ **Automatic failover**
 
 [Quick start](#quick-start) · [Why easy-switch?](#why-easy-switch) · [FAQ](#faq) · [Disclaimer](#disclaimer) · [Contributing](#contributing) · [License](#license)
 
@@ -17,16 +17,36 @@ easy-switch is a command-line account and API routing tool for Codex, bringing *
 
 ## 🚀 Quick start
 
+### 🖥️ Windows and macOS
+
+Download the matching installer from [GitHub Releases](https://github.com/JasperRoc/easy-switch/releases):
+
+| System | Installer |
+| --- | --- |
+| Windows 10/11 x64 | `easy-switch-<version>-win-x64.exe` |
+| macOS 13+ · Apple silicon | `easy-switch-<version>-mac-arm64.dmg` |
+| macOS 13+ · Intel | `easy-switch-<version>-mac-x64.dmg` |
+
+1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
+2. Select **Add provider** to sign in with ChatGPT or enter an API endpoint and key. An empty Base URL uses the official OpenAI API.
+3. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window for priority, model and effort.
+
+Installing alone leaves Codex configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Your Codex conversation client is installed separately.
+
+Current packages are unsigned and macOS packages are not notarized. Your OS may require an explicit first-launch approval. The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
+
+### 🐧 Linux server CLI
+
 Requires **Linux with systemd/logind, Node.js 22+, npm, Git, and Codex CLI**. Install as the server user that runs Codex or the remote extension.
 
-### 1. 📦 Clone the project
+#### 1. 📦 Clone the project
 
 ```bash
 git clone https://github.com/JasperRoc/easy-switch.git
 cd easy-switch
 ```
 
-### 2. ⚙️ Install the tool
+#### 2. ⚙️ Install the tool
 
 ```bash
 ./install.sh
@@ -34,7 +54,7 @@ cd easy-switch
 
 The installer registers `switch`, starts the systemd background service, enables boot startup, and backs up and updates Codex configuration. If boot startup requires administrator assistance, follow the installer's instructions. Restart Codex or reload the remote editor window once after installation; subsequent provider switches do not require a restart.
 
-### 3. ⌨️ Use the commands
+#### 3. ⌨️ Use the commands
 
 | Command | Purpose |
 | --- | --- |
@@ -71,7 +91,7 @@ See the [operations guide](docs/usage.md) for authentication, data storage, and 
 
 ## 🔎 Why easy-switch?
 
-easy-switch targets personal Codex workflows on Linux servers, focusing on conversation continuity when switching accounts and APIs. Its design emphasizes **operation over SSH, fewer deployment dependencies, and explicit control over failover priority**.
+easy-switch targets personal Codex workflows on desktops and Linux servers, focusing on conversation continuity when switching accounts and APIs. Its design emphasizes **a small configuration surface, optional desktop integration, operation over SSH, and explicit control over failover priority**.
 
 | Project | Focus | Where easy-switch fits |
 | --- | --- | --- |
@@ -79,7 +99,7 @@ easy-switch targets personal Codex workflows on Linux servers, focusing on conve
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | Subscription gateway with account management and sharing; its documented stack includes PostgreSQL and Redis | Run a personal switching service with local files and Node.js, without deploying a database, cache, or web administration panel. |
 | [New API](https://github.com/QuantumNous/new-api) | Unified model aggregation, distribution, and protocol conversion | Connect existing Responses-compatible providers directly to a Codex workflow, without configuring a broader distribution platform. |
 
-easy-switch brings account configuration, routing selection, and fallback ordering into one command-line interface, reducing configuration and maintenance steps for individual users. Its distinction lies primarily in deployment and interaction design; request-level hot switching is not unique to this project.
+easy-switch brings account configuration, routing selection, model selection, and fallback ordering into a tray application or command-line interface, reducing configuration and maintenance steps for individual users. Its distinction lies primarily in deployment and interaction design; request-level hot switching is not unique to this project.
 
 <a id="faq"></a>
 
@@ -91,7 +111,7 @@ The official OpenAI API and Responses-compatible third-party APIs can already be
 
 ### Will macOS and Windows be supported?
 
-The supported installation target is currently Linux with systemd. Windows/macOS desktop support is not implemented yet. Its planned lifecycle is to enable routing only while the application runs, restore the original configuration on exit, and let users opt into login startup. Cross-platform core tests do not mean desktop installation is already supported.
+Windows x64 and macOS Apple silicon/Intel desktop installers are available alongside the Linux systemd CLI. Desktop routing follows the application lifetime; Linux routing follows its systemd service. Apple silicon macOS has packaged-app tests; Windows and Intel macOS need native runtime validation. See the [desktop guide](docs/desktop.md).
 
 ### Does switching interrupt the current task?
 

@@ -18,6 +18,8 @@ The default tests use temporary directories and mock upstreams. They must not re
 SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.js
 ```
 
+For desktop development, packaging and Electron integration checks, see [docs/development.md](docs/development.md#desktop-development-and-packaging). GUI tests must isolate configuration and must not change the developer’s login items.
+
 Do not run `./install.sh` just to run tests: it changes the user's Codex configuration and installs a background service on Linux.
 
 ## Reporting an issue

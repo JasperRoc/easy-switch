@@ -1,7 +1,7 @@
 {
   "name": "easy-switch",
-  "version": "0.2.0",
-  "description": "Switch Codex upstream accounts and APIs between requests through a local streaming proxy",
+  "version": "0.3.0",
+  "description": "Switch Codex accounts, APIs, models and reasoning effort with a desktop tray app or Linux CLI",
   "type": "module",
   "bin": {
     "switch": "src/cli.js"
@@ -11,7 +11,11 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js && node --check src/catalog.js && node --check src/model.js && node --check src/select.js"
+    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js && node --check src/catalog.js && node --check src/model.js && node --check src/select.js && node --check desktop/main.cjs && node --check desktop/runtime.js && node --check desktop/controller.js && node --check desktop/config.js && node --check desktop/renderer.js",
+    "desktop:prepare": "node scripts/prepare-desktop.cjs",
+    "desktop:start": "npm run desktop:prepare && electron .",
+    "desktop:build:mac": "npm run desktop:prepare -- darwin-arm64 darwin-x64 && electron-builder --mac --arm64 --x64",
+    "desktop:build:win": "npm run desktop:prepare -- win32-x64 && electron-builder --win --x64"
   },
   "files": [
     "src",
@@ -25,5 +29,12 @@
     "smol-toml": "^1.9.1",
     "undici": "^7.30.1"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "playwright-core": "^1.64.1"
+  },
+  "main": "desktop/main.cjs",
+  "author": "easy-switch contributors"
 }

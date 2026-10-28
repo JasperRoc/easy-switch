@@ -22,7 +22,7 @@ export function updateTool(root, execute = run) {
   try {
     console.log('正在更新至官方仓库 main 分支；完成后将重启代理，进行中的请求会中断。');
     execute('git', ['clone', '--depth', '1', '--branch', 'main', 'https://github.com/JasperRoc/easy-switch.git', checkout], { env });
-    execute('npm', ['ci', '--ignore-scripts'], { cwd: checkout, env });
+    execute('npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: checkout, env });
     const packed = JSON.parse(execute('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: checkout, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     const archive = path.join(temp, path.basename(packed[0].filename));
     // Install a tarball, not a link into the temporary checkout.

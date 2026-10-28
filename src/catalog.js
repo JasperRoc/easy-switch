@@ -13,7 +13,7 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
   try {
     fs.writeFileSync(path.join(temp, 'config.toml'), 'cli_auth_credentials_store="file"\nmodel_provider="catalog"\n[model_providers.catalog]\nname="Model catalog"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n', { mode: 0o600 });
     const result = await new Promise((resolve, reject) => {
-      child = spawnImpl(binary, ['app-server'], { env: { ...process.env, CODEX_HOME: temp }, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawnImpl(binary, ['app-server'], { env: { ...process.env, CODEX_HOME: temp }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       exit = new Promise(done => child.once('close', done));
       child.stderr.resume();
       child.on('error', () => reject(new Error('无法读取模型目录，请检查 Codex CLI 或 SWITCH_CODEX_BIN')));

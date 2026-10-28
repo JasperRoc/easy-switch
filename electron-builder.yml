@@ -1,0 +1,43 @@
+appId: io.github.jasperroc.easy-switch
+productName: easy-switch
+artifactName: easy-switch-${version}-${os}-${arch}.${ext}
+directories:
+  output: dist
+  buildResources: desktop/assets
+files:
+  - desktop/**/*
+  - src/**/*
+  - docs/LICENSE
+  - docs/CODEX-LICENSE
+  - docs/THIRD-PARTY-NOTICES.md
+  - package.json
+asar: true
+npmRebuild: false
+mac:
+  category: public.app-category.developer-tools
+  icon: desktop/assets/icon.png
+  identity: null
+  target:
+    - dmg
+    - zip
+  extraResources:
+    - from: .desktop-cache/codex-darwin-${arch}
+      to: codex
+  extendInfo:
+    LSUIElement: true
+win:
+  icon: desktop/assets/icon.png
+  signExecutable: false
+  target:
+    - nsis
+  extraResources:
+    - from: .desktop-cache/codex-win32-${arch}
+      to: codex
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+publish: null

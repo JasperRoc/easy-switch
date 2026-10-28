@@ -2,6 +2,8 @@
 
 [English README](../README.md) · [简体中文 README](README.zh-CN.md)
 
+For Windows/macOS installers and application-scoped routing, see the [desktop guide](desktop.md). This guide covers the Linux CLI and shared routing behavior.
+
 ## Installation and updates
 
 Run `./install.sh` from the repository as the server user that runs Codex. The script installs dependencies, globally installs `switch`, and invokes the internal service setup. Do not run the script with sudo; configure a writable user-level npm prefix if needed.
@@ -20,7 +22,7 @@ Proxy connection settings are checked before replacing the installed package. Ch
 
 The service stores absolute Node, application, and Codex paths plus the installation PATH. Keep those runtimes installed. Packages are installed from archives, so the service does not depend on the source checkout. Setup leaves existing Codex configuration text untouched when the proxy connection settings still match the installation record. Uninstall retains its stricter restoration check to avoid losing user edits.
 
-Only Linux systemd installation is supported. Other platforms can run core tests, but do not have automatic service installation. Containers without systemd need an external process supervisor.
+The shell installer manages Linux systemd services. Windows and macOS use the [desktop application](desktop.md). Containers without systemd need an external process supervisor.
 
 ## Outbound network proxy
 

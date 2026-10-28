@@ -3,13 +3,13 @@
 # easy-switch：更好的 AI 会话体验
 
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-417E38?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%2B%20systemd-2563EB?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-2563EB?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-easy-switch 是面向 Codex 的命令行账号与 API 路由工具，统一管理 **ChatGPT 订阅账号、OpenAI 官方 API 与第三方兼容 API**。它在模型请求边界切换上游，保持客户端进程与会话连续；当上游返回符合条件的额度或认证错误时，按预设优先级尝试备用服务。
+easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，统一管理 **ChatGPT 订阅账号、OpenAI 官方 API 与第三方兼容 API**。它在模型请求边界切换上游，保持客户端进程与会话连续；当上游返回符合条件的额度或认证错误时，按预设优先级尝试备用服务。
 
-🔄 **会话内切换** · 🎛️ **交互式优先级管理** · ⚙️ **后台常驻与自动故障切换**
+🔄 **会话内切换** · 🖥️ **托盘与菜单栏操作** · 🧠 **模型及 effort 选择** · ⚙️ **自动故障切换**
 
 [快速开始](#quick-start) · [与现有工作的区别](#why-easy-switch) · [FAQ](#faq) · [免责声明](#disclaimer) · [参与贡献](#contributing) · [许可证](#license)
 
@@ -17,16 +17,36 @@ easy-switch 是面向 Codex 的命令行账号与 API 路由工具，统一管�
 
 ## 🚀 快速开始
 
+### 🖥️ Windows 与 macOS
+
+从 [GitHub Releases](https://github.com/JasperRoc/easy-switch/releases) 下载对应安装包：
+
+| 系统 | 安装包 |
+| --- | --- |
+| Windows 10/11 x64 | `easy-switch-<版本>-win-x64.exe` |
+| macOS 13+ · Apple 芯片 | `easy-switch-<版本>-mac-arm64.dmg` |
+| macOS 13+ · Intel | `easy-switch-<版本>-mac-x64.dmg` |
+
+1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
+2. 点击 **Add provider**，通过 ChatGPT 官方认证添加订阅账号，或填写 API 地址和密钥。Base URL 留空使用 OpenAI 官方 API。
+3. 首次启动后，重启 Codex 或重载编辑器窗口，使其读取本地路由。右键 Windows 托盘或 macOS 菜单栏图标即可切换服务商；在设置窗口调整优先级、模型与 effort。
+
+仅安装不会修改 Codex 配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 才会恢复原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的 Codex 客户端可能需要重启或重载；用于会话的 Codex 客户端需另外安装。
+
+当前安装包尚未签名，macOS 版本也尚未公证，首次打开可能需要在系统中明确允许。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
+
+### 🐧 Linux 服务器命令行
+
 需要 **Linux + systemd/logind、Node.js 22+、npm、Git 和 Codex CLI**。请使用运行 Codex 或远程扩展的服务器账号安装。
 
-### 1. 📦 克隆项目
+#### 1. 📦 克隆项目
 
 ```bash
 git clone https://github.com/JasperRoc/easy-switch.git
 cd easy-switch
 ```
 
-### 2. ⚙️ 安装工具
+#### 2. ⚙️ 安装工具
 
 ```bash
 ./install.sh
@@ -34,7 +54,7 @@ cd easy-switch
 
 安装器注册 `switch` 命令、启动 systemd 后台服务、启用开机启动，并备份和更新 Codex 配置。如果开机启动需要管理员协助，按安装器提示处理即可。首次安装后，重启 Codex 或重载远程编辑器窗口；之后切换上游无需重启。
 
-### 3. ⌨️ 命令介绍
+#### 3. ⌨️ 命令介绍
 
 | 命令 | 作用 |
 | --- | --- |
@@ -71,7 +91,7 @@ cd easy-switch
 
 ## 🔎 与现有工作的区别
 
-easy-switch 面向 Linux 服务器上的个人 Codex 工作流，重点解决账号与 API 切换时的会话连续性问题。其设计侧重于 **SSH 环境下的可操作性、较少的部署依赖，以及明确可控的故障切换顺序**。
+easy-switch 面向桌面及 Linux 服务器上的个人 Codex 工作流，重点解决账号与 API 切换时的会话连续性问题。其设计侧重于 **精简配置、可选桌面集成、SSH 环境下的可操作性，以及明确可控的故障切换顺序**。
 
 | 项目 | 主要定位 | easy-switch 的适用优势 |
 | --- | --- | --- |
@@ -79,7 +99,7 @@ easy-switch 面向 Linux 服务器上的个人 Codex 工作流，重点解决账
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | 提供账号管理与共享的订阅中转服务，文档中的技术栈包含 PostgreSQL 和 Redis | 使用 Node.js 和本地文件完成个人切换，无需部署数据库、缓存或 Web 管理面板。 |
 | [New API](https://github.com/QuantumNous/new-api) | 统一模型聚合、分发与协议转换平台 | 将已有的 Responses 兼容服务直接接入 Codex 工作流，减少个人用户配置完整分发平台的步骤。 |
 
-easy-switch 将账号配置、路由选择与备用排序集中在同一命令行接口中，降低个人用户的配置与运维步骤。其差异主要体现在部署方式与交互设计；请求级热切换本身并非本项目独有的机制。
+easy-switch 将账号配置、路由选择、模型设置与备用排序集中在托盘应用或命令行接口中，降低个人用户的配置与运维步骤。其差异主要体现在部署方式与交互设计；请求级热切换本身并非本项目独有的机制。
 
 <a id="faq"></a>
 
@@ -91,7 +111,7 @@ easy-switch 将账号配置、路由选择与备用排序集中在同一命令�
 
 ### 是否考虑适配其他系统？
 
-当前正式支持的安装目标是采用 systemd 的 Linux。Windows/macOS 桌面版尚未实现；后续设计为仅在软件运行期间接管路由，退出时恢复原配置，并由用户选择是否开机自启动。核心测试可以跨平台运行，不代表这些平台已经支持完整安装。
+现已提供 Windows x64、macOS Apple 芯片及 Intel 的桌面安装包，同时保留 Linux systemd 命令行安装方式。桌面版仅在应用运行期间接管路由，Linux 版由 systemd 服务管理。Apple 芯片 macOS 已完成打包程序测试，Windows 和 Intel macOS 仍需原生运行验证。详见[桌面版指南](desktop.md)。
 
 ### 切换后，当前任务会中断吗？
 
