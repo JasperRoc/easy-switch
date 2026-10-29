@@ -58,3 +58,42 @@ test('account deletion removes owned credential copies while retaining external 
  controller.remove('owned');assert.equal(fs.existsSync(owned),false);
  controller.remove('external');assert.equal(fs.existsSync(path.join(external,'auth.json')),true);
 });
+
+test('device codes are cleared on completion, including completion before ready resolves', async t => {
+  for (const early of [false, true]) {
+    const controller = setup(t);
+    let ready, complete;
+    controller.reauth = { start: () => ({ ready: new Promise(resolve => { ready = resolve; }), completed: new Promise(resolve => { complete = resolve; }) }) };
+    const pending = controller.startLogin('subscription');
+    const message = 'Open https://auth.openai.com/codex/device code TEST-1234';
+    if (early) complete({ success: true, message: 'Authentication complete. Retry your request.' });
+    ready(message); await pending;
+    if (!early) {
+      assert.equal(controller.snapshot().login.code, 'TEST-1234');
+      complete({ success: true, message: 'Authentication complete. Retry your request.' }); await Promise.resolve();
+    }
+    const login = controller.snapshot().login;
+    assert.equal(login.phase, 'complete'); assert.equal(login.code, undefined); assert.equal(login.url, undefined);
+    assert.equal(JSON.stringify(login).includes('TEST-1234'), false);
+  }
+});
+test('failed authentication clears the verification code and permits retry', async t => {
+  const controller = setup(t); let complete;
+  controller.reauth = { start: () => ({ ready: Promise.resolve('https://auth.openai.com/codex/device TEST-1234'), completed: new Promise(resolve => { complete = resolve; }) }) };
+  await controller.startLogin('subscription'); complete({ success: false, message: 'Authentication cancelled.' }); await Promise.resolve();
+  assert.equal(controller.snapshot().login.phase, 'failed'); assert.equal(controller.snapshot().login.code, undefined);
+  await controller.startLogin('subscription'); assert.equal(controller.snapshot().login.phase, 'pending');
+});
+test('desktop network reports the actual routing port separately and applies detected settings', async t => {
+  const controller = setup(t);
+  controller.originalEnv = {};
+  controller.detectProxy = async () => ({ httpsProxy: 'http://127.0.0.1:7890', source: 'macOS' });
+  const before = { ...process.env };
+  t.after(() => { for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key]; Object.assign(process.env, before); });
+  await controller.configureNetwork(); controller.runtime.port = 23456;
+  assert.equal(controller.network().httpsProxy, 'http://127.0.0.1:7890');
+  assert.equal(process.env.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(controller.network().localProxy.url, 'http://127.0.0.1:23456/v1');
+  await controller.saveNetwork({ proxy: '' });
+  assert.equal(controller.network().httpsProxy, ''); assert.equal(process.env.HTTPS_PROXY, '');
+});

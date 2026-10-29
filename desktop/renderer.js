@@ -2,6 +2,7 @@ import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 const $ = id => document.getElementById(id);
 let state, catalog = [], catalogAlias = null, activeTab = 'providers', renderedProviders = '', refreshing = null, modelDirty = false;
 let language = 'en', appliedLanguage, catalogNotice = 'loadCatalog', rawNotice = false, providerMode = 'account', dragging = null, renderedUpdate = '';
+let networkState = null;
 const t = (key, values) => translate(language, key, values);
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -75,12 +76,7 @@ function refresh() {
     renderProviders();
     $('failover').hidden = !state.lastFailover;
     if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
-    $('login-status').hidden = !state.login;
-    if (state.login) {
-      $('login-alias').textContent = `${state.login.alias} · ${t('phase' + state.login.phase[0].toUpperCase() + state.login.phase.slice(1))}`;
-      $('login-message').textContent = localizeMessage(state.login.message, language); $('login-code').textContent = state.login.code || '';
-      $('open-login').hidden = !state.login.url || ['complete', 'failed'].includes(state.login.phase);
-    }
+    renderLogin(); renderNetwork();
     if (catalogAlias && catalogAlias !== state.active && activeTab === 'model') notice('catalogChanged');
     else notice(catalogNotice, rawNotice);
     if (catalogAlias === state.active && !modelDirty) {
@@ -94,7 +90,7 @@ function efforts() {
   const entry = catalog.find(model => model.id === $('model-select').value);
   $('effort-select').replaceChildren(new Option(t('providerDefault'), ''));
   for (const effort of entry?.efforts || []) $('effort-select').add(new Option(effort, effort));
-  $('effort-select').disabled = !entry;
+  $('effort-select').disabled = !entry?.efforts.length;
   $('effort-select').value = state.model && state.model.model === entry?.id ? state.model.effort || '' : entry?.defaultEffort || '';
 }
 async function loadModels() {
@@ -103,7 +99,7 @@ async function loadModels() {
     const alias = state.active;
     const result = await call('models'); catalog = result.models; catalogAlias = alias;
     $('model-select').replaceChildren(new Option(t('followCodex'), ''));
-    for (const model of catalog) $('model-select').add(new Option(`${model.label} (${model.id})`, model.id));
+    for (const model of catalog) $('model-select').add(new Option(model.label === model.id ? model.id : `${model.label} (${model.id})`, model.id));
     $('model-select').value = state.model?.model || ''; efforts(); notice(result.notice || '', true); modelDirty = false;
   } catch (error) { showError(error); notice('catalogFailed'); }
   finally { $('refresh-models').disabled = false; }
@@ -116,16 +112,51 @@ async function changeTab(tab) {
   for (const id of ['providers', 'model', 'network']) $(id).hidden = id !== tab;
   if (tab === 'model' && (!catalogAlias || catalogAlias !== state.active)) await loadModels();
   if (tab === 'network') {
-    try { const network = await call('network'); $('proxy-url').value = network.httpsProxy || network.httpProxy || ''; $('no-proxy').value = network.noProxy; }
+    try {
+      networkState = await call('network');
+      $('proxy-url').value = networkState.httpsProxy || networkState.httpProxy || '';
+      $('no-proxy').value = networkState.noProxy;
+      renderNetwork();
+    }
     catch (error) { showError(error); }
   }
 }
 async function startLogin(alias) {
+  if (!$('add-dialog').open) openProvider('account', alias);
   const result = await run('login', alias);
   if (result?.login?.url) await call('open-login');
+  return result;
+}
+function renderNetwork() {
+  if (!networkState) return;
+  $('local-proxy').textContent = networkState.localProxy.url;
+  $('local-proxy-status').textContent = t(state.running ? 'localProxyActive' : 'localProxyStopped');
+  $('detected-proxy').textContent = networkState.detected.url || t('noneDetected');
+  const source = networkState.detected.source === 'environment' ? t('proxyEnvironment') : networkState.detected.source;
+  $('detected-proxy-source').textContent = networkState.source === 'saved' ? t('proxySaved')
+    : networkState.detected.url ? t('proxyDetectedFrom', { source }) : t('proxyDetectedNone');
+  $('proxy-warning').hidden = !networkState.unsupported;
+}
+function dialogLogin() { return providerMode === 'account' && state.login?.alias === $('provider-alias').value.trim() ? state.login : null; }
+function renderLogin() {
+  const login = dialogLogin(), pending = login && ['starting', 'pending'].includes(login.phase);
+  $('login-status').hidden = !login;
+  $('provider-alias').disabled = !!pending;
+  $('save-provider').disabled = !!pending;
+  $('save-provider').textContent = t(login?.phase === 'complete' ? 'done' : providerMode === 'api' ? 'addAPI' : providerMode === 'import' ? 'importAction' : 'addSubscription');
+  $('login-code').textContent = pending ? login.code || '' : '';
+  $('open-login').hidden = !pending || !login.url;
+  if (!login) return;
+  $('login-alias').textContent = `${login.alias} · ${t('phase' + login.phase[0].toUpperCase() + login.phase.slice(1))}`;
+  $('login-message').textContent = pending && login.code ? t('loginInstructions') : localizeMessage(login.message, language);
 }
 for (const element of document.querySelectorAll('nav button')) element.addEventListener('click', () => changeTab(element.dataset.tab));
-function openProvider(mode) { providerMode = mode; $('dialog-error').hidden = true; $('provider-form').reset(); providerType(); $('add-dialog').showModal(); }
+function openProvider(mode, alias = '') {
+  providerMode = mode; $('dialog-error').hidden = true; $('provider-form').reset();
+  const pending = state.login && ['starting', 'pending'].includes(state.login.phase);
+  $('provider-alias').value = alias || (mode === 'account' && pending ? state.login.alias : '');
+  providerType(); renderLogin(); $('add-dialog').showModal();
+}
 $('add-subscription').addEventListener('click',()=>openProvider('account'));
 $('add-api').addEventListener('click',()=>openProvider('api'));
 $('import-existing').addEventListener('click',()=>openProvider('import'));
@@ -139,14 +170,16 @@ function providerType() {
 $('provider-form').addEventListener('submit', async event => {
   event.preventDefault(); $('save-provider').disabled = true; $('dialog-error').hidden = true;
   try {
+    if (dialogLogin()?.phase === 'complete') { $('add-dialog').close(); return; }
     const alias = $('provider-alias').value.trim();
-    if (providerMode === 'api') await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value });
-    else if (providerMode === 'import') await call('import-login',alias);
-    else await startLogin(alias);
-    $('api-key').value = ''; $('add-dialog').close(); await refresh();
+    if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
+    else if (providerMode === 'import') { await call('import-login',alias); $('add-dialog').close(); }
+    else { await startLogin(alias); }
+    await refresh();
   } catch (error) { showError(error, 'dialog-error'); }
-  finally { $('save-provider').disabled = false; }
+  finally { renderLogin(); }
 });
+$('provider-alias').addEventListener('input', renderLogin);
 $('provider-list').addEventListener('dragover', event => {
   if (!dragging) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move';
   const row = event.target.closest('.provider'), moving = [...$('provider-list').children].find(item=>item.dataset.alias===dragging);
@@ -168,7 +201,7 @@ $('reset-model').addEventListener('click', async () => { try { await run('model'
 $('network-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (state.activeRequests && !confirm(t('restartConfirm'))) return;
-  try { await run('save-network', { proxy: $('proxy-url').value.trim(), noProxy: $('no-proxy').value.trim() }); } catch {}
+  try { await run('save-network', { proxy: $('proxy-url').value.trim(), noProxy: $('no-proxy').value.trim() }); await changeTab('network'); } catch {}
 });
 function closeMenus() { for(const id of ['language','theme']) { $(id+'-menu').hidden=true; $(id+'-button').setAttribute('aria-expanded','false'); } }
 for(const id of ['language','theme']) $(id+'-button').addEventListener('click',()=>{const open=$(id+'-menu').hidden;closeMenus();$(id+'-menu').hidden=!open;$(id+'-button').setAttribute('aria-expanded',String(open));if(open)$(id+'-menu').querySelector('button').focus();});

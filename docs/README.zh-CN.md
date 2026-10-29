@@ -78,7 +78,7 @@ cd easy-switch
 
 进入 `switch order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
 
-执行 `switch model` 后，先选择模型，再选择该模型支持的 effort；用 **↑/↓** 选择、**Enter** 确认、**Esc/Ctrl+C** 取消。选择“跟随 Codex”或运行 `switch model reset` 可取消覆盖。设置对同一服务下所有会话的后续模型请求生效，已经开始输出的响应继续完成。模型目录来自 Codex CLI；API 模式会尝试结合服务商 `/models` 结果筛选，实际支持情况仍取决于上游。此功能覆盖请求参数，不同步修改 Codex 原生界面的模型标签或客户端能力配置。详见[模型与 effort](usage.md#model-and-effort-switching)。
+执行 `switch model` 后，先选择模型，再选择该模型支持的 effort；用 **↑/↓** 选择、**Enter** 确认、**Esc/Ctrl+C** 取消。选择“跟随 Codex”或运行 `switch model reset` 可取消覆盖。设置对同一服务下所有会话的后续模型请求生效，已经开始输出的响应继续完成。API 模式读取服务商 `/models` 返回的目录，保留自定义模型 ID；已知模型结合 Codex 元数据提供 effort，未知模型使用服务商默认值。订阅模式在隔离的 Codex 进程中使用当前账号读取目录。实际访问权限及 Responses/工具调用兼容性仍取决于上游。此功能覆盖请求参数，不同步修改 Codex 原生界面的模型标签或客户端能力配置。详见[模型与 effort](usage.md#model-and-effort-switching)。
 
 安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，没有设置 `switch model` 覆盖时，模型沿用 Codex 当前配置。
 

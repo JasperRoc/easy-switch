@@ -4,14 +4,19 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createUpstreamFetch } from './network.js';
+import { accountAuth, atomic } from './store.js';
 
-// Use an isolated, unauthenticated custom provider to read Codex's bundled catalog.
-// This never starts/resumes a thread or copies the user's login credentials.
-export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', spawnImpl = spawn, timeoutMs = 12000 } = {}) {
+// Read model metadata in an isolated app-server without creating a thread.
+export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000 } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-switch-catalog-'));
-  let child, lines, timer, exit;
+  let child, lines, timer, exit, originalAuth;
   try {
-    fs.writeFileSync(path.join(temp, 'config.toml'), 'cli_auth_credentials_store="file"\nmodel_provider="catalog"\n[model_providers.catalog]\nname="Model catalog"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n', { mode: 0o600 });
+    const account = provider?.type === 'account';
+    if (account) {
+      originalAuth = JSON.stringify(accountAuth(provider));
+      fs.writeFileSync(path.join(temp, 'auth.json'), originalAuth, { mode: 0o600 });
+    }
+    fs.writeFileSync(path.join(temp, 'config.toml'), 'cli_auth_credentials_store="file"\n' + (account ? '' : 'model_provider="catalog"\n[model_providers.catalog]\nname="Model catalog"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n'), { mode: 0o600 });
     const result = await new Promise((resolve, reject) => {
       child = spawnImpl(binary, ['app-server'], { env: { ...process.env, CODEX_HOME: temp }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       exit = new Promise(done => child.once('close', done));
@@ -56,13 +61,22 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
       await exit;
       clearTimeout(force);
     }
+    if (originalAuth) {
+      try {
+        const refreshed = accountAuth({ accountHome: temp });
+        // Preserve a token refresh without overwriting a concurrent sign-in.
+        if (JSON.stringify(accountAuth(provider)) === originalAuth && JSON.stringify(refreshed) !== originalAuth)
+          atomic(path.join(provider.accountHome, 'auth.json'), refreshed);
+      } catch { /* Removed providers and incomplete credentials are never restored. */ }
+    }
     fs.rmSync(temp, { recursive: true, force: true });
   }
 }
 
 export async function discoverModels(provider, root, { catalogImpl = codexModels, fetchImpl } = {}) {
-  const models = await catalogImpl();
-  if (provider.type !== 'api') return { models, notice: '目录来自 Codex CLI；实际可用性以当前账号权限为准。' };
+  if (provider.type !== 'api') return { models: await catalogImpl(provider), notice: '使用当前订阅读取 Codex 模型目录；实际可用性以账号权限为准。' };
+  // Provider discovery must still work if local Codex metadata is unavailable.
+  const metadata = Promise.resolve().then(() => catalogImpl()).catch(() => []);
   const client = fetchImpl ? null : createUpstreamFetch(root);
   try {
     const response = await (fetchImpl || client.fetch)(`${provider.baseUrl}/models`, {
@@ -72,9 +86,13 @@ export async function discoverModels(provider, root, { catalogImpl = codexModels
     if (!response.ok) { await response.body?.cancel(); throw Error(); }
     const result = await response.json();
     if (!Array.isArray(result.data)) throw Error();
-    const available = new Set(result.data.map(item => item.id));
-    return { models: models.filter(model => available.has(model.id)), notice: '仅列出服务商目录与 Codex 目录共同识别的模型。' };
+    const native = new Map((await metadata).map(model => [model.id, model]));
+    const ids = [...new Set(result.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim()))];
+    return { models: ids.map(id => native.get(id) || { id, label: id, efforts: [], defaultEffort: null }),
+      notice: ids.length ? '目录来自服务商 /models；未识别的模型仅提供默认推理强度，请确认其支持 Responses 和 Codex 工具调用。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
+    const models = await metadata;
+    if (!models.length) throw new Error('无法读取服务商和 Codex 模型目录，请检查连接设置后重试。');
     return { models, notice: '无法读取服务商 /models，显示 Codex 目录；请确认所选模型受该服务商支持。' };
   } finally { await client?.close(); }
 }

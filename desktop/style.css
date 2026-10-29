@@ -69,7 +69,7 @@ code { font-size: 18px; letter-spacing: 2px; font-weight: 650; }
 
 /* Neutral materials; Liquid Glass emphasis stays on controls and navigation. */
 body::before { background:radial-gradient(ellipse at 0 0,rgba(190,184,216,.11),transparent 65%),radial-gradient(ellipse at 100% 90%,rgba(169,201,207,.09),transparent 60%); }
-button { border-radius:99px; box-shadow:inset 0 1px 0 rgba(255,255,255,.42),0 2px 7px rgba(0,0,0,.06); }
+button { appearance:none; border-radius:99px; box-shadow:inset 0 1px 0 rgba(255,255,255,.42),0 2px 7px rgba(0,0,0,.06); }
 button:hover:not(:disabled) { box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 5px 15px rgba(0,0,0,.1); }
 button svg { height:18px; width:18px; fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0; }
 button.icon-button { width:36px;height:36px;padding:8px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--field); }
@@ -83,7 +83,20 @@ button.icon-button { width:36px;height:36px;padding:8px;display:inline-flex;alig
 nav {border-radius:99px;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 5px 18px rgba(0,0,0,.025);}
 nav button, nav button.selected {border-radius:99px;}
 .provider-actions {display:flex;gap:8px;}
-.text-button {background:transparent;color:var(--muted);border:0;box-shadow:none;padding:2px 0 10px;font-size:11px;backdrop-filter:none;}
+.provider-actions button {display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;}
+.provider-actions button svg {width:15px;height:15px;}
+button.import-action {display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin:0 0 18px;border-radius:16px;text-align:left;background:var(--field);}
+.import-icon {display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line);border-radius:11px;background:var(--glass);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);}
+.import-copy {flex:1;}
+.import-copy strong,.import-copy small {display:block;}
+.import-copy strong {font-size:12px;font-weight:550;}
+.import-copy small {color:var(--muted);font-size:10px;font-weight:400;margin-top:4px;}
+.import-action>svg {color:var(--muted);width:15px;}
+.network-status {display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:18px;margin-top:20px;border-radius:16px;}
+.network-status strong,.network-status small {display:block;overflow-wrap:anywhere;}
+.network-status strong {font-size:12px;font-weight:550;margin-top:10px;}
+.network-status small {font-size:10px;color:var(--muted);line-height:1.6;margin-top:6px;}
+.login-status code {font-size:22px;letter-spacing:3px;}
 .provider {background:var(--field);gap:10px;}
 .provider.active {background:var(--notice);border-color:color-mix(in srgb,AccentColor 35%,transparent);}
 .drag-handle {padding:3px;background:transparent;color:var(--muted);border:0;box-shadow:none;cursor:grab;touch-action:none;}

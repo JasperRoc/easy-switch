@@ -3,12 +3,14 @@ import path from 'node:path';
 import { init, aliasName, addProvider, removeProvider, activate, readState, providerOrder, setOrder, setModel, baseURL, accountAuth, atomic } from '../src/store.js';
 import { createReauth, expired } from '../src/auth.js';
 import { codexModels, discoverModels } from '../src/catalog.js';
-import { networkSettings, saveNetwork, networkEnvironment } from '../src/network.js';
+import { saveNetwork, networkEnvironment } from '../src/network.js';
+import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
 import { DesktopRuntime, protectDirectory } from './runtime.js';
 
 export class DesktopController {
-  constructor({ root, codexHome, binary, port = 18345, guardExec }) {
+  constructor({ root, codexHome, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy }) {
     Object.assign(this, { root, codexHome, binary });
+    this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
     protectDirectory(root);
     this.login = null; this.catalog = null;
     this.reauth = createReauth();
@@ -31,7 +33,7 @@ export class DesktopController {
   }
   async start() {
     process.env.SWITCH_CODEX_BIN = this.binary;
-    Object.assign(process.env, networkEnvironment(this.root));
+    await this.configureNetwork();
     await this.runtime.start();
   }
   async stop() { await this.runtime.stop(); this.reauth.close(); }
@@ -80,17 +82,22 @@ export class DesktopController {
     const login = { alias, phase: 'starting', message: 'Preparing official device sign-in…' };
     this.login = login;
     task.completed.then(result => {
+      delete login.url; delete login.code;
       login.message = result.message;
       if (!result.success) { login.phase = 'failed'; return; }
       try {
         if (!existing) addProvider(alias, { type: 'account', accountHome }, this.root);
         login.phase = 'complete';
+        login.message = 'Signed in successfully.';
+        this.catalog = null;
       } catch { login.phase = 'failed'; login.message = 'Sign-in completed, but that alias was added elsewhere. Use a different alias.'; }
     });
-    login.message = await task.ready;
-    if (login.phase === 'starting') login.phase = 'pending';
-    login.url = login.message.match(/https:\/\/auth\.openai\.com\/codex\/device\b/)?.[0];
-    login.code = login.message.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/)?.[0];
+    const message = await task.ready;
+    if (login.phase === 'starting') {
+      login.message = message; login.phase = 'pending';
+      login.url = message.match(/https:\/\/auth\.openai\.com\/codex\/device\b/)?.[0];
+      login.code = message.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/)?.[0];
+    }
     return this.snapshot();
   }
   importLogin(alias) {
@@ -107,7 +114,7 @@ export class DesktopController {
   async models() {
     const state = readState(this.root), provider = state.providers[state.active];
     if (!provider) throw new Error('Add a provider first.');
-    const result = await discoverModels(provider, this.root, { catalogImpl: () => codexModels({ binary: this.binary }) });
+    const result = await discoverModels(provider, this.root, { catalogImpl: account => codexModels({ binary: this.binary, provider: account }) });
     this.catalog = { alias: state.active, ...result };
     return result;
   }
@@ -118,13 +125,22 @@ export class DesktopController {
     setModel(selection, this.root, this.catalog.alias);
     return this.snapshot();
   }
-  network() { return networkSettings(this.root); }
+  async configureNetwork() {
+    this.detectedProxy = await this.detectProxy();
+    this.networkInfo = desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
+    Object.assign(process.env, networkEnvironment(this.root, { ...this.originalEnv, ...proxyEnvironment(this.networkInfo) }));
+  }
+  network() {
+    const settings = this.networkInfo || desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
+    return { ...settings, detected: { url: publicProxyURL(settings.detected.httpsProxy || settings.detected.httpProxy), source: settings.detected.source },
+      localProxy: { url: `http://127.0.0.1:${this.runtime.port}/v1`, running: !!this.runtime.server && this.runtime.active } };
+  }
   async saveNetwork({ proxy = '', noProxy = '' }) {
     if (typeof proxy !== 'string' || typeof noProxy !== 'string') throw new Error('Invalid network settings.');
     const env = { HTTP_PROXY: proxy.trim(), HTTPS_PROXY: proxy.trim(), ALL_PROXY: '', NO_PROXY: noProxy,
       http_proxy: proxy.trim(), https_proxy: proxy.trim(), all_proxy: '', no_proxy: noProxy };
     saveNetwork(this.root, env);
-    Object.assign(process.env, networkEnvironment(this.root, { ...process.env, ...env }));
+    await this.configureNetwork();
     await this.runtime.restartNetwork();
     return this.snapshot();
   }
