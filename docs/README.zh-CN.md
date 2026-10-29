@@ -28,7 +28,7 @@ easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，�
 | macOS 13+ · Intel | `easy-switch-<版本>-mac-x64.dmg` |
 
 1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
-2. 点击 **Add provider**，通过 ChatGPT 官方认证添加订阅账号，或填写 API 地址和密钥。Base URL 留空使用 OpenAI 官方 API。
+2. 点击 **添加订阅**、**添加 API 服务商**，或通过 **导入当前 Codex 配置** 自动识别本机已配置的 API 或订阅。Base URL 留空使用 OpenAI 官方 API。
 3. 可在窗口顶部切换 **English / 简体中文**，以及 **跟随系统 / 浅色 / 深色**，偏好会自动保存。
 4. 首次启动后，重启 Codex 或重载编辑器窗口，使其读取本地路由。右键 Windows 托盘或 macOS 菜单栏图标即可切换服务商；在设置窗口按住左侧六点拖拽柄调整优先级，也可以删除服务商。右上角地球和外观图标用于切换语言与主题。
 

@@ -13,6 +13,14 @@ const repository = 'https://github.com/JasperRoc/easy-switch';
 const execute = promisify(execFile);
 const api = 'https://api.github.com/repos/JasperRoc/easy-switch/releases?per_page=20';
 const versionPattern = /^(?:v)?(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?$/;
+function updateError(error, action) {
+  if (error instanceof TypeError || ['AbortError', 'TimeoutError'].includes(error.name) ||
+      error.cause?.code || /net::ERR_|fetch failed|terminated/i.test(error.message)) {
+    return action === 'check' ? 'Unable to reach GitHub. Check Connection settings and retry.'
+      : 'Unable to download from GitHub release assets. Check Connection settings and retry the download.';
+  }
+  return error.message;
+}
 export function compareVersions(a, b) {
   const left = a.match(versionPattern), right = b.match(versionPattern);
   if (!left || !right) throw new Error('Invalid release version.');
@@ -66,19 +74,21 @@ export async function verifyMacApplication(application, version) {
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', application]);
 }
 export class DesktopUpdater {
-  constructor({ root, current, platform = process.platform, arch = process.arch, changed = () => {}, fetchImpl }) {
-    Object.assign(this, { root, current, platform, arch, changed, fetchImpl });
+  constructor({ root, current, platform = process.platform, arch = process.arch, changed = () => {}, fetchImpl, systemFetch, useSystemNetwork = () => true }) {
+    Object.assign(this, { root, current, platform, arch, changed, fetchImpl, systemFetch, useSystemNetwork });
     this.state = { phase: 'idle', current }; this.release = null; this.pending = null; this.staged = null;
     this.directory = path.join(root, 'updates'); fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     this.receipt = path.join(this.directory, 'pending.json');
     const error = path.join(this.directory, 'last-error.txt');
     if (fs.existsSync(error)) { this.state = { ...this.state, phase: 'error', error: fs.readFileSync(error, 'utf8') }; fs.rmSync(error); }
   }
-  snapshot() { return { ...this.state, notes: this.release?.notes || '', date: this.release?.date || '' }; }
+  snapshot() { return { ...this.state, retryDownload: this.state.phase === 'error' && this.state.failedAction === 'download' && !!this.release,
+    notes: this.release?.notes || '', date: this.release?.date || '' }; }
   emit(patch) { this.state = { ...this.state, ...patch }; this.changed(); }
   async connection(operation) {
-    const client = this.fetchImpl ? null : createUpstreamFetch(this.root);
-    try { return await operation(this.fetchImpl || client.fetch); } finally { await client?.close(); }
+    const fetch = this.fetchImpl || (this.systemFetch && this.useSystemNetwork() ? this.systemFetch : null);
+    const client = fetch ? null : createUpstreamFetch(this.root);
+    try { return await operation(fetch || client.fetch); } finally { await client?.close(); }
   }
   async check() {
     if (this.pending || ['ready', 'installing'].includes(this.state.phase)) return this.snapshot();
@@ -88,7 +98,7 @@ export class DesktopUpdater {
       if (!response.ok) { await response.body?.cancel(); throw new Error('Unable to check GitHub updates.'); }
       this.release = selectRelease(await response.json(), this.current, this.platform, this.arch);
       this.emit({ phase: this.release ? 'available' : 'current', version: this.release?.version || '', checkedAt: Date.now() });
-    }).catch(error => this.emit({ phase: 'error', error: error.message })).finally(() => { this.pending = null; });
+    }).catch(error => this.emit({ phase: 'error', failedAction: 'check', error: updateError(error, 'check') })).finally(() => { this.pending = null; });
     await this.pending; return this.snapshot();
   }
   async download() {
@@ -111,7 +121,7 @@ export class DesktopUpdater {
         } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
       } else this.staged = target;
       this.emit({ phase: 'ready', received: release.asset.size });
-    }).catch(error => { this.emit({ phase: 'error', error: error.message }); throw error; }).finally(() => { this.pending = null; });
+    }).catch(error => { const message = updateError(error, 'download'); this.emit({ phase: 'error', failedAction: 'download', error: message }); throw new Error(message); }).finally(() => { this.pending = null; });
     return this.pending;
   }
   confirmLaunch() {

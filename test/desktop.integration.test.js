@@ -11,13 +11,13 @@ import { parse } from 'smol-toml';
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
 const project = fileURLToPath(new URL('..', import.meta.url));
 const executable = process.env.SWITCH_TEST_DESKTOP_EXE;
-async function launch(t, extraEnv = {}) {
+async function launch(t, extraEnv = {}, initialConfig) {
   const { _electron } = await import('playwright-core');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-electron-'));
   const root = path.join(directory, 'switch'), home = path.join(directory, 'codex');
   fs.mkdirSync(home); fs.mkdirSync(root);
   fs.writeFileSync(path.join(root, 'desktop.json'), JSON.stringify({ language: 'en', theme: 'light' }));
-  const file = path.join(home, 'config.toml'), original = '# Original user config\nmodel="gpt-6.1-sol"\n';
+  const file = path.join(home, 'config.toml'), original = initialConfig ?? '# Original user config\nmodel="gpt-6.1-sol"\n';
   fs.writeFileSync(file, original);
   // Never touch the developer's credentials, configuration or login items.
   const options = { ...(executable ? { executablePath: executable, args: [] } : { args: [project] }),
@@ -41,10 +41,13 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
   await page.click('[data-tab="model"]');
-  await page.locator('#model-select option[value="gpt-6.1-sol"]').waitFor({state:'attached'});
-  assert.equal(await page.locator('#model-select option[value="relay-only-model"]').count(), 1);
-  await page.selectOption('#model-select','relay-only-model'); assert.equal(await page.locator('#effort-select').isDisabled(), true);
-  await page.selectOption('#model-select','gpt-6.1-sol'); await page.selectOption('#effort-select','high'); await page.click('#model-form button[type="submit"]');
+  await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
+  await page.click('#model-picker'); await page.fill('#model-search','relay-only');
+  await page.locator('[data-model="relay-only-model"]').click();
+  assert.equal(await page.locator('#effort-options button').count(), 1);
+  await page.click('#model-picker'); await page.fill('#model-search','gpt-6.1-sol');
+  await page.locator('[data-model="gpt-6.1-sol"]').click(); await page.click('[data-effort="high"]');
+  await page.click('#model-form button[type="submit"]');
   await page.locator('#current-model').filter({hasText:'gpt-6.1-sol · high'}).waitFor();
   const state = await page.evaluate(() => window.easySwitch.call('state'));
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
@@ -114,7 +117,7 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  page.once('dialog',dialog=>dialog.accept());await page.locator('.provider[data-alias="gamma"] .delete-provider').click();
  await page.waitForFunction(async()=>(await window.easySwitch.call('state')).providers.length===2);
  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
- await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import existing/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
+ await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import current/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
 
  await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
  await page.click('#close-update'); await page.click('#star');
@@ -153,4 +156,29 @@ clearInterval(timer); process.exit(0); }, 50);
   await page.screenshot({path:path.join(project,'.desktop-test','subscription-complete.png')});
   await page.click('#save-provider'); assert.equal(await page.locator('#add-dialog').isVisible(), false);
   await page.locator('.provider strong').filter({ hasText: 'subscription' }).waitFor();
+});
+
+test('API configuration import previews its type, close icons center, network fields explain bypass, and model refresh confirms success', {skip:!enabled,timeout:60000}, async t => {
+  const upstream = http.createServer((_req,res) => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({data:[{id:'gpt-6.1-sol'},{id:'relay-model'}]})); }).listen(0,'127.0.0.1'); await once(upstream,'listening');t.after(()=>upstream.close());
+  const original=`model_provider="relay"\n[model_providers.relay]\nbase_url="http://127.0.0.1:${upstream.address().port}/v1"\nexperimental_bearer_token="fixture-import-secret"\n`;
+  const {page}=await launch(t,{},original);
+  const centered=async id=>{const button=await page.locator('#'+id).boundingBox(),glyph=await page.locator('#'+id+' svg').boundingBox(); assert.ok(Math.abs(button.x+button.width/2-glyph.x-glyph.width/2)<1);assert.ok(Math.abs(button.y+button.height/2-glyph.y-glyph.height/2)<1);};
+  await page.click('#import-existing');await page.locator('#import-preview').filter({hasText:'Detected API provider'}).waitFor();
+  assert.equal(await page.locator('#provider-alias').inputValue(),'relay');await centered('close-dialog');
+  assert.equal((await page.locator('#import-preview').innerText()).includes('fixture-import-secret'),false);
+  await page.click('#save-provider');await page.locator('.provider strong').filter({hasText:'relay'}).waitFor();
+  await page.click('[data-tab="model"]');await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
+  await page.click('#refresh-models');await page.locator('#refresh-models:not([disabled])').waitFor();
+  assert.match(await page.locator('#catalog-status').innerText(),/2 models/);
+  await page.click('#model-picker');await page.fill('#model-search','relay-model');await page.press('#model-search','ArrowDown');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#model-select').inputValue(),'relay-model');assert.match(await page.locator('#effort-help').innerText(),/No effort metadata/);
+  await page.click('#model-picker');
+  const menu=await page.locator('#model-menu').boundingBox(),viewport=await page.locator('main').boundingBox();
+  assert.ok(menu.y>=viewport.y && menu.y+menu.height<=viewport.y+viewport.height, 'Model menu must remain inside the scroll viewport');
+  const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'model-picker.png')});
+  await page.click('[data-tab="network"]');assert.equal(await page.locator('#proxy-url').getAttribute('type'),'url');
+  assert.equal(await page.locator('#no-proxy').isVisible(),false);await page.locator('#network-advanced summary').click();
+  assert.match(await page.locator('[data-i18n="bypassHelp"]').innerText(),/connect directly/);
+  await page.screenshot({path:path.join(folder,'connection-explained.png')});
+  await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
 });

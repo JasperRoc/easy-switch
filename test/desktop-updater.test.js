@@ -36,3 +36,18 @@ test('replacement verifies before changing the app and rolls back on failed star
  assert.equal(fs.readFileSync(path.join(current,'version'),'utf8'),'old');
  await helper.replaceApplication({current,staged,verify:()=>{},launch:()=>({}),accepted:async()=>true});assert.equal(fs.readFileSync(path.join(current,'version'),'utf8'),'new');
 });
+
+test('automatic updates use the system network transport and a failed download can be retried', async t => {
+ const root=temporary(t); let attempts=0;
+ const updater=new DesktopUpdater({root,current:'0.4.0',platform:'win32',arch:'x64',systemFetch:async url=>{
+  if(url.includes('api.github.com'))return Response.json([release('0.5.0','win-x64.exe')]);
+  if(++attempts===1)throw new TypeError('fetch failed: secret proxy information');
+  return new Response('abc');
+ }});
+ await updater.check(); assert.equal(updater.snapshot().phase,'available');
+ await assert.rejects(updater.download(),/Connection settings/);
+ assert.equal(updater.snapshot().retryDownload,true); assert.equal(updater.snapshot().error.includes('secret'),false);
+ assert.equal(fs.existsSync(path.join(root,'updates','easy-switch-0.5.0-win-x64.exe.part')),false);
+ await updater.download();assert.equal(updater.snapshot().phase,'ready');assert.equal(updater.snapshot().retryDownload,false);
+ assert.equal(fs.readFileSync(updater.staged,'utf8'),'abc');
+});

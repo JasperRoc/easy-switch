@@ -6,6 +6,7 @@ import { codexModels, discoverModels } from '../src/catalog.js';
 import { saveNetwork, networkEnvironment } from '../src/network.js';
 import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
 import { DesktopRuntime, protectDirectory } from './runtime.js';
+import { existingProvider } from './import.js';
 
 export class DesktopController {
   constructor({ root, codexHome, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy }) {
@@ -100,14 +101,22 @@ export class DesktopController {
     }
     return this.snapshot();
   }
+  existingLogin() {
+    const provider = existingProvider({ codexHome: this.codexHome, root: this.root, env: this.originalEnv });
+    let alias = String(provider.name).replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 48) || 'codex-import';
+    try { aliasName(alias); } catch { alias = 'codex-import'; }
+    const state = init(this.root), suggested = alias; let suffix = 2;
+    while (state.providers[alias]) alias = `${suggested}-${suffix++}`;
+    return { type: provider.type, baseUrl: provider.baseUrl || '', alias };
+  }
   importLogin(alias) {
     aliasName(alias);
-    const auth = accountAuth({ accountHome: this.codexHome });
-    if (expired(auth)) throw new Error('The existing Codex sign-in has expired. Use device sign-in instead.');
+    const provider = existingProvider({ codexHome: this.codexHome, root: this.root, env: this.originalEnv });
     const state = init(this.root);
     if (state.providers[alias]) throw new Error('That alias already exists.');
+    if (provider.type === 'api') return this.addAPI({ alias, url: provider.baseUrl, key: provider.apiKey });
     const accountHome = path.join(this.root, 'accounts', alias);
-    atomic(path.join(accountHome, 'auth.json'), auth);
+    atomic(path.join(accountHome, 'auth.json'), provider.auth);
     addProvider(alias, { type: 'account', accountHome }, this.root);
     return this.snapshot();
   }
@@ -115,6 +124,7 @@ export class DesktopController {
     const state = readState(this.root), provider = state.providers[state.active];
     if (!provider) throw new Error('Add a provider first.');
     const result = await discoverModels(provider, this.root, { catalogImpl: account => codexModels({ binary: this.binary, provider: account }) });
+    if (readState(this.root).active !== state.active) throw new Error('The provider changed while loading models. Refresh the catalog again.');
     this.catalog = { alias: state.active, ...result };
     return result;
   }

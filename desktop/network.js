@@ -60,5 +60,6 @@ export function desktopNetworkSettings(root, env, system) {
     : { ...system, noProxy: env.no_proxy ?? env.NO_PROXY ?? system.noProxy };
   const saved = fs.existsSync(path.join(root, 'network.json'));
   const settings = saved ? networkSettings(root, {}) : networkSettings(root, proxyEnvironment(detected));
-  return { ...settings, source: saved ? 'saved' : detected.source || '', detected, unsupported: !!system.unsupported };
+  return { ...settings, source: saved ? 'saved' : detected.source || '', detected,
+    unsupported: !!system.unsupported && !system.httpProxy && !system.httpsProxy && !hasEnv && !saved };
 }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, Notification, powerMonitor, nativeTheme, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, Notification, powerMonitor, nativeTheme, screen, session } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -69,7 +69,11 @@ async function boot() {
   const bundled = app.isPackaged ? path.join(process.resourcesPath, 'codex', exe) : path.join(__dirname, '..', '.desktop-cache', `codex-${process.platform}-${process.arch}`, exe);
   const binary = process.env.SWITCH_CODEX_BIN || bundled;
   controller = new DesktopController({ root, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), binary, port: Number(process.env.SWITCH_PORT ?? 18345), guardExec: process.execPath });
-  updater = new DesktopUpdater({ root, current: app.getVersion(), changed: () => { window?.webContents.send('easy-switch:changed'); updateTray(); } });
+  const updateSession = session.fromPartition('easy-switch-updates', { cache: false });
+  updater = new DesktopUpdater({ root, current: app.getVersion(),
+    systemFetch: (url, options) => updateSession.fetch(url, { ...options, credentials: 'omit' }),
+    useSystemNetwork: () => !['saved', 'environment'].includes(controller.network().source),
+    changed: () => { window?.webContents.send('easy-switch:changed'); updateTray(); } });
   uiLanguage = i18n.normalizeLanguage(controller.preferences().language || app.getLocale());
   nativeTheme.themeSource = controller.preferences().theme || 'system';
   window = new BrowserWindow({ width: 960, height: 780, minWidth: 780, minHeight: 680, show: false, backgroundColor: process.platform === 'darwin' ? '#00000000' : '#f2f2f6', title: 'easy-switch',
@@ -92,6 +96,7 @@ async function boot() {
         case 'order': result = controller.order(payload); break;
         case 'add-api': result = controller.addAPI(payload); break;
         case 'login': result = await controller.startLogin(payload); break;
+        case 'existing-login': return controller.existingLogin();
         case 'import-login': result = controller.importLogin(payload); break;
         case 'models': return await controller.models();
         case 'model': result = controller.model(payload); break;
@@ -119,7 +124,7 @@ async function boot() {
           }
           await controller.stop();
           try { await updater.install({ codexHome: controller.codexHome }); }
-          catch (error) { await controller.start(); throw error; }
+          catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
           quitting = true; quitReady = true; clearInterval(poll); clearInterval(updateTimer); app.quit(); return null;
         }
         case 'star': await shell.openExternal(repository); return null;
