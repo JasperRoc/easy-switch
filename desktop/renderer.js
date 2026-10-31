@@ -69,8 +69,9 @@ function quotaRing(data, box, tooltip) {
     group.addEventListener('mouseleave', () => { tooltip.hidden = true; });
     svg.append(group);
   }
-  const text = document.createElementNS(svg.namespaceURI, 'text'); text.setAttribute('x', '24'); text.setAttribute('y', '25');
-  text.textContent = data.weekly ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(data.weekly.remaining) + '%' : '—'; svg.append(text);
+  const center = document.createElementNS(svg.namespaceURI, 'rect');
+  for (const [key, value] of Object.entries({ x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)', class: 'quota-center' })) center.setAttribute(key, value);
+  svg.append(center);
   box.addEventListener('focus', () => { tooltip.textContent = descriptions.join('\n'); tooltip.hidden = false; });
   box.addEventListener('blur', () => { tooltip.hidden = true; });
   box.addEventListener('mouseleave', () => { tooltip.hidden = true; });
@@ -82,21 +83,40 @@ function quotaDisplay(provider) {
   box.setAttribute('aria-label', t('quotaRefresh'));
   if (!data) {
     box.append(node('span', t(usage?.status === 'signin' ? 'loginNeeded' : usage?.status === 'unavailable' ? 'quotaUnavailable' : 'quotaLoading'), 'quota-message'));
-  } else if (data.weekly?.remaining === 0) {
-    box.append(node('span', t('quotaCredits'), 'quota-caption'), node('strong', data.unlimited ? '∞' : data.credits === null ? '—' : new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits), 'quota-balance'));
   } else {
     const tooltip = node('span', null, 'quota-tooltip'); tooltip.hidden = true; tooltip.id = `quota-tip-${provider.alias}`; tooltip.setAttribute('role', 'tooltip');
     box.setAttribute('aria-describedby', tooltip.id); box.append(quotaRing(data, box, tooltip), tooltip);
+    if (data.unlimited || data.credits !== null) {
+      const credits = node('span', null, 'quota-credits');
+      credits.append(node('span', t('quotaCredits'), 'quota-caption'), node('strong', data.unlimited ? '∞' : new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits), 'quota-balance'));
+      box.append(credits);
+    }
   }
-  box.title = t('quotaRefresh');
-  if (usage?.fetchedAt) box.title += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
-  if (data && usage.status !== 'ready') { box.classList.add('stale'); box.title += '\n' + t('quotaStale'); box.append(node('span', t('quotaStale'), 'quota-caption')); }
+  let description = t('quotaRefresh');
+  if (usage?.fetchedAt) description += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
+  if (data && usage.status !== 'ready') { box.classList.add('stale'); description += '\n' + t('quotaStale'); }
+  box.setAttribute('aria-label', description);
+  if (!data || usage.status !== 'ready') box.title = description;
   if (usage?.refreshing) box.setAttribute('aria-busy', 'true');
   return box;
+}
+const providerAnimations = new WeakMap();
+function providerPositions() {
+  return new Map([...$('provider-list').children].map(row => [row.dataset.alias, row.getBoundingClientRect().top]));
+}
+function animateProviders(before) {
+  for (const row of $('provider-list').children) providerAnimations.get(row)?.cancel();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const row of $('provider-list').children) {
+    const distance = before.get(row.dataset.alias) - row.getBoundingClientRect().top;
+    if (!Number.isFinite(distance) || Math.abs(distance) < 1) continue;
+    providerAnimations.set(row, row.animate([{ transform: `translateY(${distance}px)` }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' }));
+  }
 }
 function renderProviders() {
   const signature = JSON.stringify([language, state.providers]);
   if (signature === renderedProviders || dragging) return;
+  const before = providerPositions();
   renderedProviders = signature; $('provider-list').replaceChildren(); $('empty').hidden = !!state.providers.length;
   state.providers.forEach((provider, index) => {
     const row = node('div', null, `provider${provider.active ? ' active' : ''}`);
@@ -116,6 +136,7 @@ function renderProviders() {
     const remove = button('', async () => { if (confirm(t('removeConfirm', {alias:provider.alias}))) await run('remove', provider.alias); }, 'icon-button delete-provider');
     remove.append(icon('trash')); remove.setAttribute('aria-label', t('remove',{alias:provider.alias})); row.append(remove); $('provider-list').append(row);
   });
+  animateProviders(before);
 }
 function refresh() {
   if (refreshing) return refreshing;
@@ -129,6 +150,8 @@ function refresh() {
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
     $('native-images').hidden = !state.imageTools;
+    const selected = state.providers.find(provider => provider.active);
+    $('native-images').textContent = t('nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;
@@ -359,7 +382,14 @@ $('provider-list').addEventListener('dragover', event => {
   if (!dragging) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move';
   const row = event.target.closest('.provider'), moving = [...$('provider-list').children].find(item=>item.dataset.alias===dragging);
   if (!row || row === moving) return;
-  const bounds = row.getBoundingClientRect(); if(event.clientY<bounds.top+bounds.height/2) row.before(moving); else row.after(moving);
+  // Use layout positions for the threshold; an animating row's visual position
+  // must not make the same pointer position repeatedly reverse the order.
+  const top = row.offsetTop - $('provider-list').offsetTop + $('provider-list').getBoundingClientRect().top;
+  const above = event.clientY < top + row.offsetHeight / 2;
+  if (above ? row.previousElementSibling === moving : row.nextElementSibling === moving) return;
+  const before = providerPositions();
+  if (above) row.before(moving); else row.after(moving);
+  animateProviders(before);
 });
 $('provider-list').addEventListener('drop', async event => {
   if (!dragging) return; event.preventDefault(); $('provider-list').querySelector('.dragging')?.classList.remove('dragging'); const aliases=[...$('provider-list').children].map(item=>item.dataset.alias); dragging=null;

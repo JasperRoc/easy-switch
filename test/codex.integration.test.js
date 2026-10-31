@@ -38,7 +38,7 @@ for (const nativeAuth of [false, true, 'bridge']) test(`real Codex app-server ($
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw);
-    requests.push({ label, body });
+    requests.push({ label, body, authorization: req.headers.authorization, accountID: req.headers['chatgpt-account-id'] });
     if (label === 'A' && rejectA) {
       res.writeHead(403, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: { message: 'insufficient quota' } }));
@@ -148,6 +148,9 @@ for (const nativeAuth of [false, true, 'bridge']) test(`real Codex app-server ($
     assert.equal(turn.status, 'completed', JSON.stringify(turn) + stderr);
   }
   assert.deepEqual(requests.map(r => r.label), ['A', 'B']);
+  assert.deepEqual(requests.map(r => r.authorization), ['Bearer a', 'Bearer b'], 'API switches replace the native subscription bearer with the selected API key');
+  assert.ok(requests.every(r => r.accountID === undefined), 'the native subscription identity never leaks to API providers');
+  if (nativeAuth === 'bridge') assert.equal(JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'))).auth_mode, 'chatgpt');
   const second = JSON.stringify(requests[1].body.input);
   assert.match(second, /First turn/);
   assert.match(second, /reply A/);

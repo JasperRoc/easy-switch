@@ -116,11 +116,15 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. When weekly quota is exhausted, the row displays the returned purchased-credit balance. Hover for reset times, or click to refresh. Missing data and failed reads are shown explicitly; the app does not estimate balances or reset quota.
+Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Hover for reset times, or click to refresh. Missing data and failed reads are shown explicitly; the app does not estimate balances or reset quota.
 
 ### Can a subscription handle image generation while text uses an API?
 
 Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, adding a subscription also configures native image tools and temporarily connects its sign-in when Codex was using API authentication. Reload an already-open Codex client once after this setup; later provider switches keep these tools available. Quitting restores the original connection and any temporary sign-in. See [image routing](docs/usage.md#image-generation-routing).
+
+### Why does Codex show a subscription sign-in when I select an API?
+
+Desktop image support temporarily connects a native subscription so Codex can expose its built-in image tool. The account label in Codex therefore describes that native sign-in, while easy-switch selects the actual upstream separately. Selecting an API sends text requests with that API’s key; image requests use a subscription. The app displays this distinction below the provider list. Stopping or quitting easy-switch restores the original configuration and temporary sign-in.
 
 ### Does switching interrupt the current task?
 

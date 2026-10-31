@@ -84,10 +84,10 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
 test('subscription quota rings, purchased credits, stale data and image setup notices render in both languages and themes', { skip: !enabled, timeout: 30000 }, async t => {
   const { app, page } = await launch(t);
   const window = (remaining, hours) => ({ remaining, resetsAt: Date.now() + hours * 3600000 });
-  const account = (alias, plan, weekly) => ({ alias, type: 'account', active: alias === 'plus', usage: { status: 'ready', fetchedAt: Date.now(),
+  const account = (alias, plan, weekly) => ({ alias, type: 'account', active: false, usage: { status: 'ready', fetchedAt: Date.now(),
     data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
-  const uiState = { running: true, imageTools: true, active: 'plus', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0)],
-    sessions: [], version: '0.4.6', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
+  const uiState = { running: true, imageTools: true, active: 'api', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0), { alias: 'api', type: 'api', active: true, baseUrl: 'https://api.example.com/v1' }],
+    sessions: [], version: '0.4.7', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
   await app.evaluate(({ ipcMain, BrowserWindow }, state) => {
     globalThis.easySwitchQuotaState = state; globalThis.easySwitchQuotaRefreshes = 0;
     ipcMain.removeHandler('easy-switch:call');
@@ -101,24 +101,28 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   const plus = page.locator('.provider[data-alias="plus"]'), pro = page.locator('.provider[data-alias="pro"]'), credits = page.locator('.provider[data-alias="credits"]');
   await plus.waitFor();
   assert.equal(await plus.locator('.quota-ring').count(), 1); assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await pro.locator('.quota-segment').count(), 1);
-  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 4 } });
+  const sizes = await page.locator('.provider').evaluateAll(rows => rows.map(row => ({ width: row.getBoundingClientRect().width, height: row.getBoundingClientRect().height })));
+  assert.ok(sizes.every(size => Math.abs(size.width - sizes[0].width) < 1 && Math.abs(size.height - sizes[0].height) < 1), 'API and subscription rows have identical dimensions: ' + JSON.stringify(sizes));
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 3 } });
   await plus.locator('.quota-tooltip').filter({ hasText: '5h: 75% remaining' }).waitFor();
   assert.notEqual(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transform), 'none');
-  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 44 } });
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 29 } });
   await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
   await pro.locator('.quota').hover(); await page.mouse.move(100, 100);
   assert.equal(await plus.locator('.quota-tooltip').isVisible(), false);
   assert.equal(await plus.locator('.quota-segment.weekly .quota-progress').getAttribute('stroke-dashoffset'), '33');
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /67% remaining/);
-  assert.equal(await credits.locator('.quota-segment').count(), 0); assert.equal(await credits.locator('.quota-balance').innerText(), '36.445');
-  await page.locator('#native-images').waitFor(); await plus.locator('.quota').click();
+  for (const row of [plus, pro, credits]) assert.equal(await row.locator('.quota-balance').innerText(), '36.445', 'purchased credits remain visible alongside every time-window ring');
+  assert.equal(await credits.locator('.quota-segment').count(), 1);
+  assert.equal(await plus.locator('.quota-center').count(), 1);
+  await page.locator('#native-images').filter({ hasText: 'Text route: api (Official / third-party API)' }).waitFor(); await plus.locator('.quota').click();
   assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 1);
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await credits.locator('.quota-caption').filter({ hasText: '剩余购买额度' }).waitFor();
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.screenshot({ path: path.join(folder, 'quota-light.png') });
-  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 4 } });
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 3 } });
   await plus.locator('.quota-tooltip').filter({ hasText: '5 小时：剩余 75%' }).waitFor();
   await page.waitForFunction(() => {
     const tooltip = document.querySelector('[data-alias="plus"] .quota-tooltip');
@@ -182,6 +186,21 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  const {app,page,root}=await launch(t);
  for(const alias of ['alpha','beta','gamma']) await page.evaluate(alias=>window.easySwitch.call('add-api',{alias,key:'fixture-'+alias}),alias);
  await page.locator('.provider').nth(2).waitFor();
+ const animation = await page.evaluate(() => {
+  const alpha = document.querySelector('[data-alias="alpha"]'), gamma = document.querySelector('[data-alias="gamma"]');
+  const before = alpha.getBoundingClientRect().top, transfer = new DataTransfer();
+  gamma.querySelector('.drag-handle').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+  alpha.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer, clientY: before + 3 }));
+  const motion = alpha.getAnimations()[0], atStart = alpha.getBoundingClientRect().top;
+  motion.pause(); motion.currentTime = 130;
+  const atMiddle = alpha.getBoundingClientRect().top;
+  motion.finish();
+  const atEnd = alpha.getBoundingClientRect().top;
+  gamma.querySelector('.drag-handle').dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: transfer }));
+  return { before, atStart, atMiddle, atEnd };
+ });
+ assert.ok(Math.abs(animation.atStart - animation.before) < 1, 'the displaced provider starts at its previous visual position');
+ assert.ok(animation.atMiddle > animation.atStart && animation.atMiddle < animation.atEnd, 'the provider slides through intermediate positions');
  await page.locator('.drag-handle').nth(2).dragTo(page.locator('.provider').first(),{targetPosition:{x:100,y:3}});
  await page.waitForFunction(async()=>JSON.stringify((await window.easySwitch.call('state')).providers.map(p=>p.alias))===JSON.stringify(['gamma','alpha','beta']));
  await page.waitForFunction(()=>document.querySelector('.provider')?.dataset.alias==='gamma');

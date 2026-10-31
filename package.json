@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "Switch Codex accounts, APIs, models and reasoning effort with a desktop tray app or Linux CLI",
   "type": "module",
   "bin": {
