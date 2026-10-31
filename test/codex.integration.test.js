@@ -11,8 +11,9 @@ import readline from 'node:readline';
 import { init, addProvider, activate, readState, setModel } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
+import { SessionTracker } from '../src/sessions.js';
 
-test('real Codex app-server: same process, same thread, manual switch, failover, and model change within one turn', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+test('real Codex app-server: same thread, failover and per-session model changes preserve parallel tasks and tool continuation', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -67,7 +68,8 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
   });
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
-  const proxy = await serve(createProxy({ root }));
+  const sessions = new SessionTracker();
+  const proxy = await serve(createProxy({ root, sessions }));
   fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-5.1-codex"\n');
   prepareConfig(root, codexHome, Number(new URL(proxy).port), token).apply();
   const child = spawn(process.env.SWITCH_TEST_CODEX, ['app-server'], { cwd: dir, env: { ...process.env, CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -76,7 +78,7 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
   child.stderr.on('data', c => { stderr += c; });
   const pending = new Map();
   let nextId = 1;
-  let finishTurn;
+  const finishTurns = new Map();
   readline.createInterface({ input: child.stdout }).on('line', line => {
     const message = JSON.parse(line);
     if (message.id != null && pending.has(message.id)) {
@@ -84,7 +86,7 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
       pending.delete(message.id);
       if (message.error) reject(new Error(JSON.stringify(message.error))); else resolve(message.result);
     }
-    if (message.method === 'turn/completed') finishTurn?.(message.params.turn);
+    if (message.method === 'turn/completed') finishTurns.get(message.params.threadId)?.(message.params.turn);
   });
   function call(method, params) {
     return new Promise((resolve, reject) => {
@@ -98,7 +100,7 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
   const { thread } = await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' });
   for (const [alias, text] of [['a', 'First turn'], ['b', 'Second turn']]) {
     activate(alias, root);
-    const completed = new Promise(resolve => { finishTurn = resolve; });
+    const completed = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
     await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text, text_elements: [] }] });
     const turn = await completed;
     assert.equal(turn.status, 'completed', JSON.stringify(turn) + stderr);
@@ -111,7 +113,7 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
   assert.equal(child.exitCode, null);
   rejectA = true;
   activate('a', root);
-  const completed = new Promise(resolve => { finishTurn = resolve; });
+  const completed = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Third turn', text_elements: [] }] });
   const turn = await completed;
   assert.equal(turn.status, 'completed', JSON.stringify(turn) + stderr);
@@ -127,10 +129,21 @@ test('real Codex app-server: same process, same thread, manual switch, failover,
   // execute the tool and continue automatically, without another turn/start.
   toolTurn = true;
   setModel({ model: 'gpt-5.1-codex', effort: 'low' }, root);
-  const toolCompleted = new Promise(resolve => { finishTurn = resolve; });
+  const toolCompleted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   const started = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Tool turn: run the tool and continue.', text_elements: [] }] });
   await toolReady;
-  setModel({ model: 'gpt-6.1-sol', effort: 'high' }, root);
+  assert.equal(sessions.snapshot(readState(root))[0].id, thread.id);
+  assert.equal(sessions.snapshot(readState(root))[0].activeRequests, 1);
+  setModel({ model: 'gpt-6.1-sol', effort: 'high' }, root, undefined, thread.id);
+  const originalTool = requests.at(-1);
+  const other = (await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' })).thread;
+  const otherCompleted = new Promise(resolve => { finishTurns.set(other.id, resolve); });
+  await call('turn/start', { threadId: other.id, input: [{ type: 'text', text: 'An independent parallel task', text_elements: [] }] });
+  assert.equal((await otherCompleted).status, 'completed');
+  assert.equal(requests.at(-1).body.model, 'gpt-5.1-codex');
+  assert.equal(requests.at(-1).body.reasoning.effort, 'low');
+  assert.equal(sessions.snapshot(readState(root)).length, 2);
+  assert.equal(originalTool.body.model, 'gpt-5.1-codex');
   finishToolResponse();
   const finished = await toolCompleted;
   assert.equal(finished.id, started.turn.id);

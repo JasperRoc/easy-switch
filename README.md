@@ -30,7 +30,7 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
 2. Use **Add subscription**, **Add API provider**, or **Import current Codex setup** to detect an API or subscription already configured on this computer. An empty Base URL uses the official OpenAI API.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
-4. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window to drag priorities, add or delete providers, and choose model and effort. The top-right globe and appearance icons change language and theme.
+4. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window to drag priorities, add or delete providers, and choose model and effort. In **Model & effort**, select an observed session before applying changes; use **Global default** only when you want a shared setting. The top-right globe and appearance icons change language and theme.
 
 Installing alone leaves Codex configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Your Codex conversation client is installed separately.
 

@@ -100,6 +100,10 @@ async function boot() {
         case 'import-login': result = controller.importLogin(payload); break;
         case 'models': return await controller.models();
         case 'model': result = controller.model(payload); break;
+        case 'session-model': {
+          if (typeof payload?.sessionId !== 'string') throw new Error('Choose a session observed by this app first.');
+          result = controller.model(payload.selection, payload.sessionId); break;
+        }
         case 'network': return controller.network();
         case 'save-network': result = await controller.saveNetwork(payload); break;
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;

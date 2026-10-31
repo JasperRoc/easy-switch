@@ -41,3 +41,5 @@ Contributions are distributed under the project's [MIT License](docs/LICENSE).
 ## 参与贡献
 
 欢迎提交问题报告、兼容性验证结果、文档修订和 Pull Request。请保持改动范围集中，为行为变化添加必要测试，并同步更新中英文 README。提交问题时提供环境版本及可复现步骤，不要上传密钥、登录凭据、设备验证码或未脱敏的配置。默认测试无需真实账号或付费 API；运行测试不需要执行安装脚本。贡献内容采用本项目的 MIT 许可证。
+
+Release notes shown in the desktop app must include both supported languages. Use `<!-- easy-switch:notes:en -->` followed by English Markdown, then `<!-- easy-switch:notes:zh-CN -->` followed by Simplified Chinese Markdown in the GitHub release body. Keep the two sections equivalent; the app selects the section matching its interface language. Avoid raw HTML.

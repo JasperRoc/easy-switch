@@ -83,7 +83,7 @@ export class DesktopUpdater {
     if (fs.existsSync(error)) { this.state = { ...this.state, phase: 'error', error: fs.readFileSync(error, 'utf8') }; fs.rmSync(error); }
   }
   snapshot() { return { ...this.state, retryDownload: this.state.phase === 'error' && this.state.failedAction === 'download' && !!this.release,
-    notes: this.release?.notes || '', date: this.release?.date || '' }; }
+    notes: this.release?.notes || '', date: this.release?.date || '', size: this.release?.asset.size || 0 }; }
   emit(patch) { this.state = { ...this.state, ...patch }; this.changed(); }
   async connection(operation) {
     const fetch = this.fetchImpl || (this.systemFetch && this.useSystemNetwork() ? this.systemFetch : null);

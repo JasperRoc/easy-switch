@@ -29,6 +29,10 @@
     </section>
     <section id="model" class="panel glass" hidden>
       <div class="section-heading"><div><h2 data-i18n="chooseModel">A little more room to think.</h2><p data-i18n="modelHelp">Applies to your next model request.</p></div><button id="refresh-models" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span id="refresh-models-label" data-i18n="refreshCatalog">Refresh catalog</span></button></div>
+      <div class="session-heading"><span class="field-label" data-i18n="chooseSession">Choose a session</span><button id="global-model" class="link" data-i18n="globalDefault">Global default</button></div>
+      <div id="session-list" class="session-list" role="group" data-i18n-aria="chooseSession"></div>
+      <p id="sessions-empty" class="help" data-i18n="sessionsEmpty"></p>
+      <p id="model-target" class="model-target" role="status"></p>
       <p id="model-notice" class="notice" data-i18n="loadCatalog">Load the catalog to choose a model.</p>
       <p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p>
       <form id="model-form">
@@ -41,6 +45,7 @@
         <p id="model-choice-help" class="help"></p>
         </div><div><label id="effort-label" class="field-label" data-i18n="effort">Reasoning effort</label><div id="effort-options" class="effort-options" role="radiogroup" aria-labelledby="effort-label"></div><input id="effort-select" type="hidden"><p id="effort-help" class="help"></p></div></div>
         <div class="actions"><button type="submit" id="apply-model" data-i18n="apply">Apply selection</button><button type="button" id="reset-model" class="secondary" data-i18n="followCodex">Follow Codex</button></div>
+        <p id="model-feedback" class="catalog-status" role="status" aria-live="polite" hidden></p>
       </form>
       <p class="help" data-i18n="modelLimits"></p>
     </section>
@@ -54,7 +59,15 @@
   </main>
   <footer><label class="checkbox"><input type="checkbox" id="autostart"><span data-i18n="autoStart">Start at login</span></label><button id="star" class="icon-button" data-i18n-aria="star"><svg aria-hidden="true"><use href="assets/ui.svg#star"/></svg></button><button id="updates" class="link"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="updates">Check for updates</span><span id="update-dot" hidden></span></button><span id="version"></span></footer>
   <dialog id="add-dialog"><form id="provider-form"><div class="section-heading"><h2 id="provider-dialog-title"></h2><button type="button" id="close-dialog" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div><label><span data-i18n="alias">Alias</span><input id="provider-alias" required maxlength="64" data-i18n-placeholder="aliasHint"></label><div id="api-fields" hidden><label><span data-i18n="baseURL">Base URL</span><input id="base-url" data-i18n-placeholder="baseHint"></label><label><span data-i18n="apiKey">API key</span><input id="api-key" type="password" autocomplete="off"></label></div><p id="account-help" class="help"></p><div id="import-preview" class="notice" hidden></div><div id="login-status" class="notice login-status" hidden><strong id="login-alias"></strong><p id="login-message"></p><div class="login-code"><code id="login-code"></code><button type="button" id="open-login" data-i18n="openLogin">Open official sign-in</button></div></div><p id="dialog-error" class="notice error" role="alert" hidden></p><div class="actions"><button type="submit" id="save-provider"></button></div></form></dialog>
-  <dialog id="update-dialog"><div class="section-heading"><div><span class="eyebrow" id="update-current"></span><h2 id="update-title"></h2></div><button id="close-update" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div><p id="update-status" role="status"></p><div id="update-notes" class="release-notes"></div><progress id="update-progress" max="100" hidden></progress><p class="help" data-i18n="updateRestartWarning"></p><p id="update-error" class="notice error" hidden></p><div class="actions"><button id="update-action"></button><button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button></div></dialog>
+  <dialog id="update-dialog" aria-labelledby="update-title">
+    <div class="update-top"><span class="eyebrow" id="update-current"></span><button id="close-update" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <div class="update-hero"><span id="update-emblem" class="update-emblem"><svg aria-hidden="true"><use id="update-symbol" href="assets/ui.svg#refresh"/></svg></span><div><h2 id="update-title"></h2><p id="update-status" class="help" role="status" aria-live="polite"></p></div></div>
+    <div id="update-metadata" class="update-metadata" hidden></div>
+    <section id="update-changes" hidden><h3 data-i18n="whatsNew">What’s new</h3><div id="update-notes" class="release-notes"></div></section>
+    <div id="update-transfer" hidden><progress id="update-progress" max="100"></progress><span id="update-bytes" class="help"></span></div>
+    <p id="update-error" class="notice error" role="alert" hidden></p>
+    <div class="update-bottom"><p id="update-warning" class="help" data-i18n="updateRestartWarning" hidden></p><div class="actions"><button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button><button id="update-action"></button></div></div>
+  </dialog>
   <script type="module" src="renderer.js"></script>
 </body>
 </html>

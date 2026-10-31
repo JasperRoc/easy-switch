@@ -1,9 +1,11 @@
 import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
+import { releaseNotes } from './release-notes.js';
 const $ = id => document.getElementById(id);
 let state, catalog = [], catalogAlias = null, activeTab = 'providers', renderedProviders = '', refreshing = null, modelDirty = false;
 let language = 'en', appliedLanguage, catalogNotice = 'loadCatalog', rawNotice = false, providerMode = 'account', dragging = null, renderedUpdate = '';
 let networkState = null;
 let catalogLoading = false, catalogFailed = false, catalogLoaded = null, effortSignature = '', importLoading = false;
+let modelTarget = null, renderedSessions = '', modelFeedback = null;
 const t = (key, values) => translate(language, key, values);
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -19,7 +21,7 @@ function appearance() {
   for (const element of document.querySelectorAll('[data-i18n-placeholder]')) element.placeholder = t(element.dataset.i18nPlaceholder);
   for (const element of document.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
   $('language-button').title = t('language'); $('theme-button').title = t('appearance');
-  renderModelPicker(); renderCatalogStatus();
+  renderModelPicker(); renderEfforts(); renderCatalogStatus();
   for (const element of document.querySelectorAll('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
   providerType();
 }
@@ -69,18 +71,19 @@ function refresh() {
     state = await call('state'); appearance();
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
-    $('current-model').textContent = state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
+    const customized = state.sessions.filter(session => session.overridden).length;
+    $('current-model').textContent = customized ? t('sessionSummary', { count: customized }) : state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;
     if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
-    renderLogin(); renderNetwork(); renderCatalogStatus();
+    renderLogin(); renderNetwork(); renderSessions(); renderCatalogStatus();
     if (catalogAlias && catalogAlias !== state.active && activeTab === 'model') notice('catalogChanged');
     else notice(catalogNotice, rawNotice);
     if (catalogAlias === state.active && !modelDirty) {
-      $('model-select').value = state.model?.model || ''; efforts();
+      $('model-select').value = targetSelection()?.model || ''; efforts();
     }
   } catch (error) { showError(error); }
   })().finally(() => { refreshing = null; });
@@ -88,8 +91,38 @@ function refresh() {
 }
 function efforts() {
   const entry = catalog.find(model => model.id === $('model-select').value);
-  $('effort-select').value = state.model && state.model.model === entry?.id ? state.model.effort || '' : entry?.defaultEffort || '';
+  const selection = targetSelection();
+  $('effort-select').value = selection && selection.model === entry?.id ? selection.effort || '' : entry?.defaultEffort || '';
   renderModelPicker(); renderEfforts();
+}
+function targetSelection() { return modelTarget === 'global' ? state.model : state.sessions.find(session => session.id === modelTarget)?.selection; }
+function selectSession(id) {
+  modelTarget = id; modelDirty = false; modelFeedback = null; closeModelPicker();
+  $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions(); renderCatalogStatus();
+}
+function renderSessions() {
+  const sessions = state.sessions || [], signature = JSON.stringify([language, modelTarget, sessions]);
+  if (signature !== renderedSessions) {
+    renderedSessions = signature; $('session-list').replaceChildren();
+    for (const session of sessions) {
+      const option = button('', () => selectSession(session.id), 'secondary session-option');
+      option.dataset.session = session.id; option.setAttribute('aria-pressed', String(modelTarget === session.id));
+      const copy = node('span', null, 'session-copy');
+      const shortID = session.id.length > 18 ? `${session.id.slice(0, 8)}…${session.id.slice(-6)}` : session.id;
+      copy.append(node('strong', session.title || t('unnamedSession')),
+        node('small', `${shortID} · ${session.model || session.clientModel || '—'}${session.provider ? ' · ' + session.provider : ''}`));
+      option.title = session.id;
+      const status = node('span', t(session.activeRequests ? 'sessionRunning' : 'sessionWaiting'), `session-state${session.activeRequests ? ' running' : ''}`);
+      option.append(copy, status); if (session.overridden) copy.append(node('small', `${t('sessionOverride')} · ${session.selection ? session.selection.model + ' · ' + (session.selection.effort || t('providerDefault')) : t('followCodex')}`));
+      $('session-list').append(option);
+    }
+  }
+  $('sessions-empty').hidden = !!sessions.length;
+  $('global-model').setAttribute('aria-pressed', String(modelTarget === 'global'));
+  const session = sessions.find(item => item.id === modelTarget);
+  $('model-target').textContent = modelTarget === 'global' ? t('globalTarget') : session ? t('sessionTarget', { title: session.title || session.id }) : t('chooseSessionHelp');
+  $('model-feedback').hidden = !modelFeedback;
+  if (modelFeedback) $('model-feedback').textContent = t(modelFeedback.global ? 'globalModelApplied' : 'modelApplied', modelFeedback);
 }
 function renderModelPicker() {
   const id = $('model-select').value, entry = catalog.find(model => model.id === id);
@@ -103,7 +136,7 @@ function renderEfforts() {
   const signature = JSON.stringify([language, model, entry?.efforts, selected]); if (signature === effortSignature) return;
   effortSignature = signature; $('effort-options').replaceChildren();
   for (const value of ['', ...(entry?.efforts || [])]) {
-    const option = button(value ? (t('effort_' + value) === 'effort_' + value ? value : t('effort_' + value)) : t('providerDefault'), () => {
+    const option = button(value ? (t('effort_' + value) === 'effort_' + value ? value : t('effort_' + value)) : t(model ? 'providerDefault' : 'followCodex'), () => {
       $('effort-select').value = value; modelDirty = true; renderEfforts();
       [...$('effort-options').children].find(item => item.dataset.effort === value)?.focus();
     }, 'secondary effort-option');
@@ -148,7 +181,10 @@ function renderModelOptions() {
 function renderCatalogStatus() {
   $('refresh-models-label').textContent = t(catalogLoading ? 'catalogLoading' : 'refreshCatalog');
   $('refresh-models').classList.toggle('loading', catalogLoading);
-  $('apply-model').disabled = catalogLoading || catalogAlias !== state?.active || catalogFailed;
+  const target = modelTarget === 'global' || state?.sessions.some(session => session.id === modelTarget);
+  $('model-picker').disabled = !target;
+  $('reset-model').disabled = !target;
+  $('apply-model').disabled = !target || catalogLoading || catalogAlias !== state?.active || catalogFailed;
   $('catalog-status').classList.toggle('failed', catalogFailed);
   const changed = catalogLoaded && catalogLoaded.alias !== state?.active;
   $('catalog-status').textContent = catalogLoading ? t('catalogLoading') : catalogFailed ? t('catalogFailed') : changed ? t('catalogChanged') : catalogLoaded
@@ -158,11 +194,11 @@ async function loadModels() {
   if (catalogLoading) return;
   catalogLoading = true; catalogFailed = false; $('refresh-models').disabled = true; renderCatalogStatus(); notice('catalogLoading');
   try {
-    const alias = state.active;
+    const alias = (await call('state')).active;
     const result = await call('models');
     if ((await call('state')).active !== alias) throw new Error(t('catalogChanged'));
     catalog = result.models; catalogAlias = alias; catalogLoaded = { alias, at: Date.now(), count: catalog.length };
-    $('model-select').value = state.model?.model || ''; efforts(); notice(result.notice || '', true); modelDirty = false;
+    $('model-select').value = targetSelection()?.model || ''; efforts(); notice(result.notice || '', true); modelDirty = false;
   } catch (error) { catalogFailed = true; notice(error.message, true); }
   finally { catalogLoading = false; $('refresh-models').disabled = false; renderCatalogStatus(); }
 }
@@ -278,11 +314,20 @@ $('model-options').addEventListener('keydown', event => {
   options[event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus();
 });
 $('refresh-models').addEventListener('click', loadModels);
+$('global-model').addEventListener('click', () => selectSession('global'));
+async function saveModel(selection) {
+  const target = modelTarget, session = state.sessions.find(item => item.id === target);
+  if (target !== 'global' && !session) return;
+  await run(target === 'global' ? 'model' : 'session-model', target === 'global' ? selection : { sessionId: target, selection });
+  if (modelTarget !== target) return;
+  modelDirty = false; modelFeedback = { global: target === 'global', title: session?.title || target };
+  $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions();
+}
 $('model-form').addEventListener('submit', async event => {
   event.preventDefault(); const model = $('model-select').value;
-  try { await run('model', model ? { model, effort: $('effort-select').value || null } : null); modelDirty = false; } catch {}
+  try { await saveModel(model ? { model, effort: $('effort-select').value || null } : null); } catch {}
 });
-$('reset-model').addEventListener('click', async () => { try { await run('model', null); $('model-select').value = ''; efforts(); modelDirty = false; } catch {} });
+$('reset-model').addEventListener('click', async () => { try { await saveModel(null); } catch {} });
 $('network-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (state.activeRequests && !confirm(t('restartConfirm'))) return;
@@ -303,19 +348,53 @@ $('routing-toggle').addEventListener('click', async () => {
   try { await run(state.running ? 'stop' : 'start'); } catch {}
 });
 $('open-login').addEventListener('click', () => call('open-login').catch(showError));
+function formattedBytes(value) { return `${(value / 1024 ** 2).toLocaleString(language, { maximumFractionDigits: 1 })} MB`; }
+function appendNoteText(element, text) {
+  for (const part of text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)) {
+    if (part.startsWith('`')) element.append(node('code', part.slice(1, -1)));
+    else if (part.startsWith('**')) element.append(node('strong', part.slice(2, -2)));
+    else element.append(document.createTextNode(part));
+  }
+}
+function renderReleaseNotes(notes) {
+  $('update-notes').replaceChildren(); let list;
+  if (!notes) { $('update-notes').append(node('p', t('updateNotesMissing'))); return; }
+  for (const line of notes.split('\n')) {
+    const text = line.trim(); if (!text || text.startsWith('<!--')) continue;
+    if (/^[-*] /.test(text)) {
+      if (!list) { list = node('ul'); $('update-notes').append(list); }
+      const item = node('li'); appendNoteText(item, text.slice(2)); list.append(item);
+    } else {
+      list = null; const element = node(/^#+ /.test(text) ? 'h4' : 'p');
+      appendNoteText(element, text.replace(/^#+ /, '')); $('update-notes').append(element);
+    }
+  }
+}
 function renderUpdate() {
-  const update = state.update || {phase:'idle'};
-  $('update-dot').hidden = !['available','ready'].includes(update.phase);
+  const update = state.update || { phase: 'idle' }, phase = update.phase;
+  const busy = ['checking', 'downloading', 'installing'].includes(phase);
+  $('update-dialog').dataset.phase = phase;
+  $('update-dot').hidden = !['available', 'ready'].includes(phase);
   $('update-current').textContent = `easy-switch ${state.version}`;
-  $('update-title').textContent = t(update.version ? 'updateAvailable' : update.phase==='current' ? 'updateCurrent' : 'updateIdle', {version:update.version});
-  const key={checking:'updateChecking',downloading:'updateDownloading',ready:'updateReady',installing:'updateInstall',current:'updateCurrent',error:'updateFailed'}[update.phase];
-  $('update-status').textContent = key ? t(key,{percent:Math.min(100,Math.floor(100*(update.received||0)/(update.total||1)))}) : '';
-  $('update-progress').hidden=update.phase!=='downloading'; $('update-progress').value=100*(update.received||0)/(update.total||1);
-  $('update-error').hidden=!update.error; if(update.error)$('update-error').textContent=localizeMessage(update.error,language);
-  $('update-action').hidden=!['available','ready','downloading','installing'].includes(update.phase) && !update.retryDownload;
-  $('update-action').disabled=['downloading','installing'].includes(update.phase); $('update-action').textContent=t(update.retryDownload?'retryDownload':update.phase==='ready'?'updateInstall':'updateDownload');
-  $('update-retry').disabled=['downloading','checking','installing'].includes(update.phase);
-  const signature=JSON.stringify([update.version,update.notes]); if(signature!==renderedUpdate){renderedUpdate=signature;$('update-notes').replaceChildren();for(const line of (update.notes||'').split('\n')) if(line.trim()) $('update-notes').append(node(/^#+ /.test(line)?'h3':'p',line.replace(/^#+ /,'')));}
+  const titles = { checking: 'updateChecking', current: 'updateCurrent', available: 'updateAvailable', downloading: 'updateDownloading', ready: 'updateReady', installing: 'updateInstall', error: 'updateFailed' };
+  const percent = Math.min(100, Math.floor(100 * (update.received || 0) / (update.total || 1)));
+  $('update-title').textContent = t(titles[phase] || 'updateIdle', { version: update.version, percent });
+  const subtitle = { current: update.checkedAt ? 'updateCheckedAt' : 'updateCurrentHelp', available: 'updateReview', ready: 'updateReadyHelp', error: 'updateFailedHelp' }[phase] || 'updateIdleHelp';
+  $('update-status').textContent = t(subtitle, { time: update.checkedAt ? new Date(update.checkedAt).toLocaleTimeString(language) : '' });
+  $('update-symbol').setAttribute('href', `assets/ui.svg#${phase === 'current' || phase === 'ready' ? 'check' : phase === 'error' ? 'close' : phase === 'available' || phase === 'downloading' ? 'download' : 'refresh'}`);
+  $('update-emblem').classList.toggle('spinning', phase === 'checking');
+  $('update-transfer').hidden = phase !== 'downloading'; $('update-progress').value = percent;
+  $('update-bytes').textContent = `${formattedBytes(update.received || 0)} / ${formattedBytes(update.total || 0)}`;
+  $('update-error').hidden = !update.error; if (update.error) $('update-error').textContent = localizeMessage(update.error, language);
+  $('update-action').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase) && !update.retryDownload;
+  $('update-action').disabled = busy; $('update-action').textContent = t(update.retryDownload ? 'retryDownload' : phase === 'ready' || phase === 'installing' ? 'updateInstall' : 'updateDownload');
+  $('update-retry').disabled = busy;
+  $('update-warning').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase);
+  $('update-metadata').hidden = !update.version;
+  $('update-metadata').textContent = [update.version ? `${state.version} → ${update.version}` : '', update.date ? new Date(update.date).toLocaleDateString(language) : '', update.size ? formattedBytes(update.size) : ''].filter(Boolean).join(' · ');
+  $('update-changes').hidden = !update.version;
+  const signature = JSON.stringify([language, update.version, update.notes]);
+  if (signature !== renderedUpdate) { renderedUpdate = signature; renderReleaseNotes(releaseNotes(update.notes, language)); }
 }
 async function showUpdates() { if(!$('update-dialog').open)$('update-dialog').showModal();try{await run('updates');}catch{} }
 $('updates').addEventListener('click',showUpdates); $('update-retry').addEventListener('click',showUpdates);

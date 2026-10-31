@@ -43,6 +43,16 @@ test('desktop appearance preferences persist and invalid choices never replace t
   for (const patch of [{language:'unknown'}, {theme:'unknown'}, {extra:'unrequested'}, {startAtLogin:'yes'}]) assert.throws(()=>controller.setPreferences(patch), /Invalid/);
   assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
 });
+test('desktop applies a model only to the explicitly selected observed session', t => {
+  const controller = setup(t); controller.addAPI({ alias: 'api', key: 'fixture' });
+  const request = controller.runtime.sessions.begin({ 'thread-id': 'session-a' }, { model: 'client', input: 'Fix a bug' });
+  controller.catalog = { alias: 'api', models: [{ id: 'fixture-model', efforts: ['high'] }] };
+  assert.throws(() => controller.model({ model: 'fixture-model', effort: 'high' }, 'unknown'), /Choose a session/);
+  controller.model({ model: 'fixture-model', effort: 'high' }, 'session-a');
+  assert.equal(controller.snapshot().model, null); assert.equal(controller.snapshot().sessions[0].selection.model, 'fixture-model');
+  controller.model(null, 'session-a'); assert.equal(controller.snapshot().sessions[0].selection, null);
+  request.finish(); assert.equal(controller.snapshot().sessions[0].activeRequests, 0);
+});
 test('deleting providers removes their secret and selects the next alias', t => {
  const controller=setup(t);
  controller.addAPI({alias:'first',key:'fixture-first'});controller.addAPI({alias:'second',key:'fixture-second'});

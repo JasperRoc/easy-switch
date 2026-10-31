@@ -75,13 +75,19 @@ export function setOrder(aliases, root = home()) {
     s.order = [...aliases];
   }, root);
 }
-export function setModel(selection, root = home(), expectedAlias) {
+export function setModel(selection, root = home(), expectedAlias, sessionId) {
   if (selection && (typeof selection.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(selection.model) ||
       (selection.effort !== null && (typeof selection.effort !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(selection.effort))))) {
     throw new Error('无效的模型或 effort');
   }
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(sessionId))) throw new Error('Invalid session ID.');
   return update(s => {
     if (expectedAlias !== undefined && s.active !== expectedAlias) throw new Error('选择期间上游已变化，请重新执行 switch model');
+    if (sessionId !== undefined) {
+      s.sessionModels ??= {};
+      s.sessionModels[sessionId] = selection ? { model: selection.model, effort: selection.effort } : null;
+      return;
+    }
     if (selection) s.modelSelection = { model: selection.model, effort: selection.effort };
     else delete s.modelSelection;
   }, root);

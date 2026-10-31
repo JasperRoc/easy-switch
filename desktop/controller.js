@@ -48,7 +48,7 @@ export class DesktopController {
     });
     return { running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: this.login && { alias: this.login.alias, phase: this.login.phase, message: this.login.message, url: this.login.url, code: this.login.code },
-      activeRequests: this.runtime.activeRequests, preferences: this.preferences() };
+      activeRequests: this.runtime.activeRequests, sessions: this.runtime.sessions.snapshot(state), preferences: this.preferences() };
   }
   switchProvider(alias) { activate(aliasName(alias), this.root); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.root); return this.snapshot(); }
@@ -128,11 +128,12 @@ export class DesktopController {
     this.catalog = { alias: state.active, ...result };
     return result;
   }
-  model(selection) {
-    if (!selection) { setModel(null, this.root); return this.snapshot(); }
+  model(selection, sessionId) {
+    if (sessionId !== undefined && !this.runtime.sessions.entries.has(sessionId)) throw new Error('Choose a session observed by this app first.');
+    if (!selection) { setModel(null, this.root, undefined, sessionId); return this.snapshot(); }
     const entry = this.catalog?.models.find(model => model.id === selection.model);
     if (!entry || (selection.effort !== null && !entry.efforts.includes(selection.effort))) throw new Error('Reload the model catalog and choose a supported effort.');
-    setModel(selection, this.root, this.catalog.alias);
+    setModel(selection, this.root, this.catalog.alias, sessionId);
     return this.snapshot();
   }
   async configureNetwork() {

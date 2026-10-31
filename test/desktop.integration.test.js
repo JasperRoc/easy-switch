@@ -24,7 +24,10 @@ async function launch(t, extraEnv = {}, initialConfig) {
     env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
   const app = await _electron.launch(options);
   app.process().stderr?.resume();
-  t.after(async () => { await app.close().catch(() => {}); fs.rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await app.windows()[0]?.evaluate(() => window.easySwitch.call('stop')).catch(() => {});
+    await app.close().catch(() => {}); fs.rmSync(directory, { recursive: true, force: true });
+  });
   const page = await app.firstWindow();
   await page.locator('#status').filter({ hasText: 'Routing active' }).waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
@@ -40,7 +43,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.click('#add-api'); await page.fill('#provider-alias','personal');
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
-  await page.click('[data-tab="model"]');
+  await page.click('[data-tab="model"]');await page.click('#global-model');
   await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
   await page.click('#model-picker'); await page.fill('#model-search','relay-only');
   await page.locator('[data-model="relay-only-model"]').click();
@@ -167,7 +170,7 @@ test('API configuration import previews its type, close icons center, network fi
   assert.equal(await page.locator('#provider-alias').inputValue(),'relay');await centered('close-dialog');
   assert.equal((await page.locator('#import-preview').innerText()).includes('fixture-import-secret'),false);
   await page.click('#save-provider');await page.locator('.provider strong').filter({hasText:'relay'}).waitFor();
-  await page.click('[data-tab="model"]');await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
+  await page.click('[data-tab="model"]');await page.click('#global-model');await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
   await page.click('#refresh-models');await page.locator('#refresh-models:not([disabled])').waitFor();
   assert.match(await page.locator('#catalog-status').innerText(),/2 models/);
   await page.click('#model-picker');await page.fill('#model-search','relay-model');await page.press('#model-search','ArrowDown');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
@@ -181,4 +184,64 @@ test('API configuration import previews its type, close icons center, network fi
   assert.match(await page.locator('[data-i18n="bypassHelp"]').innerText(),/connect directly/);
   await page.screenshot({path:path.join(folder,'connection-explained.png')});
   await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
+});
+
+test('desktop targets a running session, aligns effort controls and localizes structured update notes', { skip: !enabled, timeout: 60000 }, async t => {
+  const received = [], streams = [];
+  const upstream = http.createServer(async (req, res) => {
+    if (req.method === 'GET') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-6.1-sol' }, { id: 'gpt-5.1-codex' }] })); return; }
+    let body = ''; for await (const chunk of req) body += chunk; received.push(JSON.parse(body));
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('data: {"part":1}\n\n'); streams.push(res);
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { app, page, root } = await launch(t);
+  await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'demo', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  await page.locator('.provider strong').filter({ hasText: 'demo' }).waitFor();
+  const endpoint = (await page.evaluate(() => window.easySwitch.call('network'))).localProxy.url;
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const responses = [];
+  for (const [id, text] of [['task-a', 'Repair the search feature'], ['task-b', 'Review the database migration']]) {
+    responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'thread-id': id }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: text }) }));
+  }
+  await page.click('[data-tab="model"]'); await page.locator('[data-session="task-a"]').waitFor();
+  assert.equal(await page.locator('#apply-model').isDisabled(), true);
+  await page.click('[data-session="task-a"]');
+  await page.click('#model-picker'); await page.locator('[data-model="gpt-6.1-sol"]').click();
+  const picker = await page.locator('#model-picker').boundingBox(), effort = await page.locator('[data-effort=""]').boundingBox();
+  assert.ok(Math.abs(picker.y + picker.height / 2 - effort.y - effort.height / 2) < 1, 'Effort and model controls must share a centerline');
+  await page.click('[data-effort="high"]'); await page.click('#apply-model');
+  await page.locator('#model-feedback').filter({ hasText: 'Saved for Repair the search feature' }).waitFor();
+  const modelState = JSON.parse(fs.readFileSync(path.join(root, 'state.json')));
+  assert.equal(modelState.modelSelection, undefined); assert.equal(modelState.sessionModels['task-a'].model, 'gpt-6.1-sol'); assert.equal(modelState.sessionModels['task-b'], undefined);
+  const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'session-model.png') });
+  for (const stream of streams) stream.end('data: [DONE]\n\n');
+  await Promise.all(responses.map(response => response.text())); assert.ok(received.every(body => body.model === 'gpt-5.1-codex'));
+
+  // Replace only this isolated test app's update IPC response; no real release or install is changed.
+  await app.evaluate(({ ipcMain }) => {
+    const notes = '<!-- easy-switch:notes:en -->\n## Improvements\n- Switch a single **session**.\n<!-- easy-switch:notes:zh-CN -->\n## 功能改进\n- 为单条**会话**切换模型。\n';
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', (_event, action) => {
+      if (action === 'state') return globalThis.easySwitchTestState;
+      if (action === 'updates') return {};
+      if (action === 'preferences') { globalThis.easySwitchTestState.language = globalThis.easySwitchTestState.language === 'en' ? 'zh-CN' : 'en'; return {}; }
+    });
+    globalThis.easySwitchTestNotes = notes;
+  });
+  const uiState = { running: true, providers: [], sessions: [], active: 'demo', version: '0.4.3', language: 'en', dark: false, theme: 'light', platform: process.platform,
+    update: { phase: 'available', version: '0.4.4', date: '2026-10-31T00:00:00Z', size: 1024 ** 2 } };
+  await app.evaluate((_electron, state) => { globalThis.easySwitchTestState = { ...state, update: { ...state.update, notes: globalThis.easySwitchTestNotes } }; }, uiState);
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
+  assert.equal(await page.locator('#update-notes li strong').innerText(), 'session');
+  await page.screenshot({ path: path.join(folder, 'update-en.png') });
+  await page.click('#close-update'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
+  assert.equal((await page.locator('#update-notes').innerText()).includes('Switch a single'), false);
+  assert.equal((await page.locator('#update-notes').innerText()).includes('<!--'), false);
+  await page.screenshot({ path: path.join(folder, 'update-zh.png') });
+  await app.evaluate(() => { globalThis.easySwitchTestState.update = { phase: 'current', checkedAt: Date.now() }; });
+  await page.click('#update-retry'); await page.locator('#update-title').filter({ hasText: '已经是最新版本' }).waitFor();
+  assert.equal(await page.locator('#update-warning').isVisible(), false); assert.equal(await page.locator('#update-changes').isVisible(), false);
+  assert.equal((await page.locator('#update-status').innerText()).includes('最新版本'), false);
+  await page.screenshot({ path: path.join(folder, 'update-current.png') });
 });

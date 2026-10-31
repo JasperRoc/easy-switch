@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { init } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
+import { SessionTracker } from '../src/sessions.js';
 import { activateSession, restoreSession } from './config.js';
 
 export function protectDirectory(root) {
@@ -23,6 +24,7 @@ export class DesktopRuntime {
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
+    this.sessions = new SessionTracker();
   }
   transition(action) {
     const result = this.pending.then(action);
@@ -33,7 +35,7 @@ export class DesktopRuntime {
   stop() { return this.transition(() => this.stopRouting()); }
   restartNetwork() { return this.transition(() => this.restartRouting()); }
   async listen() {
-    const server = this.createServer({ root: this.root, reauth: this.reauth });
+    const server = this.createServer({ root: this.root, reauth: this.reauth, sessions: this.sessions });
     server.on('request', (req, res) => {
       if (req.method !== 'POST') return;
       this.activeRequests++;

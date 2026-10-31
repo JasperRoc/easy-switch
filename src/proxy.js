@@ -7,6 +7,7 @@ import { createReauth, expired } from './auth.js';
 import { alternate, recoverable, rejectionText } from './failover.js';
 import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
+import { SessionTracker, selectedModel } from './sessions.js';
 
 function authorized(req, token) {
   const a = Buffer.from(req.headers.authorization || '');
@@ -72,13 +73,14 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now() }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), sessions = new SessionTracker() }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const cooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
     const abort = new AbortController();
+    let session;
     res.on('close', () => { if (!res.writableFinished) abort.abort(); });
     try {
       let state = readState(root);
@@ -93,6 +95,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (!Array.isArray(payload.input) && typeof payload.input !== 'string') return error(res, 400, '缺少 input');
       if (Array.isArray(payload.input) && payload.input.some(i => i.type === 'compaction' || i.type === 'item_reference')) return error(res, 400, '上下文含不可跨上游重放的压缩/引用项；请新建会话或使用可重放的本地摘要');
       if (!state.providers[state.active]) return error(res, 409, '请先添加并选择账号/API');
+      session = sessions.begin(req.headers, payload);
+      if (session) res.once('close', session.finish);
       if (manualGeneration !== (state.manualGeneration || 0)) {
         cooldown.clear(); manualGeneration = state.manualGeneration || 0;
       }
@@ -100,7 +104,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       delete payload.previous_response_id;
       payload.store = false;
       payload.stream = true;
-      const modelSelection = state.modelSelection;
+      const modelSelection = selectedModel(state, session?.id);
       let alias = state.active;
       const attempted = new Set();
       const maxAttempts = Object.keys(state.providers).length;
@@ -126,6 +130,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         }
         if (provider.model) outgoing.model = provider.model;
         outgoing = applyModel(outgoing, modelSelection);
+        session?.used(alias, outgoing);
         const upstream = await fetchImpl(url, {
           method: 'POST', headers, body: JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
         });
@@ -167,7 +172,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (res.destroyed) return;
       if (res.headersSent) res.destroy();
       else error(res, e instanceof SyntaxError ? 400 : 502, e instanceof SyntaxError ? '无效 JSON' : '代理请求失败；检查配置、账号登录或上游连接');
-    }
+    } finally { session?.finish(); }
   });
   server.on('close', () => {
     reauth.close();
