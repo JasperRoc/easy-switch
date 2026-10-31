@@ -7,6 +7,7 @@ import { saveNetwork, networkEnvironment } from '../src/network.js';
 import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
 import { DesktopRuntime, protectDirectory } from './runtime.js';
 import { existingProvider } from './import.js';
+import { SubscriptionUsage } from './usage.js';
 
 export class DesktopController {
   constructor({ root, codexHome, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy }) {
@@ -19,6 +20,7 @@ export class DesktopController {
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
       ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
     this.runtime = new DesktopRuntime({ root, codexHome, port, reauth: this.reauth, guardExec });
+    this.usage = new SubscriptionUsage({ root, refreshAuth: provider => codexModels({ binary, provider }) });
     this.preferencesFile = path.join(root, 'desktop.json');
   }
   preferences() {
@@ -35,21 +37,29 @@ export class DesktopController {
   async start() {
     process.env.SWITCH_CODEX_BIN = this.binary;
     await this.configureNetwork();
+    this.usage.closed = false;
     await this.runtime.start();
   }
-  async stop() { await this.runtime.stop(); this.reauth.close(); }
+  refreshUsage(alias) {
+    const state = readState(this.root);
+    if (typeof alias !== 'string' || state.providers[alias]?.type !== 'account') throw new Error('Unknown subscription.');
+    if (this.runtime.active) this.usage.snapshot(state, alias);
+    return this.snapshot();
+  }
+  async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); }
   snapshot() {
     const state = init(this.root);
+    const usage = this.runtime.active ? this.usage.snapshot(state) : {};
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
       let needsLogin = false;
       if (provider.type === 'account') { try { needsLogin = expired(accountAuth(provider)); } catch { needsLogin = true; } }
-      return { alias, type: provider.type, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin };
+      return { alias, type: provider.type, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null };
     });
     const sessions = this.runtime.sessions.snapshot(state);
     return { running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: this.login && { alias: this.login.alias, phase: this.login.phase, message: this.login.message, url: this.login.url, code: this.login.code },
-      activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: this.runtime.sessions.unavailable, preferences: this.preferences() };
+      imageTools: !!this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: this.runtime.sessions.unavailable, preferences: this.preferences() };
   }
   switchProvider(alias) { activate(aliasName(alias), this.root); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.root); return this.snapshot(); }
@@ -57,6 +67,7 @@ export class DesktopController {
     const provider = readState(this.root).providers[alias];
     if (!provider) throw new Error('Unknown provider.');
     removeProvider(alias, this.root); this.catalog = null;
+    this.runtime.syncTools();
     if (provider.type === 'account') {
       this.reauth.cancel(provider);
       if (this.login?.alias === alias) this.login = null;
@@ -92,6 +103,7 @@ export class DesktopController {
         login.phase = 'complete';
         login.message = 'Signed in successfully.';
         this.catalog = null;
+        this.runtime.syncTools();
       } catch { login.phase = 'failed'; login.message = 'Sign-in completed, but that alias was added elsewhere. Use a different alias.'; }
     });
     const message = await task.ready;
@@ -119,6 +131,7 @@ export class DesktopController {
     const accountHome = path.join(this.root, 'accounts', alias);
     atomic(path.join(accountHome, 'auth.json'), provider.auth);
     addProvider(alias, { type: 'account', accountHome }, this.root);
+    this.runtime.syncTools();
     return this.snapshot();
   }
   async models() {

@@ -43,3 +43,11 @@ test('subscription import copies credentials; missing, unsupported and unavailab
   const unrelated = setup(t, 'model_provider="relay"\n[model_providers.relay]\nbase_url="https://example.test/v1"\nrequires_openai_auth=false\n', { OPENAI_API_KEY: 'unrelated-secret' });
   assert.throws(() => unrelated.importLogin('relay'), /No readable Codex credentials/);
 });
+test('temporary native subscription setup does not hide the original API credentials from import', t => {
+  const original = 'model_provider="openai"\n';
+  const controller = setup(t, 'model_provider="easy_switch"\n', { auth_mode: 'chatgpt', tokens: { access_token: 'temporary-account', account_id: 'fixture' } });
+  atomic(controller.runtime.recordFile, { file: path.join(controller.codexHome, 'config.toml'), original,
+    auth: { file: path.join(controller.codexHome, 'auth.json'), original: JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'original-api' }) } });
+  assert.equal(controller.existingLogin().type, 'api'); controller.importLogin('original');
+  assert.equal(readState(controller.root).providers.original.apiKey, 'original-api');
+});

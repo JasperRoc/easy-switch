@@ -9,6 +9,7 @@ import readline from 'node:readline';
 import { DesktopRuntime } from '../desktop/runtime.js';
 import { restoreSession, restoredText } from '../desktop/config.js';
 import { parse } from 'smol-toml';
+import { addProvider, removeProvider, atomic, init } from '../src/store.js';
 
 async function setup(t, original = '# original\nmodel_provider="openai"\nmodel="original"\n') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-'));
@@ -40,6 +41,63 @@ test('desktop preserves native subscription tools and leaves native auth untouch
   assert.equal(provider.http_headers['X-Easy-Switch-Token'], JSON.parse(fs.readFileSync(path.join(runtime.root, 'state.json'))).token);
   await runtime.stop();
   assert.equal(fs.readFileSync(authFile, 'utf8'), auth); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+test('an easy-switch subscription enables native images over an original API/keyring login and restores both', async t => {
+  const { runtime, codexHome, file, original } = await setup(t, 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\nmodel="original"\n[features]\nimage_generation=false\nshell_tool=true\n');
+  const authFile = path.join(codexHome, 'auth.json'), oldAuth = '{"auth_mode":"apikey","OPENAI_API_KEY":"original-api"}\n';
+  fs.writeFileSync(authFile, oldAuth);
+  init(runtime.root);
+  const accountHome = path.join(runtime.root, 'accounts', 'subscription');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture', id_token: 'identity', account_id: 'account' } });
+  addProvider('account', { type: 'account', accountHome }, runtime.root);
+  await runtime.start();
+  const config = parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(config.cli_auth_credentials_store, 'file'); assert.equal(config.forced_login_method, 'chatgpt');
+  assert.equal(config.features.image_generation, true); assert.equal(config.features.shell_tool, true);
+  assert.equal(config.model_providers.easy_switch.requires_openai_auth, true);
+  assert.equal(JSON.parse(fs.readFileSync(authFile)).auth_mode, 'chatgpt');
+  assert.equal(JSON.parse(fs.readFileSync(authFile)).OPENAI_API_KEY, null);
+  assert.equal(runtime.imageTools, true);
+  await runtime.stop();
+  assert.equal(fs.readFileSync(authFile, 'utf8'), oldAuth); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+test('adding a subscription while routing is active retains intervening config edits and preserves concurrent native sign-in', async t => {
+  const { runtime, codexHome, file } = await setup(t);
+  await runtime.start();
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('model="original"', 'model="edited"'));
+  const accountHome = path.join(runtime.root, 'accounts', 'subscription');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture', id_token: 'identity', account_id: 'account' } });
+  addProvider('account', { type: 'account', accountHome }, runtime.root); runtime.syncTools();
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).features.image_generation, true);
+  const changedAuth = '{"tokens":{"access_token":"new-login","id_token":"new-person","account_id":"different"}}\n';
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), changedAuth);
+  await runtime.stop();
+  const restored = parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(restored.model, 'edited'); assert.equal(restored.features, undefined); assert.equal(restored.cli_auth_credentials_store, undefined);
+  assert.equal(fs.readFileSync(path.join(codexHome, 'auth.json'), 'utf8'), changedAuth);
+});
+test('native token refresh is retained in the subscription cache and an originally missing auth file is removed', async t => {
+  const { runtime, codexHome } = await setup(t); init(runtime.root);
+  const accountHome = path.join(runtime.root, 'accounts', 'subscription');
+  const original = { tokens: { access_token: 'old', id_token: 'identity', account_id: 'account' } };
+  atomic(path.join(accountHome, 'auth.json'), original); addProvider('account', { type: 'account', accountHome }, runtime.root);
+  await runtime.start();
+  const authFile = path.join(codexHome, 'auth.json'), refreshed = JSON.parse(fs.readFileSync(authFile));
+  refreshed.tokens.access_token = 'refreshed'; atomic(authFile, refreshed);
+  await runtime.stop();
+  assert.equal(fs.existsSync(authFile), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(accountHome, 'auth.json'))).tokens.access_token, 'refreshed');
+});
+test('removing the subscription deletes the temporary native sign-in and disables its tools without stopping routing', async t => {
+  const { runtime, codexHome, file, original } = await setup(t); init(runtime.root);
+  const accountHome = path.join(runtime.root, 'accounts', 'subscription');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture', account_id: 'account' } });
+  addProvider('account', { type: 'account', accountHome }, runtime.root); await runtime.start();
+  removeProvider('account', runtime.root); runtime.syncTools();
+  assert.equal(fs.existsSync(path.join(codexHome, 'auth.json')), false);
+  assert.equal(runtime.imageTools, false); assert.equal(runtime.active, true);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch.requires_openai_auth, false);
+  await runtime.stop(); assert.equal(fs.readFileSync(file, 'utf8'), original);
 });
 test('desktop exit preserves model changes and unrelated configuration text', async t => {
   const { runtime, file } = await setup(t);
@@ -75,15 +133,23 @@ test('unusual TOML cannot be corrupted by desktop restoration', async t => {
 });
 test('independent guard restores configuration if the desktop process crashes', { timeout: 15000 }, async t => {
   const { directory, root, codexHome, runtime, file, original } = await setup(t);
+  init(root);
+  const accountHome = path.join(root, 'accounts', 'subscription');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture', account_id: 'fixture' } });
+  addProvider('account', { type: 'account', accountHome }, root);
+  const authFile = path.join(codexHome, 'auth.json'), originalAuth = '{"auth_mode":"apikey","OPENAI_API_KEY":"original-fixture"}\n';
+  fs.writeFileSync(authFile, originalAuth);
   const script = `import {DesktopRuntime} from ${JSON.stringify(new URL('../desktop/runtime.js', import.meta.url).href)}; const runtime=new DesktopRuntime({root:${JSON.stringify(root)},codexHome:${JSON.stringify(codexHome)},port:0});await runtime.start();console.log('READY');`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
   const ready = new Promise(resolve => readline.createInterface({ input: child.stdout }).on('line', line => { if (line === 'READY') resolve(); }));
   child.stderr.resume(); await ready;
+  assert.equal(JSON.parse(fs.readFileSync(authFile)).auth_mode, 'chatgpt');
   const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
   for (let n = 0; n < 50 && fs.existsSync(runtime.recordFile); n++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(fs.existsSync(runtime.recordFile), false);
   assert.equal(fs.readFileSync(file, 'utf8'), original);
+  assert.equal(fs.readFileSync(authFile, 'utf8'), originalAuth);
 });
 test('rapid start and stop requests cannot leave configuration pointing to a stopped proxy', async t => {
   const { runtime, file, original } = await setup(t);

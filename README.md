@@ -114,9 +114,13 @@ The official OpenAI API and Responses-compatible third-party APIs can already be
 
 Windows x64 and macOS Apple silicon/Intel desktop installers are available alongside the Linux systemd CLI. Desktop routing follows the application lifetime; Linux routing follows its systemd service. Apple silicon macOS has packaged-app tests; Windows and Intel macOS need native runtime validation. See the [desktop guide](docs/desktop.md).
 
+### Can I see my subscription quota?
+
+Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. When weekly quota is exhausted, the row displays the returned purchased-credit balance. Hover for reset times, or click to refresh. Missing data and failed reads are shown explicitly; the app does not estimate balances or reset quota.
+
 ### Can a subscription handle image generation while text uses an API?
 
-Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, an existing file-based native subscription sign-in is preserved; adding a subscription only to easy-switch does not enable a tool hidden by the client’s API login mode. See [image routing](docs/usage.md#image-generation-routing).
+Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, adding a subscription also configures native image tools and temporarily connects its sign-in when Codex was using API authentication. Reload an already-open Codex client once after this setup; later provider switches keep these tools available. Quitting restores the original connection and any temporary sign-in. See [image routing](docs/usage.md#image-generation-routing).
 
 ### Does switching interrupt the current task?
 

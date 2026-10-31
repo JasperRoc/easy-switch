@@ -1,5 +1,10 @@
 export const messages = {
   en: {
+    quotaWeek: 'Week', quotaFiveHour: '5h', quotaCredits: 'Remaining credits', quotaLoading: 'Loading quota…',
+    quotaUnavailable: 'Quota unavailable', quotaRefresh: 'Refresh subscription quota', quotaStale: 'Last known quota',
+    quotaRemaining: '{label}: {percent}% remaining', quotaNotProvided: '{label}: not reported by account',
+    quotaResets: 'Resets {time}', quotaUpdated: 'Updated {time}',
+    nativeImagesHelp: 'Native image tools are configured using your subscription. If Codex was already open, reload it once to activate them. Text requests continue to use your selected provider.',
     chooseSession: 'Choose a session', globalDefault: 'Global default', chooseSessionHelp: 'Select a session above to change only its model.',
     sessionsEmpty: 'No Codex tasks are running. Tasks appear when they send a request through easy-switch and disappear when the turn finishes.',
     sessionsUnavailable: 'Some Codex task metadata could not be read. Check that easy-switch and Codex use the same CODEX_HOME.',
@@ -71,6 +76,11 @@ export const messages = {
     loginPermission: 'The operating system did not apply the login startup setting. Check login-item permissions in system settings.',
   },
   'zh-CN': {
+    quotaWeek: '周额度', quotaFiveHour: '5 小时', quotaCredits: '剩余购买额度', quotaLoading: '正在读取额度…',
+    quotaUnavailable: '额度暂不可用', quotaRefresh: '刷新订阅额度', quotaStale: '上次读取的额度',
+    quotaRemaining: '{label}：剩余 {percent}%', quotaNotProvided: '{label}：账号未返回此额度',
+    quotaResets: '重置时间：{time}', quotaUpdated: '更新于 {time}',
+    nativeImagesHelp: '已使用订阅配置 Codex 原生图片工具。如果 Codex 已打开，请重载一次以启用；文本请求继续使用你选择的服务商。',
     chooseSession: '选择会话', globalDefault: '全局默认', chooseSessionHelp: '先在上方选择会话，仅修改这条会话的模型。',
     sessionsEmpty: '当前没有正在运行的 Codex 任务。任务经过 easy-switch 发出请求后自动显示，本轮任务结束后自动移除。',
     sessionsUnavailable: '部分 Codex 任务信息暂时无法读取，请确认 easy-switch 与 Codex 使用相同的 CODEX_HOME。',

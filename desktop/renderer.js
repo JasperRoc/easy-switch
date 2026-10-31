@@ -44,6 +44,56 @@ function button(text, handler, className = 'secondary') {
   const element = node('button', text, className); element.addEventListener('click', () => Promise.resolve(handler()).catch(() => {})); return element;
 }
 function icon(name) { const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'), use=document.createElementNS('http://www.w3.org/2000/svg','use'); use.setAttribute('href',`assets/ui.svg#${name}`); svg.setAttribute('aria-hidden','true'); svg.append(use); return svg; }
+function quotaRing(data, box, tooltip) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
+  const plus = data.plan === 'plus', descriptions = [];
+  for (const weekly of plus ? [false, true] : [true]) {
+    const value = weekly ? data.weekly : data.fiveHour, label = t(weekly ? 'quotaWeek' : 'quotaFiveHour');
+    const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
+    let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
+    if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
+    descriptions.push(description);
+    const group = document.createElementNS(svg.namespaceURI, 'g');
+    group.setAttribute('class', `quota-segment${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
+    group.setAttribute('role', 'img'); group.setAttribute('aria-label', description);
+    for (const progress of [false, true]) {
+      const shape = document.createElementNS(svg.namespaceURI, plus ? 'path' : 'circle');
+      const attributes = plus ? { d: weekly ? 'M42.271 15.865 A20 20 0 1 1 5.729 15.865' : 'M7.820 12.244 A20 20 0 0 1 40.180 12.244' } : { cx: 24, cy: 24, r: 20, transform: 'rotate(-90 24 24)' };
+      for (const [key, val] of Object.entries({ ...attributes, pathLength: 100, class: progress ? 'quota-progress' : 'quota-track' })) shape.setAttribute(key, val);
+      if (progress) { shape.setAttribute('stroke-dasharray', '100'); shape.setAttribute('stroke-dashoffset', value ? 100 - value.remaining : 100); }
+      group.append(shape);
+    }
+    const hit = group.firstChild.cloneNode(); hit.setAttribute('class', 'quota-hit'); group.append(hit);
+    group.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
+    group.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+    svg.append(group);
+  }
+  const text = document.createElementNS(svg.namespaceURI, 'text'); text.setAttribute('x', '24'); text.setAttribute('y', '25');
+  text.textContent = data.weekly ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(data.weekly.remaining) + '%' : '—'; svg.append(text);
+  box.addEventListener('focus', () => { tooltip.textContent = descriptions.join('\n'); tooltip.hidden = false; });
+  box.addEventListener('blur', () => { tooltip.hidden = true; });
+  box.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  return svg;
+}
+function quotaDisplay(provider) {
+  const usage = provider.usage, data = usage?.data;
+  const box = button('', () => run('usage', provider.alias), 'secondary quota');
+  box.setAttribute('aria-label', t('quotaRefresh'));
+  if (!data) {
+    box.append(node('span', t(usage?.status === 'signin' ? 'loginNeeded' : usage?.status === 'unavailable' ? 'quotaUnavailable' : 'quotaLoading'), 'quota-message'));
+  } else if (data.weekly?.remaining === 0) {
+    box.append(node('span', t('quotaCredits'), 'quota-caption'), node('strong', data.unlimited ? '∞' : data.credits === null ? '—' : new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits), 'quota-balance'));
+  } else {
+    const tooltip = node('span', null, 'quota-tooltip'); tooltip.hidden = true; tooltip.id = `quota-tip-${provider.alias}`; tooltip.setAttribute('role', 'tooltip');
+    box.setAttribute('aria-describedby', tooltip.id); box.append(quotaRing(data, box, tooltip), tooltip);
+  }
+  box.title = t('quotaRefresh');
+  if (usage?.fetchedAt) box.title += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
+  if (data && usage.status !== 'ready') { box.classList.add('stale'); box.title += '\n' + t('quotaStale'); box.append(node('span', t('quotaStale'), 'quota-caption')); }
+  if (usage?.refreshing) box.setAttribute('aria-busy', 'true');
+  return box;
+}
 function renderProviders() {
   const signature = JSON.stringify([language, state.providers]);
   if (signature === renderedProviders || dragging) return;
@@ -56,7 +106,10 @@ function renderProviders() {
     handle.addEventListener('dragend', () => { if (dragging) { dragging = null; renderedProviders = ''; renderProviders(); } });
     handle.addEventListener('keydown', event => { if (!['ArrowUp','ArrowDown'].includes(event.key)) return; event.preventDefault(); const names = state.providers.map(item=>item.alias), next=index+(event.key==='ArrowUp'?-1:1); if(next<0 || next>=names.length)return; [names[index],names[next]]=[names[next],names[index]]; run('order',names).catch(()=>{}); });
     row.append(handle);
-    const identity = node('div', null, 'identity'); identity.append(node('strong', provider.alias), node('small', provider.type === 'account' ? t('account') : provider.baseUrl)); row.append(identity);
+    const identity = node('div', null, 'identity');
+    const plan = provider.usage?.data?.plan;
+    identity.append(node('strong', provider.alias), node('small', provider.type === 'account' ? ['plus', 'pro'].includes(plan) ? `ChatGPT ${plan === 'plus' ? 'Plus' : 'Pro'}` : t('account') : provider.baseUrl)); row.append(identity);
+    if (provider.type === 'account') row.append(quotaDisplay(provider));
     if (provider.active) row.append(node('span', t('active'), 'tag'));
     if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
     row.append(button(provider.active ? t('selected') : t('use'), () => run('switch', provider.alias), provider.active ? 'secondary' : ''));
@@ -75,6 +128,7 @@ function refresh() {
     $('current-model').textContent = customized ? t('sessionSummary', { count: customized }) : state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
+    $('native-images').hidden = !state.imageTools;
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;

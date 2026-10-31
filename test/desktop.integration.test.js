@@ -81,6 +81,61 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,undefined);
   assert.deepEqual(uiErrors,[]);
 });
+test('subscription quota rings, purchased credits, stale data and image setup notices render in both languages and themes', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page } = await launch(t);
+  const window = (remaining, hours) => ({ remaining, resetsAt: Date.now() + hours * 3600000 });
+  const account = (alias, plan, weekly) => ({ alias, type: 'account', active: alias === 'plus', usage: { status: 'ready', fetchedAt: Date.now(),
+    data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
+  const uiState = { running: true, imageTools: true, active: 'plus', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0)],
+    sessions: [], version: '0.4.6', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
+  await app.evaluate(({ ipcMain, BrowserWindow }, state) => {
+    globalThis.easySwitchQuotaState = state; globalThis.easySwitchQuotaRefreshes = 0;
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', (_event, action, payload) => {
+      if (action === 'preferences') { Object.assign(state, payload); state.dark = payload.theme ? payload.theme === 'dark' : state.dark; }
+      if (action === 'usage') globalThis.easySwitchQuotaRefreshes++;
+      return state;
+    });
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
+  }, uiState);
+  const plus = page.locator('.provider[data-alias="plus"]'), pro = page.locator('.provider[data-alias="pro"]'), credits = page.locator('.provider[data-alias="credits"]');
+  await plus.waitFor();
+  assert.equal(await plus.locator('.quota-ring').count(), 1); assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await pro.locator('.quota-segment').count(), 1);
+  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 4 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: '5h: 75% remaining' }).waitFor();
+  assert.notEqual(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transform), 'none');
+  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 44 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
+  await pro.locator('.quota').hover(); await page.mouse.move(100, 100);
+  assert.equal(await plus.locator('.quota-tooltip').isVisible(), false);
+  assert.equal(await plus.locator('.quota-segment.weekly .quota-progress').getAttribute('stroke-dashoffset'), '33');
+  assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /67% remaining/);
+  assert.equal(await credits.locator('.quota-segment').count(), 0); assert.equal(await credits.locator('.quota-balance').innerText(), '36.445');
+  await page.locator('#native-images').waitFor(); await plus.locator('.quota').click();
+  assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 1);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await credits.locator('.quota-caption').filter({ hasText: '剩余购买额度' }).waitFor();
+  assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
+  await page.screenshot({ path: path.join(folder, 'quota-light.png') });
+  await plus.locator('.quota-ring').hover({ position: { x: 24, y: 4 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: '5 小时：剩余 75%' }).waitFor();
+  await plus.locator('.quota-tooltip').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.screenshot({ path: path.join(folder, 'quota-hover.png') });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
+  await page.mouse.move(100, 100);
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.screenshot({ path: path.join(folder, 'quota-dark.png') });
+  await app.evaluate(({ BrowserWindow }) => {
+    const state = globalThis.easySwitchQuotaState; state.providers[0].usage.status = 'unavailable';
+    state.providers[1].usage = { status: 'unavailable', data: null }; state.imageTools = false;
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
+  });
+  await plus.locator('.quota.stale').waitFor(); await pro.locator('.quota-message').filter({ hasText: '额度暂不可用' }).waitFor();
+  assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await page.locator('#native-images').isVisible(), false);
+});
 test('Electron recovery helper restores configuration after main process is killed', { skip: !enabled,timeout:30000 }, async t => {
   const { app,file,original,root } = await launch(t);
   const child = app.process(); const exit = once(child,'exit'); child.kill('SIGKILL'); await exit;

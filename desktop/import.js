@@ -18,6 +18,8 @@ export function existingProvider({ codexHome, root, env }) {
       if (record.file !== path.join(codexHome, 'config.toml') || typeof record.original !== 'string')
         throw new Error();
       config.model_provider = parse(record.original).model_provider;
+      if (record.auth?.file === path.join(codexHome, 'auth.json') && typeof record.auth.original === 'string')
+        auth = JSON.parse(record.auth.original || '{}');
     }
   } catch { throw new Error('Unable to read the existing Codex configuration.'); }
   const id = config.model_provider || 'openai', provider = config.model_providers?.[id] || {};

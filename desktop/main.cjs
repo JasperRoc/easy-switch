@@ -100,6 +100,7 @@ async function boot() {
         case 'existing-login': return controller.existingLogin();
         case 'import-login': result = controller.importLogin(payload); break;
         case 'models': return await controller.models();
+        case 'usage': return controller.refreshUsage(payload);
         case 'model': result = controller.model(payload); break;
         case 'session-model': {
           if (typeof payload?.sessionId !== 'string') throw new Error('Choose a session observed by this app first.');

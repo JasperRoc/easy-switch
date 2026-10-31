@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { init } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { CodexSessions } from './codex-sessions.js';
-import { activateSession, restoreSession } from './config.js';
+import { activateSession, restoreSession, syncSession } from './config.js';
 
 export function protectDirectory(root) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -34,6 +34,7 @@ export class DesktopRuntime {
   start() { return this.transition(() => this.startRouting()); }
   stop() { return this.transition(() => this.stopRouting()); }
   restartNetwork() { return this.transition(() => this.restartRouting()); }
+  syncTools() { if (this.active) this.imageTools = syncSession(this.root, this.codexHome); }
   async listen() {
     const server = this.createServer({ root: this.root, reauth: this.reauth, sessions: this.sessions });
     server.on('request', (req, res) => {
@@ -72,6 +73,7 @@ export class DesktopRuntime {
       await this.startGuard();
       activateSession(this.root, this.codexHome, this.port, token);
       this.active = true;
+      this.syncTools();
     } catch (error) {
       await this.stopRouting(); throw error;
     }
@@ -80,6 +82,7 @@ export class DesktopRuntime {
     // Restore while the proxy is still available. A conflict leaves it running.
     restoreSession(this.recordFile);
     this.active = false;
+    this.imageTools = false;
     if (this.guard?.connected) this.guard.send({ type: 'disarm' });
     this.guard = null;
     if (this.server) {

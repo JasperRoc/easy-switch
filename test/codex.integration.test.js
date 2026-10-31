@@ -8,13 +8,13 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { init, addProvider, activate, readState, setModel, atomic } from '../src/store.js';
+import { init, addProvider, removeProvider, activate, readState, setModel, atomic } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
 import { CodexSessions } from '../desktop/codex-sessions.js';
 import { activateSession } from '../desktop/config.js';
 
-for (const nativeAuth of [false, true]) test(`real Codex app-server (${nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and per-session model changes preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+for (const nativeAuth of [false, true, 'bridge']) test(`real Codex app-server (${nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and per-session model changes preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -99,11 +99,20 @@ for (const nativeAuth of [false, true]) test(`real Codex app-server (${nativeAut
     assert.ok(url.startsWith('http://127.0.0.1:'), 'test traffic must stay on simulated upstreams');
     return fetch(url, options);
   } }));
-  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-5.1-codex"\n[features]\nimage_generation=true\n');
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-5.1-codex"\n' + (nativeAuth === 'bridge' ? 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\n' : '[features]\nimage_generation=true\n'));
   if (nativeAuth) {
     const jwt = 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture', chatgpt_plan_type: 'plus' }, exp: 4102444800 })).toString('base64url') + '.fixture';
-    atomic(path.join(codexHome, 'auth.json'), { tokens: { id_token: jwt, access_token: jwt, refresh_token: 'fixture', account_id: 'fixture' }, last_refresh: new Date().toISOString() });
+    const auth = { tokens: { id_token: jwt, access_token: jwt, refresh_token: 'fixture', account_id: 'fixture' }, last_refresh: new Date().toISOString() };
+    if (nativeAuth === 'bridge') {
+      const accountHome = path.join(root, 'accounts', 'subscription');
+      atomic(path.join(accountHome, 'auth.json'), auth);
+      addProvider('subscription', { type: 'account', accountHome }, root);
+      atomic(path.join(codexHome, 'auth.json'), { auth_mode: 'apikey', OPENAI_API_KEY: 'old-api-fixture' });
+    } else atomic(path.join(codexHome, 'auth.json'), auth);
     activateSession(root, codexHome, Number(new URL(proxy).port), token);
+    // Keep the text failover scenarios identical; the copied native sign-in
+    // still exercises tool exposure with no original native subscription.
+    if (nativeAuth === 'bridge') removeProvider('subscription', root);
   } else prepareConfig(root, codexHome, Number(new URL(proxy).port), token).apply();
   const child = spawn(process.env.SWITCH_TEST_CODEX, ['app-server'], { cwd: dir, env: { ...process.env, CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } });
