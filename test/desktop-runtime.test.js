@@ -30,6 +30,17 @@ test('desktop routing exists only while the app runs; restart does not replace t
   assert.equal(fs.readFileSync(file, 'utf8'), original);
   assert.equal(fs.existsSync(runtime.recordFile), false);
 });
+test('desktop preserves native subscription tools and leaves native auth untouched', async t => {
+  const { runtime, codexHome, file, original } = await setup(t);
+  const authFile = path.join(codexHome, 'auth.json'), auth = '{"tokens":{"access_token":"native-fixture","account_id":"account-fixture"}}\n';
+  fs.writeFileSync(authFile, auth);
+  await runtime.start();
+  const provider = parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch;
+  assert.equal(provider.requires_openai_auth, true);
+  assert.equal(provider.http_headers['X-Easy-Switch-Token'], JSON.parse(fs.readFileSync(path.join(runtime.root, 'state.json'))).token);
+  await runtime.stop();
+  assert.equal(fs.readFileSync(authFile, 'utf8'), auth); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
 test('desktop exit preserves model changes and unrelated configuration text', async t => {
   const { runtime, file } = await setup(t);
   await runtime.start();

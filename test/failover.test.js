@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverable, rejectionText } from '../src/failover.js';
+import { recoverable, rejectionText, atCapacity, capacityDelay } from '../src/failover.js';
+test('capacity classification is explicit and Retry-After respects backoff and HTTP dates', () => {
+  for (const text of ['Selected model is at capacity. Please try a different model.', '{"error":{"code":"server_overloaded"}}', '{"response":{"error":{"code":"model_at_capacity"}}}']) assert.equal(atCapacity(text), true);
+  for (const text of ['invalid image', 'context window exceeded', 'internal server error', '{"error":{"code":"invalid_request","message":"denied"},"input":"Selected model is at capacity"}']) assert.equal(atCapacity(text), false);
+  assert.equal(capacityDelay(null, 0), 1000); assert.equal(capacityDelay('0', 1), 2000);
+  assert.equal(capacityDelay('10', 0), 10000);
+  assert.equal(capacityDelay('Thu, 01 Jan 1970 00:00:15 GMT', 1, 0), 15000);
+});
 test('server policy allows only explicit authorization/quota rejections', () => {
   for (const status of [401,402,429]) assert.equal(recoverable(status), true);
   for (const text of ['团队 今日额度不足', 'insufficient_quota', 'quota exhausted', '余额不足']) assert.equal(recoverable(403, text), true);

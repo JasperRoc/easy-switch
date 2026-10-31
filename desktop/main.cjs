@@ -3,14 +3,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { trayIdentity, trayImage, menuBarHidden } = require('./tray.cjs');
+const { trayIdentity, trayImage, menuBarHidden, bindTrayActions } = require('./tray.cjs');
 
 const root = path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
 let window, tray, controller, updater, restoreSession, poll, updateTimer, quitting = false, quitReady = false, startupError = '', lastFailover;
-let trayState = '', uiLanguage = 'en', translate;
+let trayState = '', trayMenu, uiLanguage = 'en', translate;
 const t = (key, values) => translate(uiLanguage, key, values);
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const repository = 'https://github.com/JasperRoc/easy-switch';
@@ -18,6 +18,7 @@ const repository = 'https://github.com/JasperRoc/easy-switch';
 function showWindow(tab) {
   if (!window || window.isDestroyed()) return;
   if (process.platform === 'darwin') { app.setActivationPolicy('regular'); app.dock.show(); }
+  if (window.isMinimized()) window.restore();
   window.show(); window.focus();
   if (tab) window.webContents.send('easy-switch:tab', tab);
 }
@@ -35,7 +36,7 @@ function updateTray() {
   trayState = signature;
   const model = state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
   tray.setToolTip(`easy-switch · ${state.active || t('addProvider')} · ${model}`);
-  tray.setContextMenu(Menu.buildFromTemplate([
+  trayMenu = Menu.buildFromTemplate([
     { label: state.running ? t('trayActive', { alias: state.active || t('noProvider') }) : t('trayStopped'), enabled: false },
     { label: model, enabled: false }, { type: 'separator' },
     ...state.providers.map(provider => ({ label: `${provider.alias} · ${t(provider.type === 'account' ? 'account' : 'api')}${provider.needsLogin ? ' · ' + t('loginNeeded') : ''}`, type: 'radio', checked: provider.active,
@@ -46,7 +47,7 @@ function updateTray() {
     { label: t('autoStart'), type: 'checkbox', checked: state.loginItem, click: item => { try { setAutoStart(item.checked); } catch (error) { report(error); } } },
     { label: t('updates'), click: () => showWindow('updates') },
     { type: 'separator' }, { label: t('quit'), click: () => app.quit() },
-  ]));
+  ]);
   if (lastFailover !== undefined && state.lastFailover?.at !== lastFailover && state.lastFailover && Notification.isSupported()) {
     const event = state.lastFailover;
     new Notification({ title: t('notifyTitle'), body: `${event.from} → ${event.to} (HTTP ${event.status})` }).show();
@@ -139,7 +140,7 @@ async function boot() {
     } catch (error) { throw new Error(error.message || 'Operation failed.'); }
   });
   tray = new Tray(trayImage(nativeImage, path.join(__dirname, 'assets'), process.platform), trayIdentity(root));
-  if (process.platform === 'win32') tray.on('double-click', () => showWindow());
+  bindTrayActions(tray, showWindow, () => trayMenu);
   app.dock?.hide();
   try { await controller.start(); } catch (error) { startupError = error.message; }
   await window.loadFile(path.join(__dirname, 'index.html'));

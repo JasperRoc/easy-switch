@@ -19,4 +19,10 @@ function trayImage(nativeImage, directory, platform) {
 function menuBarHidden(bounds, displays) {
   return bounds.width <= 0 || !displays.some(display => bounds.x + bounds.width > display.bounds.x && bounds.x < display.bounds.x + display.bounds.width);
 }
-module.exports = { trayIdentity, trayImage, menuBarHidden };
+function bindTrayActions(tray, showWindow, menu, platform = process.platform) {
+  // A native macOS context menu consumes left clicks; open it only on right click.
+  tray.on('click', () => showWindow());
+  tray.on('right-click', () => { const current = menu(); if (current) tray.popUpContextMenu(current); });
+  if (platform === 'win32') tray.on('double-click', () => showWindow());
+}
+module.exports = { trayIdentity, trayImage, menuBarHidden, bindTrayActions };

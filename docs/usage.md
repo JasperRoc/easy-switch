@@ -84,6 +84,14 @@ A model/effort pair applies globally to all sessions connected to this service. 
 
 This is a request-level override. It does not update the native Codex model indicator, model-specific instructions, tool definitions, context-window limits, or other client capability settings. Use compatible models and consult `switch model current` for the effective override. The Codex model catalog alone cannot guarantee full compatibility for arbitrary cross-model changes. Existing legacy per-provider model mappings, if present in old state, remain in effect when the global override is cleared.
 
+## Image generation routing
+
+Native Codex `image_gen` generation/edit calls use separate image endpoints rather than the ordinary text request. easy-switch forwards `/v1/images/generations` and `/v1/images/edits`, preserving JSON or multipart bodies, image model parameters and reference-image bytes. When subscription accounts are configured, only usable subscriptions are selected for these requests, in priority order; the text provider, global/session text models and global failover selection remain unchanged. Image-only cooldowns are separate from text cooldowns. Without subscriptions, image requests go to the selected API and eligible API alternatives. Policy refusals and ordinary validation errors are not bypassed.
+
+The image tool must already be available in Codex. Desktop activation preserves an existing file-based native subscription sign-in and authenticates local routing with a dedicated header; it does not copy, replace or invent native credentials. If Codex is in API mode and hides the tool, sign into Codex natively and reload the client first. Adding a subscription only to easy-switch cannot enable a client tool. The Linux CLI installer retains its existing API-mode configuration. Requests sent directly to other endpoints, shell scripts or external image servers do not pass through this routing.
+
+Built-in images use subscription quota and remain subject to that account’s limits and permissions. The native protocol has been exercised using real Codex with simulated image upstreams; live subscription image access still requires real-provider validation. See [official Codex image generation](https://learn.chatgpt.com/docs/image-generation).
+
 ## Account authentication
 
 Both initial account creation and automatic reauthentication use `codex login --device-auth`. Enable device code login in your ChatGPT account security settings or workspace settings first. Follow the official verification link and enter the one-time code using your browser.
@@ -138,19 +146,19 @@ The proxy binds only to IPv4 loopback and requires a random local token. It reco
 ## Protocol support and limits
 
 - Accepts SSE responses with a missing `Content-Type` only after checking the initial body bytes for SSE fields. Explicit non-SSE content types and HTML/JSON bodies without the header are rejected. Buffered bytes are preserved and client cancellation still stops forwarding.
-- Supports HTTP SSE at `POST /v1/responses`; does not proxy WebSockets, convert Chat Completions, discover models, or implement remote compaction.
+- Supports HTTP SSE at `POST /v1/responses`, plus JSON/multipart image generation and edits at `POST /v1/images/generations` and `POST /v1/images/edits`. Does not proxy WebSockets, convert Chat Completions, proxy model discovery, or implement remote compaction.
 - Replays ordinary messages and complete tool calls/results. Removes `reasoning` items, so hidden reasoning continuity and cache efficiency may differ from direct use.
 - Rejects `previous_response_id`, server-side conversations, item references, and encrypted compaction items. Long or previously compacted conversations may require a new thread with a readable summary.
 - Model overrides change the request model name only, not the client's capability catalog. Images, tools, reasoning options, and context limits depend on the upstream.
 - Request bodies are limited to 32 MiB. Raw upstream error bodies are not echoed. Authentication challenges are generated locally from the official device flow.
-- No mid-response migration. Only eligible upstream rejections are retried through available alternatives before streaming starts. Client disconnection cancels transport but does not guarantee upstream billing stops.
+- No mid-response migration. Only eligible upstream rejections are retried through available alternatives before output or tool events are accepted. Startup SSE capacity errors can also be intercepted within a bounded 64 KiB preamble. Client disconnection cancels transport but does not guarantee upstream billing stops.
 
 Real-Codex/mock-upstream tests verify configuration loading and same-thread switching. Real-provider authentication, the VS Code Remote UI, and actual server reboot recovery remain unverified end to end.
 
 
 ## Automatic failover
 
-The proxy ports the server implementation's pre-response policy: HTTP 401, 402, 429, and quota-related 403 rejections are eligible. It tries available alternatives, each alias at most once per incoming request. Other errors, network failures, and accepted SSE streams are not replayed. A client can independently retry a failed request.
+HTTP 401, 402, 429, and quota-related 403 rejections are eligible for failover. Explicit model-capacity rejections (such as `server_overloaded` or “Selected model is at capacity”) are also eligible, including `error` / `response.failed` events in a Responses SSE startup preamble before any output is accepted. Available alternatives are tried in priority order, each at most once. If no alternative remains, capacity errors get at most two additional same-provider retries with 1/2-second exponential backoff. Retry-After can extend each wait up to 30 seconds; a longer value is never shortened and stops internal retries. Manual provider changes and client cancellation are respected. The selected model/effort and replayable tool results are retained. No output, tool call, unknown SSE event, or already-ended turn is replayed or automatically restarted. Other errors and network failures are not retried by this proxy; the client can independently retry.
 
 Candidates must have configured API credentials or a readable, unexpired subscription credential cache. Candidates follow `switch order`, highest priority first, regardless of type. Run `switch list` to view numbered priorities and the active alias (`*`). Run `switch order` in an interactive terminal: ↑/↓ selects, Shift+↑/↓ or uppercase K/J moves, Enter saves, and Esc or Ctrl+C cancels. Noninteractive callers can use `switch order <alias> ...` with every configured alias exactly once. Defaults and legacy states use addition order; new aliases are appended. Reordering preserves the active alias and cooldowns, and applies to new requests without restarting the service. In-flight requests retain their ordering snapshot. This local check does not guarantee upstream acceptance. Failed providers are excluded from fallback selection for 60 seconds within the running proxy process. Restarting the service clears cooldowns. Explicit manual selection resets cooldowns on the next request and can select a cooling-down provider.
 

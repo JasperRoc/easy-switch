@@ -66,6 +66,15 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].close());
   assert.equal(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].isVisible()), false);
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,'easy_switch');
+  await app.evaluate(({ app }) => app.emit('activate'));
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true);
+  await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
+    const window = BrowserWindow.getAllWindows()[0]; window.once('minimize', resolve); window.minimize();
+  }));
+  await app.evaluate(({ app, BrowserWindow }) => new Promise(resolve => {
+    const window = BrowserWindow.getAllWindows()[0]; window.once('restore', resolve); app.emit('activate');
+  }));
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()), false);
   const changed = fs.readFileSync(file,'utf8').replace('model="gpt-6.1-sol"','model="user-changed"'); fs.writeFileSync(file,changed);
   await app.close();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model,'user-changed');

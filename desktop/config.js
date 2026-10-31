@@ -66,7 +66,14 @@ export function activateSession(root, codexHome, port, token) {
   const file = path.join(codexHome, 'config.toml');
   const exists = fs.existsSync(file);
   const original = exists ? fs.readFileSync(file, 'utf8') : '';
-  const installed = patchedConfig(original, port, token);
+  // Keep native tools available when Codex already has a file-based subscription.
+  // Never copy or replace the user's native sign-in to enable a tool.
+  let nativeAuth = false;
+  try {
+    const auth = JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'), 'utf8'));
+    nativeAuth = !!(auth.tokens?.access_token && auth.tokens?.account_id);
+  } catch {}
+  const installed = patchedConfig(original, port, token, nativeAuth);
   atomic(recordFile, { file, exists, original, installed });
   if ((fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '') !== original) {
     fs.rmSync(recordFile, { force: true });

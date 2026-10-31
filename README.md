@@ -30,7 +30,7 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
 2. Use **Add subscription**, **Add API provider**, or **Import current Codex setup** to detect an API or subscription already configured on this computer. An empty Base URL uses the official OpenAI API.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
-4. Restart Codex or reload its editor window once to pick up the local route. Right-click the Windows tray or macOS menu bar icon to switch providers; use the settings window to drag priorities, add or delete providers, and choose model and effort. In **Model & effort**, select a running task by its Codex sidebar name before applying changes; completed turns and internal helper requests are excluded; use **Global default** only when you want a shared setting. The top-right globe and appearance icons change language and theme.
+4. Restart Codex or reload its editor window once to pick up the local route. Click the Windows tray or macOS menu bar icon to reopen the window; right-click it to switch providers; use the settings window to drag priorities, add or delete providers, and choose model and effort. In **Model & effort**, select a running task by its Codex sidebar name before applying changes; completed turns and internal helper requests are excluded; use **Global default** only when you want a shared setting. The top-right globe and appearance icons change language and theme.
 
 Installing alone leaves Codex configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Your Codex conversation client is installed separately.
 
@@ -114,9 +114,13 @@ The official OpenAI API and Responses-compatible third-party APIs can already be
 
 Windows x64 and macOS Apple silicon/Intel desktop installers are available alongside the Linux systemd CLI. Desktop routing follows the application lifetime; Linux routing follows its systemd service. Apple silicon macOS has packaged-app tests; Windows and Intel macOS need native runtime validation. See the [desktop guide](docs/desktop.md).
 
+### Can a subscription handle image generation while text uses an API?
+
+Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, an existing file-based native subscription sign-in is preserved; adding a subscription only to easy-switch does not enable a tool hidden by the client’s API login mode. See [image routing](docs/usage.md#image-generation-routing).
+
 ### Does switching interrupt the current task?
 
-Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives before a successful response stream starts. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task. This is not a guarantee of recovery from every failure.
+Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives. A “Selected model is at capacity” rejection in HTTP or startup SSE is handled before any output is accepted: try available providers, then up to two delayed retries. Already accepted text/tool events are never replayed. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task.
 
 <a id="disclaimer"></a>
 
