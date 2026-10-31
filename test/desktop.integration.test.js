@@ -120,7 +120,10 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   await page.screenshot({ path: path.join(folder, 'quota-light.png') });
   await plus.locator('.quota-ring').hover({ position: { x: 24, y: 4 } });
   await plus.locator('.quota-tooltip').filter({ hasText: '5 小时：剩余 75%' }).waitFor();
-  await plus.locator('.quota-tooltip').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.waitForFunction(() => {
+    const tooltip = document.querySelector('[data-alias="plus"] .quota-tooltip');
+    return tooltip && !tooltip.hidden && getComputedStyle(tooltip).opacity === '1';
+  });
   await page.screenshot({ path: path.join(folder, 'quota-hover.png') });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
