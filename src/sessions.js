@@ -9,26 +9,19 @@ export function sessionID(headers) {
 export function selectedModel(state, id) {
   return id && Object.hasOwn(state.sessionModels || {}, id) ? state.sessionModels[id] : state.modelSelection || null;
 }
-function requestTitle(input) {
-  if (typeof input === 'string') return input.replace(/\s+/g, ' ').trim().slice(0, 100);
-  for (const item of [...input].reverse()) {
-    if (item.role !== 'user') continue;
-    let text = typeof item.content === 'string' ? item.content : (item.content || []).filter(part => part.type === 'input_text').map(part => part.text || '').join(' ');
-    if (text.includes('## My request:')) text = text.split('## My request:').at(-1);
-    if (/^\s*(?:<environment_context>|# AGENTS\.md|<user_instructions>)/.test(text)) continue;
-    text = text.replace(/\s+/g, ' ').trim();
-    if (text) return text.slice(0, 100);
-  }
-  return '';
-}
 export class SessionTracker {
   constructor() { this.entries = new Map(); }
   begin(headers, payload) {
     const id = sessionID(headers);
     if (!id) return null;
+    let metadata;
+    try { metadata = JSON.parse(headers['x-codex-turn-metadata']); } catch {}
+    if (metadata?.thread_id !== id && metadata?.session_id !== id) metadata = null;
+    // Auxiliary requests still use the session's model but never create a task.
+    if (metadata?.request_kind && metadata.request_kind !== 'turn') return { id, used() {}, finish() {} };
     let entry = this.entries.get(id);
-    if (!entry) { entry = { id, activeRequests: 0 }; this.entries.set(id, entry); }
-    Object.assign(entry, { title: requestTitle(payload.input) || entry.title || '', lastSeen: Date.now(), clientModel: payload.model, clientEffort: payload.reasoning?.effort || null });
+    if (!entry) { entry = { id, activeRequests: 0, firstSeen: Date.now() }; this.entries.set(id, entry); }
+    Object.assign(entry, { lastSeen: Date.now(), requestStartedAt: Date.now(), turnId: validID(metadata?.turn_id) ? metadata.turn_id : null, clientModel: payload.model, clientEffort: payload.reasoning?.effort || null });
     entry.activeRequests++;
     let finished = false;
     return { id, used: (alias, payload) => Object.assign(entry, { provider: alias, model: payload.model, effort: payload.reasoning?.effort || null }),

@@ -7,6 +7,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'smol-toml';
+import { codexThread } from './fixtures/codex-metadata.js';
 
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
 const project = fileURLToPath(new URL('..', import.meta.url));
@@ -31,7 +32,7 @@ async function launch(t, extraEnv = {}, initialConfig) {
   const page = await app.firstWindow();
   await page.locator('#status').filter({ hasText: 'Routing active' }).waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
-  return { app, page, file, original, root, options };
+  return { app, page, file, original, root, home, options };
 }
 test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { skip: !enabled, timeout: 60000 }, async t => {
   const upstream = http.createServer((req,res) => {
@@ -194,16 +195,21 @@ test('desktop targets a running session, aligns effort controls and localizes st
     res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('data: {"part":1}\n\n'); streams.push(res);
   }).listen(0, '127.0.0.1'); await once(upstream, 'listening');
   t.after(() => { upstream.closeAllConnections(); upstream.close(); });
-  const { app, page, root } = await launch(t);
+  const { app, page, root, home } = await launch(t);
   await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'demo', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
   await page.locator('.provider strong').filter({ hasText: 'demo' }).waitFor();
   const endpoint = (await page.evaluate(() => window.easySwitch.call('network'))).localProxy.url;
   const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
   const responses = [];
+  const tasks = [];
   for (const [id, text] of [['task-a', 'Repair the search feature'], ['task-b', 'Review the database migration']]) {
-    responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'thread-id': id }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: text }) }));
+    const thread = codexThread(home, id, text); tasks.push(thread);
+    responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, ...thread.headers }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: 'Internal request, not a task title' }) }));
   }
+  responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'thread-id': 'ephemeral-helper' }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: 'Generate a title' }) }));
   await page.click('[data-tab="model"]'); await page.locator('[data-session="task-a"]').waitFor();
+  assert.equal(await page.locator('[data-session]').count(), 2);
+  assert.equal(await page.locator('[data-session="task-a"] strong').innerText(), 'Repair the search feature');
   assert.equal(await page.locator('#apply-model').isDisabled(), true);
   await page.click('[data-session="task-a"]');
   await page.click('#model-picker'); await page.locator('[data-model="gpt-6.1-sol"]').click();
@@ -216,6 +222,15 @@ test('desktop targets a running session, aligns effort controls and localizes st
   const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'session-model.png') });
   for (const stream of streams) stream.end('data: [DONE]\n\n');
   await Promise.all(responses.map(response => response.text())); assert.ok(received.every(body => body.model === 'gpt-5.1-codex'));
+  tasks[1].event('task_complete');
+  await page.waitForFunction(() => document.querySelectorAll('[data-session]').length === 1);
+  assert.equal(await page.locator('[data-session="task-a"] .session-state').innerText(), 'Task continuing');
+  tasks[0].event('task_complete');
+  await page.locator('#sessions-empty').waitFor();
+  assert.equal(await page.locator('[data-session]').count(), 0);
+  assert.equal(await page.locator('#apply-model').isDisabled(), true);
+  assert.equal(await page.locator('#model-feedback').isVisible(), false);
+  await page.screenshot({ path: path.join(folder, 'sessions-finished.png') });
 
   // Replace only this isolated test app's update IPC response; no real release or install is changed.
   await app.evaluate(({ ipcMain }) => {

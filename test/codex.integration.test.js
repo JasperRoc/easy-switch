@@ -11,7 +11,7 @@ import readline from 'node:readline';
 import { init, addProvider, activate, readState, setModel } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
-import { SessionTracker } from '../src/sessions.js';
+import { CodexSessions } from '../desktop/codex-sessions.js';
 
 test('real Codex app-server: same thread, failover and per-session model changes preserve parallel tasks and tool continuation', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
@@ -24,6 +24,8 @@ test('real Codex app-server: same thread, failover and per-session model changes
   let rejectA = false;
   let toolTurn = false, toolIssued = false, finishToolResponse, signalTool;
   const toolReady = new Promise(resolve => { signalTool = resolve; });
+  let pauseNext = false, signalPaused;
+  const paused = new Promise(resolve => { signalPaused = resolve; });
   async function serve(server) {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -44,9 +46,12 @@ test('real Codex app-server: same thread, failover and per-session model changes
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = data => res.write(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
     event({ type: 'response.created', response: { id, status: 'in_progress', output: [] } });
+    if (pauseNext) {
+      const closed = once(res, 'close'); signalPaused(); await closed; return;
+    }
     if (toolTurn && !toolIssued) {
       toolIssued = true;
-      const call = { type: 'function_call', id: 'fc_model_switch', call_id: 'call_model_switch', name: 'exec_command', arguments: JSON.stringify({ cmd: 'printf switch-model-tool-ok', login: false }), status: 'completed' };
+      const call = { type: 'function_call', id: 'fc_model_switch', call_id: 'call_model_switch', name: 'exec_command', arguments: JSON.stringify({ cmd: 'sleep 1; printf switch-model-tool-ok', login: false }), status: 'completed' };
       event({ type: 'response.output_item.added', output_index: 0, item: { ...call, arguments: '', status: 'in_progress' } });
       event({ type: 'response.function_call_arguments.delta', item_id: call.id, output_index: 0, delta: call.arguments });
       event({ type: 'response.function_call_arguments.done', item_id: call.id, output_index: 0, arguments: call.arguments });
@@ -68,7 +73,7 @@ test('real Codex app-server: same thread, failover and per-session model changes
   });
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
-  const sessions = new SessionTracker();
+  const sessions = new CodexSessions(codexHome);
   const proxy = await serve(createProxy({ root, sessions }));
   fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-5.1-codex"\n');
   prepareConfig(root, codexHome, Number(new URL(proxy).port), token).apply();
@@ -111,6 +116,7 @@ test('real Codex app-server: same thread, failover and per-session model changes
   assert.match(second, /reply A/);
   assert.match(second, /Second turn/);
   assert.equal(child.exitCode, null);
+  await call('thread/name/set', { threadId: thread.id, name: 'Named task in Codex' });
   rejectA = true;
   activate('a', root);
   const completed = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
@@ -133,6 +139,7 @@ test('real Codex app-server: same thread, failover and per-session model changes
   const started = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Tool turn: run the tool and continue.', text_elements: [] }] });
   await toolReady;
   assert.equal(sessions.snapshot(readState(root))[0].id, thread.id);
+  assert.equal(sessions.snapshot(readState(root))[0].title, 'Named task in Codex');
   assert.equal(sessions.snapshot(readState(root))[0].activeRequests, 1);
   setModel({ model: 'gpt-6.1-sol', effort: 'high' }, root, undefined, thread.id);
   const originalTool = requests.at(-1);
@@ -142,9 +149,12 @@ test('real Codex app-server: same thread, failover and per-session model changes
   assert.equal((await otherCompleted).status, 'completed');
   assert.equal(requests.at(-1).body.model, 'gpt-5.1-codex');
   assert.equal(requests.at(-1).body.reasoning.effort, 'low');
-  assert.equal(sessions.snapshot(readState(root)).length, 2);
+  assert.equal(sessions.snapshot(readState(root)).length, 1, 'the completed parallel task is absent');
   assert.equal(originalTool.body.model, 'gpt-5.1-codex');
   finishToolResponse();
+  for (let attempt = 0; attempt < 100 && sessions.entries.get(thread.id)?.activeRequests; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(sessions.snapshot(readState(root))[0].id, thread.id, 'tool execution keeps the real task visible without an open model request');
+  assert.equal(sessions.snapshot(readState(root))[0].activeRequests, 0);
   const finished = await toolCompleted;
   assert.equal(finished.id, started.turn.id);
   assert.equal(finished.status, 'completed', JSON.stringify(finished) + stderr);
@@ -155,4 +165,15 @@ test('real Codex app-server: same thread, failover and per-session model changes
   const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_model_switch');
   assert.match(output.output, /switch-model-tool-ok/);
   assert.equal(child.exitCode, null);
+  // The rollout writer flushes asynchronously after the completion notification.
+  for (let attempt = 0; attempt < 100 && sessions.snapshot(readState(root)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sessions.snapshot(readState(root)), []);
+  pauseNext = true;
+  const interrupted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
+  const last = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'This turn will be cancelled', text_elements: [] }] });
+  await paused; assert.equal(sessions.snapshot(readState(root))[0].title, 'Named task in Codex');
+  await call('turn/interrupt', { threadId: thread.id, turnId: last.turn.id });
+  assert.equal((await interrupted).status, 'interrupted');
+  for (let attempt = 0; attempt < 100 && sessions.snapshot(readState(root)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sessions.snapshot(readState(root)), [], 'cancelled native Codex turns are removed');
 });

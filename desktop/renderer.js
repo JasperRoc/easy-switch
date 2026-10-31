@@ -101,7 +101,12 @@ function selectSession(id) {
   $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions(); renderCatalogStatus();
 }
 function renderSessions() {
-  const sessions = state.sessions || [], signature = JSON.stringify([language, modelTarget, sessions]);
+  const sessions = state.sessions || [];
+  if (modelTarget && modelTarget !== 'global' && !sessions.some(session => session.id === modelTarget)) {
+    modelTarget = null; modelDirty = false; modelFeedback = null; closeModelPicker();
+    $('model-select').value = ''; efforts();
+  }
+  const signature = JSON.stringify([language, modelTarget, sessions]);
   if (signature !== renderedSessions) {
     renderedSessions = signature; $('session-list').replaceChildren();
     for (const session of sessions) {
@@ -118,6 +123,7 @@ function renderSessions() {
     }
   }
   $('sessions-empty').hidden = !!sessions.length;
+  $('sessions-unavailable').hidden = !state.sessionsUnavailable;
   $('global-model').setAttribute('aria-pressed', String(modelTarget === 'global'));
   const session = sessions.find(item => item.id === modelTarget);
   $('model-target').textContent = modelTarget === 'global' ? t('globalTarget') : session ? t('sessionTarget', { title: session.title || session.id }) : t('chooseSessionHelp');

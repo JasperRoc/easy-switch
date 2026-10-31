@@ -1,8 +1,9 @@
 export const messages = {
   en: {
     chooseSession: 'Choose a session', globalDefault: 'Global default', chooseSessionHelp: 'Select a session above to change only its model.',
-    sessionsEmpty: 'Sessions appear here after their first request through easy-switch. Start or continue a Codex task to see it.',
-    sessionRunning: 'Request in progress', sessionWaiting: 'Between requests', unnamedSession: 'Codex session', sessionOverride: 'Custom model',
+    sessionsEmpty: 'No Codex tasks are running. Tasks appear when they send a request through easy-switch and disappear when the turn finishes.',
+    sessionsUnavailable: 'Some Codex task metadata could not be read. Check that easy-switch and Codex use the same CODEX_HOME.',
+    sessionRunning: 'Request in progress', sessionWaiting: 'Task continuing', unnamedSession: 'Codex session', sessionOverride: 'Custom model',
     sessionTarget: 'Editing: {title}', globalTarget: 'Editing the default for sessions without their own selection.',
     modelApplied: 'Saved for {title}. Takes effect on its next request.', globalModelApplied: 'Global default saved.',
     sessionSummary: '{count} sessions with custom settings', chooseSessionFirst: 'Choose a session observed by this app first.',
@@ -71,8 +72,9 @@ export const messages = {
   },
   'zh-CN': {
     chooseSession: '选择会话', globalDefault: '全局默认', chooseSessionHelp: '先在上方选择会话，仅修改这条会话的模型。',
-    sessionsEmpty: '会话首次经过 easy-switch 发出请求后会显示在这里。启动或继续一条 Codex 任务即可。',
-    sessionRunning: '请求进行中', sessionWaiting: '等待下一次请求', unnamedSession: 'Codex 会话', sessionOverride: '独立模型设置',
+    sessionsEmpty: '当前没有正在运行的 Codex 任务。任务经过 easy-switch 发出请求后自动显示，本轮任务结束后自动移除。',
+    sessionsUnavailable: '部分 Codex 任务信息暂时无法读取，请确认 easy-switch 与 Codex 使用相同的 CODEX_HOME。',
+    sessionRunning: '请求进行中', sessionWaiting: '任务继续中', unnamedSession: 'Codex 会话', sessionOverride: '独立模型设置',
     sessionTarget: '正在设置：{title}', globalTarget: '正在设置没有独立选择的会话所使用的全局默认值。',
     modelApplied: '已为“{title}”保存，将在该会话的下一次请求生效。', globalModelApplied: '全局默认值已保存。',
     sessionSummary: '{count} 条会话已单独设置', chooseSessionFirst: '请先选择一条已被本软件识别的会话。',

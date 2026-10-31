@@ -13,6 +13,15 @@ test('session identity requires an explicit unambiguous client ID', () => {
   assert.equal(sessionID({ 'session-id': 'legacy-task' }), 'legacy-task');
   for (const headers of [{}, { 'thread-id': '__proto__' }, { 'thread-id': 'a', 'session-id': 'b' }]) assert.equal(sessionID(headers), null);
 });
+test('auxiliary request kinds do not create sessions or overwrite a running turn', () => {
+  const sessions = new SessionTracker();
+  const headers = kind => ({ 'thread-id': 'task-a', 'x-codex-turn-metadata': JSON.stringify({ thread_id: 'task-a', turn_id: 'turn-a', request_kind: kind }) });
+  sessions.begin(headers('title'), { model: 'helper' }).finish(); assert.equal(sessions.entries.size, 0);
+  const main = sessions.begin(headers('turn'), { model: 'main' });
+  sessions.begin(headers('title'), { model: 'helper' }).finish();
+  assert.equal(sessions.snapshot({})[0].clientModel, 'main'); assert.equal(sessions.snapshot({})[0].activeRequests, 1);
+  main.finish();
+});
 test('parallel sessions keep separate models while accepted streams and tool history survive', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-sessions-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

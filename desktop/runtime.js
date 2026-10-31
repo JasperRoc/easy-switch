@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { init } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
-import { SessionTracker } from '../src/sessions.js';
+import { CodexSessions } from './codex-sessions.js';
 import { activateSession, restoreSession } from './config.js';
 
 export function protectDirectory(root) {
@@ -24,7 +24,7 @@ export class DesktopRuntime {
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
-    this.sessions = new SessionTracker();
+    this.sessions = new CodexSessions(codexHome);
   }
   transition(action) {
     const result = this.pending.then(action);

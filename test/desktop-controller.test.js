@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DesktopController } from '../desktop/controller.js';
 import { readState, addProvider, atomic } from '../src/store.js';
+import { codexThread } from './fixtures/codex-metadata.js';
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-controller-'));
@@ -45,13 +46,16 @@ test('desktop appearance preferences persist and invalid choices never replace t
 });
 test('desktop applies a model only to the explicitly selected observed session', t => {
   const controller = setup(t); controller.addAPI({ alias: 'api', key: 'fixture' });
-  const request = controller.runtime.sessions.begin({ 'thread-id': 'session-a' }, { model: 'client', input: 'Fix a bug' });
+  const thread = codexThread(controller.codexHome, 'session-a', 'Fix a bug');
+  const request = controller.runtime.sessions.begin(thread.headers, { model: 'client', input: 'Internal prompt' });
   controller.catalog = { alias: 'api', models: [{ id: 'fixture-model', efforts: ['high'] }] };
   assert.throws(() => controller.model({ model: 'fixture-model', effort: 'high' }, 'unknown'), /Choose a session/);
   controller.model({ model: 'fixture-model', effort: 'high' }, 'session-a');
   assert.equal(controller.snapshot().model, null); assert.equal(controller.snapshot().sessions[0].selection.model, 'fixture-model');
   controller.model(null, 'session-a'); assert.equal(controller.snapshot().sessions[0].selection, null);
   request.finish(); assert.equal(controller.snapshot().sessions[0].activeRequests, 0);
+  thread.event('task_complete'); assert.deepEqual(controller.snapshot().sessions, []);
+  assert.throws(() => controller.model(null, 'session-a'), /Choose a session/);
 });
 test('deleting providers removes their secret and selects the next alias', t => {
  const controller=setup(t);
