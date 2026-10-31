@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Switch Codex accounts, APIs, models and reasoning effort with a desktop tray app or Linux CLI",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/sse.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js && node --check src/catalog.js && node --check src/model.js && node --check src/select.js && node --check src/sessions.js && node --check desktop/main.cjs && node --check desktop/codex-sessions.js && node --check desktop/runtime.js && node --check desktop/controller.js && node --check desktop/network.js && node --check desktop/import.js && node --check desktop/config.js && node --check desktop/renderer.js && node --check desktop/i18n.js && node --check scripts/verify-mac.cjs && node --check desktop/release-notes.js && node --check desktop/updater.js && node --check desktop/update-helper.cjs && node --check desktop/tray.cjs && node --check desktop/usage.js",
+    "check": "node --check src/cli.js && node --check src/proxy.js && node --check src/sse.js && node --check src/store.js && node --check src/install.js && node --check src/auth.js && node --check src/setup.js && node --check src/daemon.js && node --check src/failover.js && node --check src/order.js && node --check src/update.js && node --check src/completion.js && node --check src/network.js && node --check src/catalog.js && node --check src/model.js && node --check src/select.js && node --check src/sessions.js && node --check desktop/main.cjs && node --check desktop/codex-sessions.js && node --check desktop/runtime.js && node --check desktop/controller.js && node --check desktop/network.js && node --check desktop/import.js && node --check desktop/config.js && node --check desktop/renderer.js && node --check desktop/i18n.js && node --check scripts/verify-mac.cjs && node --check desktop/release-notes.js && node --check desktop/updater.js && node --check desktop/update-helper.cjs && node --check desktop/tray.cjs && node --check desktop/usage.js && node --check desktop/reset-credits.js",
     "desktop:prepare": "node scripts/prepare-desktop.cjs",
     "desktop:start": "npm run desktop:prepare && electron .",
     "desktop:build:mac": "npm run desktop:prepare -- darwin-arm64 darwin-x64 && electron-builder --mac --arm64 --x64",

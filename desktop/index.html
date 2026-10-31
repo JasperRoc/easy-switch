@@ -70,6 +70,15 @@
     <p id="update-error" class="notice error" role="alert" hidden></p>
     <div class="update-bottom"><p id="update-warning" class="help" data-i18n="updateRestartWarning" hidden></p><div class="actions"><button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button><button id="update-action"></button></div></div>
   </dialog>
+  <dialog id="reset-dialog" aria-labelledby="reset-title">
+    <div class="section-heading"><h2 id="reset-title"></h2><button id="close-reset" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <p id="reset-status" class="help" role="status" aria-live="polite"></p>
+    <div id="reset-card-list" role="radiogroup" data-i18n-aria="resetChoose"></div>
+    <p id="reset-card-help" class="help"></p>
+    <p id="reset-result" class="notice" role="status" hidden></p>
+    <p id="reset-error" class="notice error" role="alert" hidden></p>
+    <div class="actions"><button id="reset-reload" class="secondary" data-i18n="resetReload">Refresh cards</button><button id="reset-confirm" data-i18n="resetConfirm" disabled>Use selected reset card</button></div>
+  </dialog>
   <script type="module" src="renderer.js"></script>
 </body>
 </html>

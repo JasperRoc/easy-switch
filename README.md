@@ -116,7 +116,11 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Hover for reset times, or click to refresh. Missing data and failed reads are shown explicitly; the app does not estimate balances or reset quota.
+Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes automatically every minute; clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
+
+### Can I use an earned quota-reset card?
+
+Desktop subscription rows include a reset button. Open it to see individual cards and their expiration dates, choose a card, then confirm its use. Cards are ordered by expiration; expired cards cannot be selected. A missing detail list or expiration is shown explicitly. The app uses the [official account reset methods](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt), preserves the same idempotency key when retrying an uncertain result, and rereads card details and quota afterward. Resets do not change purchased credits or your selected provider.
 
 ### Can a subscription handle image generation while text uses an API?
 
@@ -124,11 +128,11 @@ Yes. Native image generation/edit requests sent through easy-switch prefer avail
 
 ### Why does Codex show a subscription sign-in when I select an API?
 
-Desktop image support temporarily connects a native subscription so Codex can expose its built-in image tool. The account label in Codex therefore describes that native sign-in, while easy-switch selects the actual upstream separately. Selecting an API sends text requests with that API’s key; image requests use a subscription. The app displays this distinction below the provider list. Stopping or quitting easy-switch restores the original configuration and temporary sign-in.
+Desktop image support temporarily connects a native subscription so Codex can expose its built-in image tool. The account label in Codex therefore describes that native sign-in, while easy-switch selects the actual upstream separately. Selecting an API sends text requests with that API’s key; image requests use a subscription. The app displays this distinction below the provider list. Stopping or quitting easy-switch restores the original configuration and temporary sign-in. Codex’s account card shows one native identity and the easy-switch provider name; additional accounts remain in easy-switch’s scrolling provider list and tray menu.
 
 ### Does switching interrupt the current task?
 
-Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives. A “Selected model is at capacity” rejection in HTTP or startup SSE is handled before any output is accepted: try available providers, then up to two delayed retries. Already accepted text/tool events are never replayed. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task.
+“Current route” identifies the default text provider for subsequent requests and changes after successful automatic failover. In-flight requests can still finish on their original provider; image routing is separate. Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives. A “Selected model is at capacity” rejection in HTTP or startup SSE is handled before any output is accepted: try available providers, then up to two delayed retries. Already accepted text/tool events are never replayed. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task.
 
 <a id="disclaimer"></a>
 

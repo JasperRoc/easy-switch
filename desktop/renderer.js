@@ -6,6 +6,8 @@ let language = 'en', appliedLanguage, catalogNotice = 'loadCatalog', rawNotice =
 let networkState = null;
 let catalogLoading = false, catalogFailed = false, catalogLoaded = null, effortSignature = '', importLoading = false;
 let modelTarget = null, renderedSessions = '', modelFeedback = null;
+let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
+const resetAttempts = new Map();
 const t = (key, values) => translate(language, key, values);
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -23,7 +25,7 @@ function appearance() {
   $('language-button').title = t('language'); $('theme-button').title = t('appearance');
   renderModelPicker(); renderEfforts(); renderCatalogStatus();
   for (const element of document.querySelectorAll('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
-  providerType();
+  providerType(); renderResetCards();
 }
 function notice(value, raw = false) { catalogNotice = value; rawNotice = raw; $('model-notice').textContent = raw ? localizeMessage(value, language) : t(value); }
 const call = (action, payload) => window.easySwitch.call(action, payload);
@@ -44,19 +46,18 @@ function button(text, handler, className = 'secondary') {
   const element = node('button', text, className); element.addEventListener('click', () => Promise.resolve(handler()).catch(() => {})); return element;
 }
 function icon(name) { const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'), use=document.createElementNS('http://www.w3.org/2000/svg','use'); use.setAttribute('href',`assets/ui.svg#${name}`); svg.setAttribute('aria-hidden','true'); svg.append(use); return svg; }
-function quotaRing(data, box, tooltip) {
+function quotaRing(data, tooltip) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
-  const plus = data.plan === 'plus', descriptions = [];
+  const plus = data.plan === 'plus';
   for (const weekly of plus ? [false, true] : [true]) {
     const value = weekly ? data.weekly : data.fiveHour, label = t(weekly ? 'quotaWeek' : 'quotaFiveHour');
     const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
     let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
     if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
-    descriptions.push(description);
     const group = document.createElementNS(svg.namespaceURI, 'g');
     group.setAttribute('class', `quota-segment${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
-    group.setAttribute('role', 'img'); group.setAttribute('aria-label', description);
+    group.setAttribute('role', 'img'); group.setAttribute('aria-label', description); group.setAttribute('tabindex', '0');
     for (const progress of [false, true]) {
       const shape = document.createElementNS(svg.namespaceURI, plus ? 'path' : 'circle');
       const attributes = plus ? { d: weekly ? 'M42.271 15.865 A20 20 0 1 1 5.729 15.865' : 'M7.820 12.244 A20 20 0 0 1 40.180 12.244' } : { cx: 24, cy: 24, r: 20, transform: 'rotate(-90 24 24)' };
@@ -67,32 +68,31 @@ function quotaRing(data, box, tooltip) {
     const hit = group.firstChild.cloneNode(); hit.setAttribute('class', 'quota-hit'); group.append(hit);
     group.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
     group.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+    group.addEventListener('focus', () => { tooltip.textContent = description; tooltip.hidden = false; });
+    group.addEventListener('blur', () => { tooltip.hidden = true; });
     svg.append(group);
   }
   const center = document.createElementNS(svg.namespaceURI, 'rect');
   for (const [key, value] of Object.entries({ x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)', class: 'quota-center' })) center.setAttribute(key, value);
   svg.append(center);
-  box.addEventListener('focus', () => { tooltip.textContent = descriptions.join('\n'); tooltip.hidden = false; });
-  box.addEventListener('blur', () => { tooltip.hidden = true; });
-  box.addEventListener('mouseleave', () => { tooltip.hidden = true; });
   return svg;
 }
 function quotaDisplay(provider) {
   const usage = provider.usage, data = usage?.data;
-  const box = button('', () => run('usage', provider.alias), 'secondary quota');
-  box.setAttribute('aria-label', t('quotaRefresh'));
+  const box = node('div', null, 'quota');
+  box.setAttribute('role', 'group');
   if (!data) {
     box.append(node('span', t(usage?.status === 'signin' ? 'loginNeeded' : usage?.status === 'unavailable' ? 'quotaUnavailable' : 'quotaLoading'), 'quota-message'));
   } else {
     const tooltip = node('span', null, 'quota-tooltip'); tooltip.hidden = true; tooltip.id = `quota-tip-${provider.alias}`; tooltip.setAttribute('role', 'tooltip');
-    box.setAttribute('aria-describedby', tooltip.id); box.append(quotaRing(data, box, tooltip), tooltip);
+    box.append(quotaRing(data, tooltip), tooltip);
     if (data.unlimited || data.credits !== null) {
       const credits = node('span', null, 'quota-credits');
       credits.append(node('span', t('quotaCredits'), 'quota-caption'), node('strong', data.unlimited ? '∞' : new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits), 'quota-balance'));
       box.append(credits);
     }
   }
-  let description = t('quotaRefresh');
+  let description = t('quotaAutoRefresh');
   if (usage?.fetchedAt) description += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
   if (data && usage.status !== 'ready') { box.classList.add('stale'); description += '\n' + t('quotaStale'); }
   box.setAttribute('aria-label', description);
@@ -129,8 +129,12 @@ function renderProviders() {
     const identity = node('div', null, 'identity');
     const plan = provider.usage?.data?.plan;
     identity.append(node('strong', provider.alias), node('small', provider.type === 'account' ? ['plus', 'pro'].includes(plan) ? `ChatGPT ${plan === 'plus' ? 'Plus' : 'Pro'}` : t('account') : provider.baseUrl)); row.append(identity);
-    if (provider.type === 'account') row.append(quotaDisplay(provider));
-    if (provider.active) row.append(node('span', t('active'), 'tag'));
+    if (provider.type === 'account') {
+      row.append(quotaDisplay(provider));
+      const reset = button('', () => openResetCards(provider.alias), 'icon-button reset-quota'); reset.append(icon('refresh'));
+      reset.title = t('resetQuota'); reset.setAttribute('aria-label', t('resetQuota')); row.append(reset);
+    }
+    if (provider.active) { const tag = node('span', t('activeRoute'), 'tag'); tag.title = t('activeRouteHelp'); row.append(tag); }
     if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
     row.append(button(provider.active ? t('selected') : t('use'), () => run('switch', provider.alias), provider.active ? 'secondary' : ''));
     const remove = button('', async () => { if (confirm(t('removeConfirm', {alias:provider.alias}))) await run('remove', provider.alias); }, 'icon-button delete-provider');
@@ -138,6 +142,55 @@ function renderProviders() {
   });
   animateProviders(before);
 }
+function renderResetCards() {
+  if (!resetAlias) return;
+  $('reset-title').textContent = t('resetAccount', { alias: resetAlias });
+  $('reset-status').textContent = t(resetLoading ? 'resetLoading' : resetData?.availableCount == null ? 'resetUnknown' : 'resetCount', { count: resetData?.availableCount });
+  $('reset-card-list').replaceChildren();
+  for (const card of resetData?.credits || []) {
+    const available = card.status === 'available' && card.resetType === 'codexRateLimits' && (!card.expiresAt || card.expiresAt > Date.now());
+    const option = button('', () => { resetSelected = card.id; renderResetCards(); }, 'secondary reset-card');
+    option.dataset.creditId = card.id; option.setAttribute('role', 'radio'); option.setAttribute('aria-checked', String(resetSelected === card.id));
+    option.disabled = !available || resetBusy || !!resetAttempt;
+    const copy = node('span', null, 'reset-card-copy');
+    copy.append(node('strong', card.title || t('resetCard')), node('small', card.expiresAt ? t('resetExpires', { time: new Date(card.expiresAt).toLocaleString(language) }) : t(card.expiryKnown ? 'resetNoExpiry' : 'resetExpiryUnknown')));
+    if (!available) copy.append(node('small', t(card.expiresAt && card.expiresAt <= Date.now() ? 'resetExpired' : 'resetUnavailable')));
+    if (card.description) copy.append(node('small', card.description));
+    option.append(node('span', null, 'reset-card-check'), copy); $('reset-card-list').append(option);
+  }
+  $('reset-card-help').textContent = t(!resetLoading && resetData?.availableCount > 0 && !resetData?.credits?.length ? 'resetDetailsMissing' : 'resetCardHelp');
+  $('reset-result').hidden = !resetOutcome;
+  if (resetOutcome) $('reset-result').textContent = t('reset_' + resetOutcome);
+  $('reset-confirm').textContent = t(resetBusy ? 'resetWorking' : resetAttempt ? 'resetRetry' : 'resetConfirm');
+  const card = resetData?.credits?.find(card => card.id === resetSelected);
+  $('reset-confirm').disabled = resetLoading || resetBusy || !resetAttempt && (!card || card.status !== 'available' || card.resetType !== 'codexRateLimits' || card.expiresAt && card.expiresAt <= Date.now());
+  $('reset-reload').disabled = resetBusy || !!resetAttempt;
+  $('close-reset').disabled = resetBusy;
+}
+async function loadResetCards() {
+  const alias = resetAlias; resetLoading = true; resetSelected = resetAttempt?.creditId || null; resetData = null; resetOutcome = null; $('reset-error').hidden = true; renderResetCards();
+  try { const result = await call('reset-cards', alias); if (alias === resetAlias) resetData = result; }
+  catch (error) { if (alias === resetAlias) showError(error, 'reset-error'); }
+  finally { if (alias === resetAlias) { resetLoading = false; renderResetCards(); } }
+}
+async function openResetCards(alias) {
+  resetAlias = alias; resetAttempt = resetAttempts.get(alias) || null; $('reset-dialog').showModal(); await loadResetCards();
+}
+$('close-reset').addEventListener('click', () => $('reset-dialog').close());
+$('reset-dialog').addEventListener('cancel', event => { if (resetBusy) event.preventDefault(); });
+$('reset-reload').addEventListener('click', loadResetCards);
+$('reset-confirm').addEventListener('click', async () => {
+  if (resetBusy || !resetSelected) return;
+  resetAttempt ??= { alias: resetAlias, creditId: resetSelected, idempotencyKey: crypto.randomUUID() };
+  resetAttempts.set(resetAlias, resetAttempt);
+  resetBusy = true; $('reset-error').hidden = true; renderResetCards();
+  try {
+    const result = await call('consume-reset', resetAttempt);
+    resetOutcome = result.outcome; resetData = result.cards; resetSelected = null; resetAttempt = null; resetAttempts.delete(resetAlias);
+    await refresh();
+  } catch (error) { showError(error, 'reset-error'); }
+  finally { resetBusy = false; renderResetCards(); }
+});
 function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {

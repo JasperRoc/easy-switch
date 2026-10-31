@@ -8,9 +8,10 @@ import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProx
 import { DesktopRuntime, protectDirectory } from './runtime.js';
 import { existingProvider } from './import.js';
 import { SubscriptionUsage } from './usage.js';
+import { codexResetCredits } from './reset-credits.js';
 
 export class DesktopController {
-  constructor({ root, codexHome, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy }) {
+  constructor({ root, codexHome, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits }) {
     Object.assign(this, { root, codexHome, binary });
     this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
     protectDirectory(root);
@@ -22,6 +23,7 @@ export class DesktopController {
     this.runtime = new DesktopRuntime({ root, codexHome, port, reauth: this.reauth, guardExec });
     this.usage = new SubscriptionUsage({ root, refreshAuth: provider => codexModels({ binary, provider }) });
     this.preferencesFile = path.join(root, 'desktop.json');
+    this.resetRequest = resetRequest; this.resetPending = new Map();
   }
   preferences() {
     try { return JSON.parse(fs.readFileSync(this.preferencesFile, 'utf8')); }
@@ -40,11 +42,29 @@ export class DesktopController {
     this.usage.closed = false;
     await this.runtime.start();
   }
-  refreshUsage(alias) {
-    const state = readState(this.root);
-    if (typeof alias !== 'string' || state.providers[alias]?.type !== 'account') throw new Error('Unknown subscription.');
-    if (this.runtime.active) this.usage.snapshot(state, alias);
-    return this.snapshot();
+  resetCards(alias) {
+    const provider = readState(this.root).providers[aliasName(alias)];
+    if (provider?.type !== 'account') throw new Error('Choose a subscription account.');
+    return this.resetRequest({ binary: this.binary, provider });
+  }
+  async consumeReset({ alias, creditId, idempotencyKey } = {}) {
+    const provider = readState(this.root).providers[aliasName(alias)];
+    if (provider?.type !== 'account') throw new Error('Choose a subscription account.');
+    if (typeof creditId !== 'string' || !creditId.trim() || typeof idempotencyKey !== 'string') throw new Error('Choose a reset card and retry.');
+    if (this.resetPending.has(alias)) throw new Error('A reset is already in progress for this account.');
+    const operation = this.resetRequest({ binary: this.binary, provider, creditId, idempotencyKey });
+    this.resetPending.set(alias, operation);
+    try {
+      const result = await operation;
+      // Refresh both authoritative card details and quota after any outcome.
+      const cards = await this.resetCards(alias).catch(() => null);
+      if (this.runtime.active) {
+        await this.usage.entries.get(alias)?.pending;
+        this.usage.snapshot(readState(this.root), alias);
+        await this.usage.entries.get(alias)?.pending;
+      }
+      return { ...result, cards };
+    } finally { this.resetPending.delete(alias); }
   }
   async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); }
   snapshot() {

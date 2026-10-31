@@ -23,7 +23,7 @@ for (const target of targets) {
     execFileSync('tar', ['-xzf', path.join(temp, packed[0].filename), '-C', temp]);
     const vendor = path.join(temp, 'package', 'vendor', triples[target]);
     fs.mkdirSync(dest, { recursive: true });
-    // These two operations only use the CLI executable: device login and model/list.
+    // Only the CLI executable is needed for device login, model metadata and account quota/reset methods.
     fs.copyFileSync(path.join(vendor, 'bin', exe), path.join(dest, exe));
     if (!target.startsWith('win32')) fs.chmodSync(path.join(dest, exe), 0o755);
     fs.copyFileSync(path.join(__dirname, '..', 'docs', 'CODEX-LICENSE'), path.join(dest, 'LICENSE'));

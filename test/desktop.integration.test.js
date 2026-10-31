@@ -87,13 +87,26 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   const account = (alias, plan, weekly) => ({ alias, type: 'account', active: false, usage: { status: 'ready', fetchedAt: Date.now(),
     data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
   const uiState = { running: true, imageTools: true, active: 'api', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0), { alias: 'api', type: 'api', active: true, baseUrl: 'https://api.example.com/v1' }],
-    sessions: [], version: '0.4.7', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
+    sessions: [], version: '0.4.8', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
   await app.evaluate(({ ipcMain, BrowserWindow }, state) => {
     globalThis.easySwitchQuotaState = state; globalThis.easySwitchQuotaRefreshes = 0;
+    globalThis.easySwitchResetAttempts = [];
+    globalThis.easySwitchResetCards = { availableCount: 2, credits: [
+      { id: 'soon', title: 'Soon-expiring card', status: 'available', resetType: 'codexRateLimits', expiresAt: 1900000000000, expiryKnown: true },
+      { id: 'later', title: 'Later card', status: 'available', resetType: 'codexRateLimits', expiresAt: 2000000000000, expiryKnown: true },
+      { id: 'expired', title: 'Expired card', status: 'available', resetType: 'codexRateLimits', expiresAt: 1000000000000, expiryKnown: true },
+    ] };
     ipcMain.removeHandler('easy-switch:call');
     ipcMain.handle('easy-switch:call', (_event, action, payload) => {
       if (action === 'preferences') { Object.assign(state, payload); state.dark = payload.theme ? payload.theme === 'dark' : state.dark; }
       if (action === 'usage') globalThis.easySwitchQuotaRefreshes++;
+      if (action === 'reset-cards') return globalThis.easySwitchResetCards;
+      if (action === 'consume-reset') {
+        globalThis.easySwitchResetAttempts.push(payload);
+        if (globalThis.easySwitchResetAttempts.length === 1) throw new Error('Could not confirm the reset result. Retry the same card to avoid another redemption.');
+        globalThis.easySwitchResetCards = { availableCount: 0, credits: [] };
+        return { outcome: 'alreadyRedeemed', cards: globalThis.easySwitchResetCards };
+      }
       return state;
     });
     BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
@@ -116,7 +129,11 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   assert.equal(await credits.locator('.quota-segment').count(), 1);
   assert.equal(await plus.locator('.quota-center').count(), 1);
   await page.locator('#native-images').filter({ hasText: 'Text route: api (Official / third-party API)' }).waitFor(); await plus.locator('.quota').click();
-  assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 1);
+  assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 0);
+  assert.equal(await plus.locator('.quota-tooltip').isVisible(), false, 'clicking the quota does not expand all details');
+  await plus.locator('.quota-segment.weekly').focus();
+  await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
+  await plus.locator('.quota-segment.weekly').evaluate(element => element.blur());
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await credits.locator('.quota-caption').filter({ hasText: '剩余购买额度' }).waitFor();
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
@@ -142,6 +159,36 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   });
   await plus.locator('.quota.stale').waitFor(); await pro.locator('.quota-message').filter({ hasText: '额度暂不可用' }).waitFor();
   assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await page.locator('#native-images').isVisible(), false);
+  await plus.locator('.reset-quota').click();
+  await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();
+  assert.equal(await page.locator('#reset-confirm').isDisabled(), true, 'a card must be chosen explicitly');
+  assert.equal(await page.locator('[data-credit-id="expired"]').isDisabled(), true);
+  assert.match(await page.locator('[data-credit-id="soon"]').innerText(), /过期时间/);
+  await page.locator('[data-credit-id="later"]').click();
+  await page.screenshot({ path: path.join(folder, 'reset-cards-zh.png') });
+  await page.click('#reset-confirm');
+  await page.locator('#reset-error').filter({ hasText: '无法确认重置结果' }).waitFor();
+  await page.click('#close-reset'); await plus.locator('.reset-quota').click();
+  await page.locator('#reset-confirm').filter({ hasText: '重试同一次重置' }).waitFor();
+  await page.click('#reset-confirm');
+  await page.locator('#reset-result').filter({ hasText: '这次重置已完成' }).waitFor();
+  const attempts = await app.evaluate(() => globalThis.easySwitchResetAttempts);
+  assert.equal(attempts.length, 2); assert.deepEqual(attempts[0], attempts[1]); assert.equal(attempts[0].creditId, 'later');
+  assert.equal(await page.locator('#reset-confirm').isDisabled(), true);
+  assert.equal(await plus.locator('.quota-balance').innerText(), '36.445');
+  assert.equal(await page.locator('#current-provider').innerText(), 'api');
+  await page.click('#close-reset');
+  await app.evaluate(({ BrowserWindow }) => {
+    const state = globalThis.easySwitchQuotaState;
+    const template = state.providers[0];
+    for (let index = 0; index < 20; index++) state.providers.push({ ...template, alias: 'extra-' + index });
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
+  });
+  const last = page.locator('.provider[data-alias="extra-19"]');
+  await last.waitFor(); await last.scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('.provider').count(), 24);
+  assert.equal(await page.locator('main').evaluate(element => element.scrollTop > 0), true, 'many accounts remain accessible by scrolling');
+  assert.equal(await page.locator('.provider[data-alias="api"] .tag').innerText(), '当前路由');
 });
 test('Electron recovery helper restores configuration after main process is killed', { skip: !enabled,timeout:30000 }, async t => {
   const { app,file,original,root } = await launch(t);
@@ -298,6 +345,7 @@ test('desktop targets a running session, aligns effort controls and localizes st
   assert.equal(await page.locator('[data-session="task-a"] strong').innerText(), 'Repair the search feature');
   assert.equal(await page.locator('#apply-model').isDisabled(), true);
   await page.click('[data-session="task-a"]');
+  await page.locator('#catalog-status').filter({ hasText: 'Catalog refreshed' }).waitFor();
   await page.click('#model-picker'); await page.locator('[data-model="gpt-6.1-sol"]').click();
   const picker = await page.locator('#model-picker').boundingBox(), effort = await page.locator('[data-effort=""]').boundingBox();
   assert.ok(Math.abs(picker.y + picker.height / 2 - effort.y - effort.height / 2) < 1, 'Effort and model controls must share a centerline');
