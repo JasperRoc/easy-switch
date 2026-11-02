@@ -7,9 +7,10 @@ import { createUpstreamFetch } from './network.js';
 import { accountAuth, atomic } from './store.js';
 
 // Read model metadata in an isolated app-server without creating a thread.
-export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000 } = {}) {
+export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000, signal } = {}) {
+  signal?.throwIfAborted();
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-switch-catalog-'));
-  let child, lines, timer, exit, originalAuth;
+  let child, lines, timer, exit, originalAuth, onAbort;
   try {
     const account = provider?.type === 'account';
     if (account) {
@@ -18,6 +19,8 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
     }
     fs.writeFileSync(path.join(temp, 'config.toml'), 'cli_auth_credentials_store="file"\n' + (account ? '' : 'model_provider="catalog"\n[model_providers.catalog]\nname="Model catalog"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n'), { mode: 0o600 });
     const result = await new Promise((resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
       child = spawnImpl(binary, ['app-server'], { env: { ...process.env, CODEX_HOME: temp }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       exit = new Promise(done => child.once('close', done));
       child.stderr.resume();
@@ -54,6 +57,7 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
     }));
   } finally {
     clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
     lines?.close();
     if (child) {
       child.stdin.end(); child.kill();

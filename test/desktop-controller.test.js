@@ -12,6 +12,12 @@ function setup(t) {
   t.after(() => fs.rmSync(directory, { recursive:true,force:true }));
   return new DesktopController({ root:path.join(directory,'switch'),codexHome:path.join(directory,'codex'),binary:'not-used',port:0 });
 }
+test('tray-only snapshots never query quota or open the session metadata database', t => {
+  const controller = setup(t); controller.runtime.active = true;
+  controller.usage.snapshot = () => assert.fail('quota read in tray-only snapshot');
+  controller.runtime.sessions.snapshot = () => assert.fail('metadata read in tray-only snapshot');
+  assert.deepEqual(controller.snapshot({ usage: false, sessions: false }).sessions, []);
+});
 test('desktop API setup defaults to official URL, persists order and exports no credentials', t => {
   const controller = setup(t);
   assert.equal(fs.existsSync(path.join(controller.codexHome,'config.toml')),false);

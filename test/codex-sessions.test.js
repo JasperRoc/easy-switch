@@ -86,3 +86,22 @@ test('missing or unreadable metadata never creates request-derived titles or per
   unknown.finish(); assert.deepEqual(sessions.snapshot({}), []); assert.equal(sessions.unavailable, true);
   assert.equal(sessions.entries.size, 0);
 });
+test('unavailable metadata does not accumulate finished session IDs over a long background run', t => {
+  const { sessions } = setup(t);
+  const active = sessions.begin({ 'thread-id': 'still-active' }, payload);
+  for (let round = 0; round < 100; round++) {
+    for (let index = 0; index < 100; index++) sessions.begin({ 'thread-id': `completed-${round}-${index}` }, payload).finish();
+    assert.deepEqual(sessions.snapshot({}), []); assert.equal(sessions.entries.size, 1);
+  }
+  active.finish(); sessions.snapshot({}); assert.equal(sessions.entries.size, 0);
+});
+test('unchanged partial rollout records are not reread on every status refresh', t => {
+  const { home, sessions } = setup(t), thread = codexThread(home, 'task-a', 'Task A');
+  sessions.begin(thread.headers, payload).finish();
+  fs.appendFileSync(thread.file, '{"type":"event_msg",'); sessions.snapshot({});
+  const original = fs.readSync, reads = t.mock.method(fs, 'readSync', (...args) => original(...args));
+  for (let index = 0; index < 100; index++) assert.equal(sessions.snapshot({}).length, 1);
+  assert.equal(reads.mock.callCount(), 0);
+  fs.appendFileSync(thread.file, '"payload":{"type":"task_complete","turn_id":"turn-task-a"}}\n');
+  assert.deepEqual(sessions.snapshot({}), []); assert.ok(reads.mock.callCount() > 0);
+});

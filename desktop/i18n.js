@@ -1,7 +1,7 @@
 export const messages = {
   en: {
     activeRoute: 'Current route', activeRouteHelp: 'Default for the next text request. Automatic failover updates this route; images use subscriptions separately.',
-    quotaAutoRefresh: 'Subscription quota refreshes automatically every minute.',
+    quotaAutoRefresh: 'Subscription quota refreshes every minute while this window is visible; failed reads back off.',
     resetQuota: 'Reset quota', resetAccount: 'Reset quota · {alias}', resetChoose: 'Choose a reset card',
     resetCard: 'Rate-limit reset card', resetLoading: 'Loading reset cards…', resetUnknown: 'Reset-card availability was not reported.',
     resetCount: '{count} available reset cards', resetExpires: 'Expires {time}', resetNoExpiry: 'No expiration', resetExpiryUnknown: 'Expiration not reported',
@@ -87,7 +87,7 @@ export const messages = {
   },
   'zh-CN': {
     activeRoute: '当前路由', activeRouteHelp: '下一次文字请求默认使用此服务商，自动切换后会同步更新；图片请求单独使用订阅。',
-    quotaAutoRefresh: '订阅额度每分钟自动刷新。',
+    quotaAutoRefresh: '窗口显示时每分钟刷新订阅额度；读取失败后降低重试频率。',
     resetQuota: '重置额度', resetAccount: '重置额度 · {alias}', resetChoose: '选择重置卡',
     resetCard: '额度重置卡', resetLoading: '正在读取重置卡…', resetUnknown: '账号未返回重置卡信息。',
     resetCount: '共有 {count} 张可用重置卡', resetExpires: '过期时间：{time}', resetNoExpiry: '无过期时间', resetExpiryUnknown: '未提供过期时间',

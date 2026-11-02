@@ -7,6 +7,7 @@ let networkState = null;
 let catalogLoading = false, catalogFailed = false, catalogLoaded = null, effortSignature = '', importLoading = false;
 let modelTarget = null, renderedSessions = '', modelFeedback = null;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
+let renderedState = '';
 const resetAttempts = new Map();
 const t = (key, values) => translate(language, key, values);
 function appearance() {
@@ -191,11 +192,14 @@ $('reset-confirm').addEventListener('click', async () => {
   } catch (error) { showError(error, 'reset-error'); }
   finally { resetBusy = false; renderResetCards(); }
 });
-function refresh() {
+function refresh(nextState) {
   if (refreshing) return refreshing;
   refreshing = (async () => {
   try {
-    state = await call('state'); appearance();
+    state = nextState || await call('state');
+    const signature = JSON.stringify(state);
+    if (signature === renderedState) return;
+    renderedState = signature; appearance();
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
     const customized = state.sessions.filter(session => session.overridden).length;
@@ -544,6 +548,7 @@ $('updates').addEventListener('click',showUpdates); $('update-retry').addEventLi
 $('close-update').addEventListener('click',()=>$('update-dialog').close());
 $('update-action').addEventListener('click',async()=>{try{await call(state.update.phase==='ready'?'update-install':'update-download');}catch(error){showError(error,'update-error');}finally{await refresh();}});
 $('star').addEventListener('click',()=>call('star').catch(showError));
-window.easySwitch.onChange(refresh);
+window.easySwitch.onChange(nextState => { if (!document.hidden) refresh(nextState); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 window.easySwitch.onTab(changeTab);
 refresh();

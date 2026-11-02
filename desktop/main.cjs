@@ -4,13 +4,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { trayIdentity, trayImage, menuBarHidden, bindTrayActions } = require('./tray.cjs');
+const { desktopActivity } = require('./activity.cjs');
 
 const root = path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
-let window, tray, controller, updater, restoreSession, poll, updateTimer, quitting = false, quitReady = false, startupError = '', lastFailover;
-let trayState = '', trayMenu, uiLanguage = 'en', translate;
+let window, tray, controller, updater, restoreSession, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '', lastFailover;
+let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', translate;
 const t = (key, values) => translate(uiLanguage, key, values);
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const repository = 'https://github.com/JasperRoc/easy-switch';
@@ -27,11 +28,10 @@ function report(error) {
   window?.webContents.send('easy-switch:changed');
   dialog.showErrorBox('easy-switch', startupError);
 }
-function snapshot() { return { ...controller.snapshot(), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: controller.preferences().theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {}).openAtLogin }; }
-function updateTray() {
+function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details, sessions: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
+function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
-  const state = snapshot();
-  const signature = JSON.stringify([state.running, state.active, state.providers, state.model, state.loginItem, state.lastFailover, uiLanguage, state.update.phase, state.update.version]);
+  const signature = JSON.stringify([state.running, state.active, state.providers.map(({ alias, type, active, needsLogin }) => ({ alias, type, active, needsLogin })), state.model, state.loginItem, state.lastFailover, uiLanguage]);
   if (signature === trayState) return;
   trayState = signature;
   const model = state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
@@ -54,9 +54,20 @@ function updateTray() {
   }
   lastFailover = state.lastFailover?.at || null;
 }
+function refreshDesktop(visible = activity?.visible() ?? false) {
+  if (!controller || !tray) return;
+  const state = snapshot(visible);
+  if (!visible) controller.runtime.sessions.snapshot({});
+  updateTray(state);
+  if (!visible) { uiState = ''; return; }
+  const signature = JSON.stringify(state);
+  if (signature === uiState) return;
+  uiState = signature; window.webContents.send('easy-switch:changed', state);
+}
 function setAutoStart(enabled) {
   app.setLoginItemSettings({ openAtLogin: !!enabled, ...(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {}) });
-  const applied = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {}).openAtLogin;
+  loginItem = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {});
+  const applied = loginItem.openAtLogin;
   controller.setPreferences({ startAtLogin: applied }); updateTray();
   if (applied !== !!enabled) throw new Error(t('loginPermission'));
 }
@@ -65,6 +76,7 @@ async function boot() {
   const { DesktopController } = await import('./controller.js');
   const { DesktopUpdater } = await import('./updater.js');
   const i18n = await import('./i18n.js'); translate = i18n.translate;
+  loginItem = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {});
   ({ restoreSession } = await import('./config.js'));
   const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const bundled = app.isPackaged ? path.join(process.resourcesPath, 'codex', exe) : path.join(__dirname, '..', '.desktop-cache', `codex-${process.platform}-${process.arch}`, exe);
@@ -74,7 +86,7 @@ async function boot() {
   updater = new DesktopUpdater({ root, current: app.getVersion(),
     systemFetch: (url, options) => updateSession.fetch(url, { ...options, credentials: 'omit' }),
     useSystemNetwork: () => !['saved', 'environment'].includes(controller.network().source),
-    changed: () => { window?.webContents.send('easy-switch:changed'); updateTray(); } });
+    changed: () => { if (activity?.visible()) refreshDesktop(true); } });
   uiLanguage = i18n.normalizeLanguage(controller.preferences().language || app.getLocale());
   nativeTheme.themeSource = controller.preferences().theme || 'system';
   window = new BrowserWindow({ width: 960, height: 780, minWidth: 780, minHeight: 680, show: false, backgroundColor: process.platform === 'darwin' ? '#00000000' : '#f2f2f6', title: 'easy-switch',
@@ -132,7 +144,7 @@ async function boot() {
           await controller.stop();
           try { await updater.install({ codexHome: controller.codexHome }); }
           catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
-          quitting = true; quitReady = true; clearInterval(poll); clearInterval(updateTimer); app.quit(); return null;
+          quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
         }
         case 'star': await shell.openExternal(repository); return null;
         case 'quit': app.quit(); return null;
@@ -147,16 +159,18 @@ async function boot() {
   try { await controller.start(); } catch (error) { startupError = error.message; }
   await window.loadFile(path.join(__dirname, 'index.html'));
   updateTray(); updater.confirmLaunch();
-  nativeTheme.on('updated', () => window?.webContents.send('easy-switch:changed'));
-  poll = setInterval(() => { try { updateTray(); window?.webContents.send('easy-switch:changed'); } catch {} }, 1500);
+  nativeTheme.on('updated', () => { if (activity?.visible()) refreshDesktop(true); });
+  activity = desktopActivity({ window, powerMonitor, foreground: visible => controller.usage.setPaused(!visible), refresh: visible => {
+    try { refreshDesktop(visible); } catch { /* A transient metadata read is retried on the next pass. */ }
+  } });
   if (app.isPackaged && !process.env.SWITCH_TEST_DESKTOP) {
-    const check = () => updater.check().catch(() => {});
-    setTimeout(check, 3000).unref(); updateTimer = setInterval(check, 6 * 60 * 60 * 1000); updateTimer.unref();
+    const check = () => { if (!activity.paused()) updater.check().catch(() => {}); };
+    initialUpdate = setTimeout(check, 3000); initialUpdate.unref(); updateTimer = setInterval(check, 6 * 60 * 60 * 1000); updateTimer.unref();
   }
   const nativeMenu = () => { if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'easy-switch', submenu: [{ role: 'about' }, { label: t('updates'), click: () => showWindow('updates') }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' }, { label: t('quit'), accelerator: 'Command+Q', click: () => app.quit() }] }, { role: 'editMenu' }, { role: 'windowMenu' }])); };
   nativeMenu();
-  const hidden = process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAtLogin;
-  if (!hidden || !controller.snapshot().providers.length || startupError) showWindow();
+  const hidden = process.argv.includes('--hidden') || loginItem.wasOpenedAtLogin;
+  if (!hidden || !controller.snapshot({ usage: false, sessions: false }).providers.length || startupError) showWindow();
 }
 
 if (!ownsLock) app.quit();
@@ -175,7 +189,7 @@ else {
         if (choice.response !== 1) return;
       }
       quitting = true;
-      try { await controller?.stop(); clearInterval(poll); clearInterval(updateTimer); quitReady = true; app.quit(); }
+      try { await controller?.stop(); activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); quitReady = true; app.quit(); }
       catch (error) { quitting = false; report(error); }
     })().catch(report);
   });

@@ -81,6 +81,42 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,undefined);
   assert.deepEqual(uiErrors,[]);
 });
+test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foreground work while routing remains usable', { skip: !enabled, timeout: 30000 }, async t => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }).listen(0, '127.0.0.1');
+  await once(upstream, 'listening'); t.after(() => upstream.close());
+  const { app, page, root } = await launch(t);
+  await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'idle-test', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  await page.locator('.provider strong').filter({ hasText: 'idle-test' }).waitFor();
+  await app.evaluate(({ app, BrowserWindow }) => {
+    globalThis.energySends = 0; globalThis.energyLoginReads = 0;
+    const web = BrowserWindow.getAllWindows()[0].webContents, send = web.send.bind(web), read = app.getLoginItemSettings.bind(app);
+    web.send = (channel, ...args) => { if (channel === 'easy-switch:changed') globalThis.energySends++; return send(channel, ...args); };
+    app.getLoginItemSettings = (...args) => { globalThis.energyLoginReads++; return read(...args); };
+  });
+  await page.evaluate(() => {
+    globalThis.energyMutations = 0;
+    new MutationObserver(records => globalThis.energyMutations += records.length).observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
+  });
+  for (let index = 0; index < 20; index++) await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  assert.equal(await page.evaluate(() => globalThis.energyMutations), 0, 'unchanged state never rewrites the DOM');
+  assert.equal(await app.evaluate(() => globalThis.energyLoginReads), 0, 'idle polling does not call OS login-item services');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+  const sent = await app.evaluate(() => globalThis.energySends);
+  const endpoint = (await page.evaluate(() => window.easySwitch.call('network'))).localProxy.url;
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const response = await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'fixture', input: 'Keep routing while hidden' }) });
+  assert.equal(response.status, 200); await response.text();
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'hidden renderer receives no periodic refresh');
+  await app.evaluate(({ powerMonitor, BrowserWindow }) => { powerMonitor.emit('lock-screen'); powerMonitor.emit('suspend'); BrowserWindow.getAllWindows()[0].show(); });
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'sleep and lock suspend UI polling even if a window event arrives');
+  await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'resuming does not bypass a screen lock');
+  await app.evaluate(({ powerMonitor }) => powerMonitor.emit('unlock-screen'));
+  assert.ok(await app.evaluate(() => globalThis.energySends) > sent, 'unlock refreshes the visible window immediately');
+});
 test('subscription quota rings, purchased credits, stale data and image setup notices render in both languages and themes', { skip: !enabled, timeout: 30000 }, async t => {
   const { app, page } = await launch(t);
   const window = (remaining, hours) => ({ remaining, resetsAt: Date.now() + hours * 3600000 });

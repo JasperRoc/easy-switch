@@ -42,6 +42,14 @@ test('catalog timeout and protocol errors clean up the isolated process and do n
     assert.equal(fs.existsSync(fake.directory()), false);
   }
 });
+test('cancelled background credential refresh terminates its Codex helper and removes the isolated home', async () => {
+  const fake = fakeServer('timeout'), abort = new AbortController();
+  const pending = codexModels({ spawnImpl: fake.spawnImpl, signal: abort.signal });
+  assert.ok(fs.existsSync(fake.directory())); abort.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(fs.existsSync(fake.directory()), false);
+  await assert.rejects(codexModels({ spawnImpl: () => assert.fail('already aborted'), signal: abort.signal }), { name: 'AbortError' });
+});
 test('API models retain provider-only IDs; unavailable discovery has an explicit notice', async () => {
   const catalogImpl = async () => [{ id: 'model-a', efforts: ['low'] }, { id: 'model-b', efforts: ['high'] }];
   const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'SECRET' };

@@ -21,7 +21,7 @@ export class DesktopController {
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
       ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
     this.runtime = new DesktopRuntime({ root, codexHome, port, reauth: this.reauth, guardExec });
-    this.usage = new SubscriptionUsage({ root, refreshAuth: provider => codexModels({ binary, provider }) });
+    this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
     this.preferencesFile = path.join(root, 'desktop.json');
     this.resetRequest = resetRequest; this.resetPending = new Map();
   }
@@ -67,16 +67,16 @@ export class DesktopController {
     } finally { this.resetPending.delete(alias); }
   }
   async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); }
-  snapshot() {
+  snapshot({ usage: includeUsage = true, sessions: includeSessions = true } = {}) {
     const state = init(this.root);
-    const usage = this.runtime.active ? this.usage.snapshot(state) : {};
+    const usage = this.runtime.active && includeUsage ? this.usage.snapshot(state) : {};
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
       let needsLogin = false;
       if (provider.type === 'account') { try { needsLogin = expired(accountAuth(provider)); } catch { needsLogin = true; } }
       return { alias, type: provider.type, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null };
     });
-    const sessions = this.runtime.sessions.snapshot(state);
+    const sessions = includeSessions ? this.runtime.sessions.snapshot(state) : [];
     return { running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: this.login && { alias: this.login.alias, phase: this.login.phase, message: this.login.message, url: this.login.url, code: this.login.code },
       imageTools: !!this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: this.runtime.sessions.unavailable, preferences: this.preferences() };

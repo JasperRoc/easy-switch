@@ -116,7 +116,7 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes automatically every minute; clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
+Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
 
 ### Can I use an earned quota-reset card?
 

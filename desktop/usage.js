@@ -28,7 +28,7 @@ export function normalizeUsage(payload, now = Date.now()) {
 export class SubscriptionUsage {
   constructor({ root, fetchImpl, refreshAuth, now = Date.now, intervalMs = 60000 }) {
     Object.assign(this, { root, fetchImpl, refreshAuth, now, intervalMs });
-    this.entries = new Map(); this.closed = false;
+    this.entries = new Map(); this.closed = false; this.paused = false;
   }
   snapshot(state, force = false) {
     const result = {};
@@ -42,7 +42,8 @@ export class SubscriptionUsage {
         entry = { key, status: 'loading', fetchedAt: null, attemptedAt: -Infinity, data: null };
         this.entries.set(alias, entry);
       }
-      if (!this.closed && !entry.pending && (force === true || force === alias || this.now() - entry.attemptedAt >= this.intervalMs)) {
+      const retryMs = Math.min(15 * 60000, this.intervalMs * 2 ** (entry.failures || 0));
+      if (!this.closed && !this.paused && !entry.pending && (force === true || force === alias || this.now() - entry.attemptedAt >= retryMs)) {
         entry.attemptedAt = this.now(); entry.pending = this.load(provider, auth, entry).finally(() => { entry.pending = null; });
       }
       result[alias] = { status: entry.status, fetchedAt: entry.fetchedAt, data: entry.data, refreshing: !!entry.pending };
@@ -61,21 +62,26 @@ export class SubscriptionUsage {
     try {
       client = this.fetchImpl ? null : createUpstreamFetch(this.root);
       let response = await request(auth);
+      if (abort.signal.aborted) { await response.body?.cancel(); return; }
       if (response.status === 401 && this.refreshAuth) {
         await response.body?.cancel();
-        await this.refreshAuth(provider);
+        await this.refreshAuth(provider, abort.signal);
         if (abort.signal.aborted) return;
         auth = accountAuth(provider); entry.key = fingerprint(auth);
         response = await request(auth);
       }
       if (!response.ok) {
         await response.body?.cancel();
-        entry.status = response.status === 401 ? 'signin' : 'unavailable'; return;
+        entry.status = response.status === 401 ? 'signin' : 'unavailable'; entry.failures = (entry.failures || 0) + 1; return;
       }
       entry.data = normalizeUsage(await response.json(), this.now());
-      entry.fetchedAt = this.now(); entry.status = 'ready';
-    } catch { entry.status = 'unavailable'; }
-    finally { delete entry.abort; await client?.close(); }
+      entry.fetchedAt = this.now(); entry.status = 'ready'; entry.failures = 0;
+    } catch { if (!abort.signal.aborted) { entry.status = 'unavailable'; entry.failures = (entry.failures || 0) + 1; } }
+    finally {
+      if (abort.signal.aborted) entry.attemptedAt = -Infinity;
+      delete entry.abort; await client?.close();
+    }
   }
+  setPaused(paused) { this.paused = paused; if (paused) for (const entry of this.entries.values()) entry.abort?.abort(); }
   close() { this.closed = true; for (const entry of this.entries.values()) entry.abort?.abort(); }
 }

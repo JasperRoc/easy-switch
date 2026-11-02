@@ -66,3 +66,30 @@ test('unauthorized quota requests refresh existing credentials once, without sta
   usage.snapshot(state); await done(usage);
   assert.equal(usage.snapshot(state).account.status, 'ready'); assert.equal(calls, 2); assert.equal(refreshes, 1);
 });
+test('background pause aborts quota and credential refresh, preserves cached data and resumes without duplicate requests', async t => {
+  let calls = 0, hold = false, refreshSignal;
+  const { usage, state } = setup(t, { fetchImpl: async () => {
+    calls++; return hold ? new Response('', { status: 401 }) : Response.json(payload());
+  }, refreshAuth: (_provider, signal) => {
+    refreshSignal = signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } });
+  usage.snapshot(state); await done(usage); hold = true;
+  usage.snapshot(state, true); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(refreshSignal); usage.setPaused(true); await done(usage);
+  assert.equal(refreshSignal.aborted, true);
+  for (let index = 0; index < 100; index++) usage.snapshot(state, true);
+  assert.equal(calls, 2); assert.equal(usage.snapshot(state).account.data.credits, 36.445);
+  assert.equal(usage.snapshot(state).account.status, 'ready');
+  hold = false; usage.setPaused(false); usage.snapshot(state); usage.snapshot(state); await done(usage);
+  assert.equal(calls, 3); assert.equal(usage.snapshot(state).account.status, 'ready');
+});
+test('repeated quota failures back off instead of launching authentication helpers every minute', async t => {
+  let calls = 0, clock = 0;
+  const { usage, state } = setup(t, { now: () => clock, fetchImpl: async () => { calls++; return new Response('', { status: 503 }); } });
+  usage.snapshot(state); await done(usage); assert.equal(calls, 1);
+  clock = 60000; usage.snapshot(state); await done(usage); assert.equal(calls, 1);
+  clock = 120000; usage.snapshot(state); await done(usage); assert.equal(calls, 2);
+  clock = 180000; usage.snapshot(state); await done(usage); assert.equal(calls, 2);
+  clock = 360000; usage.snapshot(state); await done(usage); assert.equal(calls, 3);
+});

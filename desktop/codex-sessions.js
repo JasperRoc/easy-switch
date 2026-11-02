@@ -13,6 +13,7 @@ function readRecords(file, cache, visit) {
     if (cache.inode !== undefined && (cache.inode !== stat.ino || cache.device !== stat.dev || stat.size < cache.offset)) {
       for (const key of Object.keys(cache)) delete cache[key];
     }
+    if (cache.size === stat.size && cache.modified === stat.mtimeMs) return;
     const offset = Math.max(cache.offset || 0, stat.size - tailBytes);
     const bytes = Buffer.alloc(stat.size - offset);
     fs.readSync(fd, bytes, 0, bytes.length, offset);
@@ -23,7 +24,7 @@ function readRecords(file, cache, visit) {
       try { visit(JSON.parse(bytes.toString('utf8', start, end))); } catch {}
       start = end + 1;
     }
-    Object.assign(cache, { inode: stat.ino, device: stat.dev, offset: offset + start });
+    Object.assign(cache, { inode: stat.ino, device: stat.dev, offset: offset + start, size: stat.size, modified: stat.mtimeMs });
   } finally { fs.closeSync(fd); }
 }
 
@@ -61,7 +62,14 @@ export class CodexSessions extends SessionTracker {
     if (!this.entries.size) return [];
     let threads;
     try { threads = this.threads(); }
-    catch { this.unavailable = true; return []; }
+    catch {
+      this.unavailable = true;
+      // A missing/unreadable database cannot justify retaining finished IDs.
+      for (const [id, entry] of this.entries) if (!entry.activeRequests) {
+        this.entries.delete(id); this.rollouts.delete(id); this.names.delete(id);
+      }
+      return [];
+    }
     const ids = [...this.entries.keys()].join(',');
     if (this.index.ids !== ids) this.index = {};
     try {
