@@ -62,8 +62,11 @@ test('model status and reset work without a TTY; interactive selection requires 
   setModel({ model: 'model-a', effort: 'high' }, root);
   assert.match(run(['model', 'current']).stdout, /model-a.*high/);
   assert.equal(run(['model']).status, 1);
-  assert.equal(run(['model', 'unknown']).status, 1);
+  assert.equal(run(['model', 'invalid model']).status, 1);
   assert.equal(readState(root).modelSelection.model, 'model-a');
   assert.equal(run(['model', 'reset']).status, 0);
   assert.equal(readState(root).modelSelection, undefined);
+  assert.equal(run(['model', 'provider-model', 'high']).status, 0);
+  assert.deepEqual(readState(root).modelSelection, { model: 'provider-model', effort: 'high' });
+  assert.equal(run(['model', 'reset', 'extra']).status, 1);
 });

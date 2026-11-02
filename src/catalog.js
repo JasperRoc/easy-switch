@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createUpstreamFetch } from './network.js';
 import { accountAuth, atomic } from './store.js';
+import { claudeToken } from './claude-auth.js';
+import { claudeHeaders, claudeEndpoint } from './claude-proxy.js';
 
 // Read model metadata in an isolated app-server without creating a thread.
 export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000, signal } = {}) {
@@ -80,7 +82,6 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
 export async function discoverModels(provider, root, { catalogImpl = codexModels, fetchImpl } = {}) {
   if (provider.type !== 'api') return { models: await catalogImpl(provider), notice: '使用当前订阅读取 Codex 模型目录；实际可用性以账号权限为准。' };
   // Provider discovery must still work if local Codex metadata is unavailable.
-  const metadata = Promise.resolve().then(() => catalogImpl()).catch(() => []);
   const client = fetchImpl ? null : createUpstreamFetch(root);
   try {
     const response = await (fetchImpl || client.fetch)(`${provider.baseUrl}/models`, {
@@ -90,13 +91,38 @@ export async function discoverModels(provider, root, { catalogImpl = codexModels
     if (!response.ok) { await response.body?.cancel(); throw Error(); }
     const result = await response.json();
     if (!Array.isArray(result.data)) throw Error();
-    const native = new Map((await metadata).map(model => [model.id, model]));
+    const metadata = await Promise.resolve().then(() => catalogImpl()).catch(() => []);
+    const native = new Map(metadata.map(model => [model.id, model]));
     const ids = [...new Set(result.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim()))];
     return { models: ids.map(id => native.get(id) || { id, label: id, efforts: [], defaultEffort: null }),
       notice: ids.length ? '目录来自服务商 /models；未识别的模型仅提供默认推理强度，请确认其支持 Responses 和 Codex 工具调用。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
-    const models = await metadata;
-    if (!models.length) throw new Error('无法读取服务商和 Codex 模型目录，请检查连接设置后重试。');
-    return { models, notice: '无法读取服务商 /models，显示 Codex 目录；请确认所选模型受该服务商支持。' };
+    throw new Error('无法读取服务商 /models；不会使用 Codex 内置目录冒充该服务商的可用模型。请检查 Base URL、密钥和模型查询权限后重试。');
   } finally { await client?.close(); }
+}
+
+export async function discoverClaudeModels(provider, root, { fetchImpl } = {}) {
+  const client = fetchImpl ? null : createUpstreamFetch(root);
+  fetchImpl ??= client.fetch;
+  try {
+    const token = provider.type === 'account' ? await claudeToken(provider, fetchImpl) : null;
+    const headers = claudeHeaders(provider, token), models = [], seen = new Set();
+    let cursor;
+    do {
+      const url = claudeEndpoint(provider) + '/v1/models' + (cursor ? '?after_id=' + encodeURIComponent(cursor) : '');
+      const response = await fetchImpl(url, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+      if (!response.ok) { await response.body?.cancel(); throw Error(); }
+      const data = await response.json();
+      if (!Array.isArray(data.data)) throw Error();
+      for (const item of data.data) if (typeof item?.id === 'string' && !seen.has(item.id)) {
+        seen.add(item.id); models.push({ id: item.id, label: item.display_name || item.id,
+          efforts: (item.capabilities?.effort?.supported_efforts || []).filter(effort => ['low', 'medium', 'high', 'max'].includes(effort)), defaultEffort: null });
+      }
+      const next = data.has_more ? data.last_id : null;
+      if (next && (typeof next !== 'string' || next === cursor || models.length >= 1000)) throw Error();
+      cursor = next;
+    } while (cursor);
+    return { models, notice: 'Claude models come from this provider’s /v1/models endpoint. Listing a model does not guarantee Messages or tool compatibility.' };
+  } catch { throw new Error('Unable to read this Claude provider’s model catalog. Check its Anthropic Messages endpoint and model-list permissions.'); }
+  finally { await client?.close(); }
 }

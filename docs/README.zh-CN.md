@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，统一管理 **ChatGPT 订阅账号、OpenAI 官方 API 与第三方兼容 API**。它在模型请求边界切换上游，保持客户端进程与会话连续；当上游返回符合条件的额度或认证错误时，按预设优先级尝试备用服务。
+easy-switch 是面向 **Codex 与 Claude Code** 的桌面及命令行路由工具，统一管理 ChatGPT、Claude 订阅账号、官方 API 与第三方兼容 API，为两个客户端分别保存服务商列表和备用优先级。它在模型请求边界切换上游，保持客户端进程与会话连续；符合条件的额度或认证错误会按优先级尝试备用服务。
 
 🔄 **会话内切换** · 🖥️ **托盘与菜单栏操作** · 🌊 **海洋玻璃界面 · 中英切换 · 明暗主题** · 🧠 **模型及 effort 选择** · ⚙️ **自动故障切换**
 
@@ -28,11 +28,11 @@ easy-switch 是面向 Codex 的桌面与命令行账号及 API 路由工具，�
 | macOS 13+ · Intel | `easy-switch-<版本>-mac-x64.dmg` |
 
 1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
-2. 点击 **添加订阅**、**添加 API 服务商**，或通过 **导入当前 Codex 配置** 自动识别本机已配置的 API 或订阅。Base URL 留空使用 OpenAI 官方 API。
+2. 选择 **Codex** 或 **Claude Code**，再点击 **添加订阅**、**添加 API 服务商** 或 **导入现有登录方式**。Base URL 留空使用对应客户端的官方 API：Codex 使用 OpenAI，Claude Code 使用 Anthropic。Claude 订阅认证通过另行安装的官方 Claude Code 和浏览器完成；macOS 可能请求钥匙串读取权限。
 3. 可在窗口顶部切换 **English / 简体中文**，以及 **跟随系统 / 浅色 / 深色**，偏好会自动保存。
-4. 首次启动后，重启 Codex 或重载编辑器窗口，使其读取本地路由。单击 Windows 托盘或 macOS 菜单栏图标可重新打开窗口，右键可切换服务商；在设置窗口按住左侧六点拖拽柄调整优先级，也可以删除服务商。在**模型与推理**中，先按 Codex 侧栏中的任务名选择正在运行的任务，再设置模型及推理强度；已完成、已取消的任务及内部辅助请求不会列出；需要统一设置时才选择**全局默认**。右上角地球和外观图标用于切换语言与主题。
+4. 首次接入后，重启对应客户端或重载编辑器窗口，使其读取本地路由。单击托盘或菜单栏图标可重新打开窗口，右键可选择客户端并切换服务商。按住左侧六点柄调整优先级，点击铅笔图标修改别名、地址或密钥，也可以删除服务商；编辑时密钥留空即保留原值。在**模型与推理**中选择任务或**全局默认**，再选择服务商返回的模型；查询不可用时可**手动指定模型 ID**。Codex 任务显示侧栏名称，Claude 请求在传输期间显示。
 
-仅安装不会修改 Codex 配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 才会恢复原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的 Codex 客户端可能需要重启或重载；用于会话的 Codex 客户端需另外安装。
+仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复两个客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude Code 指南](claude-code.md)。
 
 Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应用完整性，但尚无 Developer ID 及 Apple 公证，首次打开仍可能需要系统手动允许。详见[macOS 预览版安装说明](desktop.md#macos-preview-and-the-damaged-app-alert)。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
 
@@ -61,11 +61,17 @@ cd easy-switch
 | --- | --- |
 | `switch add account <alias>` | 添加订阅账号 |
 | `switch add api <alias>` | 添加官方或第三方 API |
+| `switch edit <alias>` | 修改别名、Base URL 或密钥，密钥留空保留 |
 | `switch <alias>` | 切换后续请求使用的上游 |
 | `switch list` | 查看备用优先级及当前上游（`*`） |
 | `switch model` | 交互选择模型及 effort，下一次模型请求生效 |
 | `switch model current` | 查看当前模型覆盖设置 |
 | `switch model reset` | 取消模型与 effort 覆盖 |
+| `switch model <id> [effort]` | 模型查询不可用时手动指定准确 ID |
+| `switch claude add api <alias>` | 为 Claude Code 添加 Anthropic Messages API |
+| `switch claude add account <alias>` | 通过官方认证添加或重新认证 Claude 订阅 |
+| `switch claude <alias>` | 切换 Claude Code 的服务商，不影响 Codex |
+| `switch claude list / order / model` | 管理 Claude 独立的服务商、优先级和模型 |
 | `switch order` | 用键盘调整切换优先级 |
 | `switch update` | 更新至官方仓库 main 分支并重启服务 |
 | `switch current` | 查看当前别名 |
@@ -92,7 +98,7 @@ cd easy-switch
 
 ## 🔎 与现有工作的区别
 
-easy-switch 面向桌面及 Linux 服务器上的个人 Codex 工作流，重点解决账号与 API 切换时的会话连续性问题。其设计侧重于 **精简配置、可选桌面集成、SSH 环境下的可操作性，以及明确可控的故障切换顺序**。
+easy-switch 面向桌面及 Linux 服务器上的个人 Codex 与 Claude Code 工作流，重点解决账号与 API 切换时的会话连续性问题。其设计侧重于 **精简配置、可选桌面集成、SSH 环境下的可操作性，以及明确可控的故障切换顺序**。
 
 | 项目 | 主要定位 | easy-switch 的适用优势 |
 | --- | --- | --- |
@@ -108,7 +114,11 @@ easy-switch 将账号配置、路由选择、模型设置与备用排序集中�
 
 ### 是否考虑引入其他 AI 服务商？
 
-目前已可通过 `switch add api` 接入 OpenAI 官方 API 及兼容 Responses API 的第三方服务。Claude、Gemini 等原生订阅登录尚未实现。扩展服务商是可考虑的方向，但暂无确定发布时间，需要先完成认证、协议和工具调用兼容性适配。
+Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthropic Messages 兼容 API 与 Claude 订阅。DeepSeek 已提供 [Codex 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)和 [Claude Code 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。请分别填写对应协议的地址，并选择服务商实际提供的模型；第三方 API Key 本身不代表同时支持两种协议。Gemini 订阅登录尚未实现。
+
+### 为什么 Codex 列出了我的 API 不支持的模型？
+
+Codex 原生菜单反映自己的模型目录与登录身份，不能证明 easy-switch 当前选中的 API 提供了对应模型。easy-switch 会查询当前服务商目录；查询失败时，不再退回 Codex 内置目录。软件不会改写原生菜单。目录中的模型仍需具备推理和工具调用权限，请使用 easy-switch 的目录或明确指定服务商模型 ID。仅凭 HTTP 503 无法区分容量不足与其他上游故障。
 
 ### 是否考虑适配其他系统？
 
@@ -116,7 +126,7 @@ easy-switch 将账号配置、路由选择、模型设置与备用排序集中�
 
 ### 能否查看订阅额度？
 
-桌面版账号行直接读取账号额度接口：Plus 使用同一个环，上方小段弧线显示 5 小时剩余额度、下方大段弧线显示周剩余额度；Pro 显示周额度整环。悬停某段弧线，会轻微浮起并显示对应的剩余百分比和重置时间。额度圈采用中性灰色弧线与中心菱形。购买额度是独立余额，会与额度圈同时显示，无需等周额度耗尽。窗口显示时每分钟刷新额度，隐藏或最小化后暂停自动查询；读取失败后逐步延长重试间隔。点击不再展开全部信息。缺失数据和读取失败会明确提示，不估算余额，也不会自动使用重置卡。
+桌面版 Codex 账号行直接读取账号额度接口：Plus 使用同一个环，上方小段弧线显示 5 小时剩余额度、下方大段弧线显示周剩余额度；Pro 显示周额度整环。悬停某段弧线，会轻微浮起并显示对应的剩余百分比和重置时间。额度圈采用中性灰色弧线与中心菱形。购买额度是独立余额，会与额度圈同时显示，无需等周额度耗尽。窗口显示时每分钟刷新额度，隐藏或最小化后暂停自动查询；读取失败后逐步延长重试间隔。点击不再展开全部信息。缺失数据和读取失败会明确提示，不估算余额，也不会自动使用重置卡。
 
 ### 能否使用额度重置卡？
 
@@ -138,9 +148,9 @@ easy-switch 将账号配置、路由选择、模型设置与备用排序集中�
 
 ## ⚠️ 免责声明
 
-easy-switch 是独立社区项目，与 OpenAI 无隶属关系，也未获得其背书。请仅使用你有权访问的账号和 API，并遵守对应服务商的条款。切换上游会将所需的会话历史发送给选中的服务商。凭据保存在本地，并通过文件权限保护。
+easy-switch 是独立社区项目，与 OpenAI、Anthropic 无隶属关系，也未获得其背书。请仅使用你有权访问的账号和 API，并遵守对应服务商的条款。切换上游会将所需的会话历史发送给选中的服务商。凭据保存在本地，并通过文件权限保护。
 
-本项目处于实验阶段。已通过真实 Codex 进程与模拟上游验证同会话切换；真实服务商访问、VS Code Remote 界面及服务器重启恢复仍需端到端验证。部署前请阅读完整[免责声明](DISCLAIMER.md)与[运行限制](usage.md#protocol-support-and-limits)。
+本项目处于实验阶段。已通过真实 Codex、Claude Code 进程与模拟上游验证同会话切换；真实服务商访问、VS Code Remote 界面及服务器重启恢复仍需端到端验证。部署前请阅读完整[免责声明](DISCLAIMER.md)与[运行限制](usage.md#protocol-support-and-limits)。
 
 <a id="contributing"></a>
 

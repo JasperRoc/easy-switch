@@ -59,8 +59,7 @@ test('API models retain provider-only IDs; unavailable discovery has an explicit
   } });
   assert.deepEqual(result.models.map(model => model.id), ['model-b', 'unrecognized']);
   assert.deepEqual(result.models[1].efforts, []);
-  const fallback = await discoverModels(provider, '/unused', { catalogImpl, fetchImpl: async () => new Response('SECRET', { status: 401 }) });
-  assert.equal(fallback.models.length, 2); assert.match(fallback.notice, /无法读取/); assert.ok(!fallback.notice.includes('SECRET'));
+  await assert.rejects(discoverModels(provider, '/unused', { catalogImpl, fetchImpl: async () => new Response('SECRET', { status: 401 }) }), error => /无法读取/.test(error.message) && !error.message.includes('SECRET'));
   const account = await discoverModels({ type: 'account' }, '/unused', { catalogImpl, fetchImpl: async () => { throw Error('must not fetch'); } });
   assert.equal(account.models.length, 2);
 });

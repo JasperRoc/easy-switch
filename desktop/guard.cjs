@@ -1,6 +1,8 @@
 // Independent Node process: IPC disconnection means the GUI exited or crashed.
 (async () => {
   const { restoreSession } = await import('./config.js');
+  const { restoreClaude } = await import('../src/claude-config.js');
+  const path = require('node:path');
   let disarmed = false;
   process.on('message', message => {
     if (message?.type === 'disarm') { disarmed = true; process.exit(0); }
@@ -9,6 +11,7 @@
     if (!disarmed) {
       try { restoreSession(process.argv[2]); }
       catch { /* Keep the recovery record; the next launch reports the conflict. */ }
+      try { restoreClaude(path.join(path.dirname(process.argv[2]), 'claude-session.json')); } catch {}
     }
     process.exit(0);
   });

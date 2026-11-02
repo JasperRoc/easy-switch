@@ -66,6 +66,8 @@ Tab completes command names, `add api/account`, service actions, and saved alias
 
 `switch add api <alias>` supports OpenAI's official API and third-party Responses-compatible endpoints. Leave Base URL blank to use `https://api.openai.com/v1`, then enter your OpenAI API key. For another provider, enter its Base URL (without `/responses`) and its corresponding key. The resolved URL is saved with the alias and shown by `switch list`. New API entries inherit the request model selected in Codex; setup does not ask for a model override. Existing saved overrides remain compatible.
 
+Edit a saved provider with `switch edit <alias>` or the desktop pencil button. A blank replacement key preserves the existing secret. Renaming keeps its priority, active route and account credential directory; changing the active API address/key clears its old model overrides. Claude Code uses separate providers and commands prefixed with `switch claude`; see the [Claude Code guide](claude-code.md).
+
 ## Model and effort switching
 
 ```bash
@@ -78,7 +80,7 @@ Use ↑/↓ and Enter to choose, or Esc/Ctrl+C to cancel. Settings are saved onl
 
 Subscription catalogs are read through `model/list` in an isolated Codex app-server using a temporary private copy of the selected account credentials. No thread is started or resumed. Temporary files are removed afterward; refreshed credentials are retained only if the original sign-in has not changed concurrently. Model listings remain subject to account access. API metadata uses an unauthenticated local custom provider to read the bundled Codex catalog.
 
-For APIs, the tool also tries the configured provider's `/models` endpoint using that provider's key and the saved network proxy. If available, every returned model ID is offered, including custom IDs absent from Codex metadata. Known IDs retain Codex’s effort options; unknown IDs offer only the provider default. If discovery fails or the endpoint is unavailable, the picker shows the Codex catalog with a notice. No generation request is sent while selecting; upstream compatibility and account access must still be verified in actual use. The effort menu is populated from each model's catalog metadata, not a universal list.
+For APIs, the tool queries the configured provider's `/models` endpoint using that provider's key and the saved network proxy. Every returned model ID is offered, including custom IDs absent from Codex metadata. Known IDs retain Codex’s effort options; unknown IDs offer only the provider default. Failed discovery produces an error instead of substituting the Codex catalog. If the provider does not offer discovery, use **Specify a model ID** on desktop or `switch model <id> [effort]` on CLI. These explicit settings do not verify access. No generation request is sent while selecting; upstream compatibility and account access must still be verified in actual use.
 
 A model/effort pair applies globally to all sessions connected to this service. Each incoming model request snapshots the pair, including automatic failover attempts. A running SSE response keeps its original settings; the next request, including a tool-result continuation within the same task, uses the new pair. Failover does not silently replace the chosen model/effort. A provider rejecting the selected model or effort can still stop the task.
 
@@ -126,6 +128,8 @@ Uninstall restores the original configuration and removes the service. If the co
 | `SWITCH_PORT` | `18345` | Local proxy port, written into configuration during installation |
 | `SWITCH_CODEX_BIN` | `codex` | Official CLI used for account authentication |
 | `CODEX_HOME` | `~/.codex` | Codex configuration to connect during installation |
+| `SWITCH_CLAUDE_BIN` | Detected official `claude` executable | Claude subscription sign-in helper |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude user settings and existing sign-in to connect/import |
 
 Use the same `SWITCH_HOME` when installing and switching. Each server user currently has one managed service instance. Codex and the editor do not need these variables for ordinary use once configured.
 
@@ -135,15 +139,17 @@ Use the same `SWITCH_HOME` when installing and switching. Each server user curre
 ├── state.json              # Aliases, API keys, selection, local proxy token
 ├── network.json            # Saved outbound proxy settings
 └── accounts/
-    └── personal/
+    └── <account-id>/
         └── auth.json       # Subscription credentials
 ```
 
-Credentials are plaintext. Directories are created with POSIX mode `0700`; state and authentication files use `0600`. The installed Codex configuration also contains a local proxy token and is written with mode `0600`. There is no encrypted vault or keychain integration. Keep configuration and backups out of source control.
+Credentials are plaintext. Directories are created with POSIX mode `0700`; state and authentication files use `0600`. The installed Codex configuration also contains a local proxy token and is written with mode `0600`. Codex credentials have no encrypted vault; Claude imports can read the official Keychain. See [Claude Code](claude-code.md) for its separate credential store. Keep configuration and backups out of source control.
 
 The proxy binds only to IPv4 loopback and requires a random local token. It reconstructs upstream authentication headers rather than forwarding client credentials, requires HTTPS for remote API endpoints, and rejects redirects. Conversation history needed by subsequent requests is sent to the selected provider.
 
 ## Protocol support and limits
+
+This section describes the Codex route. Claude Messages, its model-discovery endpoint, subscription login and separate state are described in the [Claude Code guide](claude-code.md).
 
 - Accepts SSE responses with a missing `Content-Type` only after checking the initial body bytes for SSE fields. Explicit non-SSE content types and HTML/JSON bodies without the header are rejected. Buffered bytes are preserved and client cancellation still stops forwarding.
 - Supports HTTP SSE at `POST /v1/responses`, plus JSON/multipart image generation and edits at `POST /v1/images/generations` and `POST /v1/images/edits`. Does not proxy WebSockets, convert Chat Completions, proxy model discovery, or implement remote compaction.

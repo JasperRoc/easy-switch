@@ -34,7 +34,7 @@ test('import resolves the pre-routing provider, environment keys and API auth fi
 test('subscription import copies credentials; missing, unsupported and unavailable credentials have actionable errors', t => {
   const account = setup(t, '', { tokens: { access_token: 'fixture-account', account_id: 'fixture' } });
   assert.equal(account.existingLogin().type, 'account'); account.importLogin('account');
-  assert.ok(fs.existsSync(path.join(account.root, 'accounts', 'account', 'auth.json')));
+  assert.ok(fs.existsSync(path.join(readState(account.root).providers.account.accountHome, 'auth.json')));
   const absent = setup(t); assert.throws(() => absent.importLogin('missing'), /No readable Codex credentials/);
   const missingEnv = setup(t, 'model_provider="relay"\n[model_providers.relay]\nbase_url="https://example.test/v1"\nenv_key="MISSING"\n', { OPENAI_API_KEY: 'unrelated-secret' });
   assert.throws(() => missingEnv.importLogin('relay'), /environment variable/);

@@ -10,6 +10,8 @@ import { inspectStartup } from './sse.js';
 import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
 import { SessionTracker, selectedModel } from './sessions.js';
+import path from 'node:path';
+import { createClaudeHandler } from './claude-proxy.js';
 
 function authorized(req, token) {
   // Native subscription auth replaces Authorization inside Codex. The dedicated
@@ -80,12 +82,14 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), sessions = new SessionTracker(), wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), sessions = new SessionTracker(), claudeSessions = new SessionTracker(), claudeReauth, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
+  const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, sessions: claudeSessions, reauth: claudeReauth });
   const cooldown = new Map(), imageCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
+    if (req.url.startsWith('/claude/')) return claude(req, res);
     const abort = new AbortController();
     let session;
     res.on('close', () => { if (!res.writableFinished) abort.abort(); });

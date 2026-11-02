@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](docs/LICENSE)
 
-easy-switch is a desktop and command-line account and API routing tool for Codex, bringing **ChatGPT subscription accounts, the official OpenAI API, and third-party compatible APIs** into one workflow. It switches providers at model request boundaries while preserving the client process and conversation. Eligible quota or authentication rejections trigger retries through alternatives in the configured priority order.
+easy-switch is a desktop and command-line routing tool for **Codex and Claude Code**. Manage ChatGPT and Claude subscriptions, official APIs, and compatible third-party APIs with independent provider lists and fallback priorities for each client. Switch at model request boundaries while keeping the client process and conversation; eligible quota or authentication rejections try alternatives in priority order.
 
 🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🌊 **Ocean glass UI · EN / 中文 · Light / dark** · 🧠 **Model and effort selection** · ⚙️ **Automatic failover**
 
@@ -28,11 +28,11 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 | macOS 13+ · Intel | `easy-switch-<version>-mac-x64.dmg` |
 
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
-2. Use **Add subscription**, **Add API provider**, or **Import current Codex setup** to detect an API or subscription already configured on this computer. An empty Base URL uses the official OpenAI API.
+2. Select **Codex** or **Claude Code**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude Code. Claude subscription sign-in uses your separately installed official Claude Code CLI and browser; macOS may request Keychain access.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
-4. Restart Codex or reload its editor window once to pick up the local route. Click the Windows tray or macOS menu bar icon to reopen the window; right-click it to switch providers; use the settings window to drag priorities, add or delete providers, and choose model and effort. In **Model & effort**, select a running task by its Codex sidebar name before applying changes; completed turns and internal helper requests are excluded; use **Global default** only when you want a shared setting. The top-right globe and appearance icons change language and theme.
+4. Restart the selected client or reload its editor window once to read the local route. Click the tray/menu bar icon to reopen the window; right-click to select a client and switch providers. Drag provider priorities, edit an alias/address/key with the pencil button, or delete a provider. A blank key in the edit dialog preserves the saved key. In **Model & effort**, choose a task or **Global default**, then select a provider-listed model; use **Specify a model ID** if discovery is unavailable. Codex tasks use their sidebar names; Claude requests appear while streaming.
 
-Installing alone leaves Codex configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Your Codex conversation client is installed separately.
+Installing alone leaves client configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings for both clients. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Conversation clients are installed separately. See the [Claude Code guide](docs/claude-code.md) for authentication and protocol details.
 
 Windows packages have no publisher signature. macOS packages use ad hoc signing with verified bundle integrity, but have no Developer ID and are not notarized. Your OS may require explicit first-launch approval; see the [macOS preview instructions](docs/desktop.md#macos-preview-and-the-damaged-app-alert). The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
 
@@ -61,11 +61,17 @@ The installer registers `switch`, starts the systemd background service, enables
 | --- | --- |
 | `switch add account <alias>` | Add a subscription account |
 | `switch add api <alias>` | Add an official or third-party API |
+| `switch edit <alias>` | Edit alias, Base URL or key; a blank key preserves it |
 | `switch <alias>` | Select the provider for subsequent requests |
 | `switch list` | Show fallback priority and the active provider (`*`) |
 | `switch model` | Choose model and effort for subsequent requests |
 | `switch model current` | Show the current model override |
 | `switch model reset` | Clear model and effort overrides |
+| `switch model <id> [effort]` | Explicitly specify a model when discovery is unavailable |
+| `switch claude add api <alias>` | Add an Anthropic Messages API for Claude Code |
+| `switch claude add account <alias>` | Add or renew a Claude subscription through official sign-in |
+| `switch claude <alias>` | Switch Claude Code without changing Codex |
+| `switch claude list / order / model` | Manage Claude’s independent providers, priorities and model |
 | `switch order` | Adjust priority with the keyboard |
 | `switch update` | Update from the official main branch and restart the service |
 | `switch current` | Show the active alias |
@@ -92,7 +98,7 @@ See the [operations guide](docs/usage.md) for authentication, data storage, and 
 
 ## 🔎 Why easy-switch?
 
-easy-switch targets personal Codex workflows on desktops and Linux servers, focusing on conversation continuity when switching accounts and APIs. Its design emphasizes **a small configuration surface, optional desktop integration, operation over SSH, and explicit control over failover priority**.
+easy-switch targets personal Codex and Claude Code workflows on desktops and Linux servers, focusing on conversation continuity when switching accounts and APIs. Its design emphasizes **a small configuration surface, optional desktop integration, operation over SSH, and explicit control over failover priority**.
 
 | Project | Focus | Where easy-switch fits |
 | --- | --- | --- |
@@ -108,7 +114,11 @@ easy-switch brings account configuration, routing selection, model selection, an
 
 ### Will other AI providers be supported?
 
-The official OpenAI API and Responses-compatible third-party APIs can already be added with `switch add api`. Native Claude, Gemini, and other subscription login flows are not implemented. Broader provider support is a possible direction, but has no committed release date; it requires authentication, protocol, and tool-call compatibility work.
+Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code supports Anthropic Messages-compatible APIs and Claude subscriptions. [DeepSeek documents Codex integration](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) and [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/). Configure each protocol endpoint separately and select a model the provider actually offers; a generic third-party key alone does not establish protocol compatibility. Gemini subscription login is not implemented.
+
+### Why does Codex list a model my API cannot use?
+
+Codex’s native model menu describes its own catalog and sign-in, not the API selected inside easy-switch. easy-switch queries the selected provider’s model endpoint and no longer substitutes the Codex catalog when that query fails. The native menu is not rewritten. A listed model still needs inference/tool permissions; use easy-switch’s catalog or an explicit provider model ID. HTTP 503 alone cannot distinguish a capacity problem from another upstream failure.
 
 ### Will macOS and Windows be supported?
 
@@ -116,7 +126,7 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
+Desktop Codex account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
 
 ### Can I use an earned quota-reset card?
 
@@ -138,9 +148,9 @@ Desktop image support temporarily connects a native subscription so Codex can ex
 
 ## ⚠️ Disclaimer
 
-easy-switch is an independent community project, not affiliated with or endorsed by OpenAI. Use only accounts and APIs you are authorized to access, and follow the applicable providers' terms. Switching providers sends the required conversation history to the selected provider. Credentials are stored locally with file-permission protection.
+easy-switch is an independent community project, not affiliated with or endorsed by OpenAI or Anthropic. Use only accounts and APIs you are authorized to access, and follow the applicable providers' terms. Switching providers sends the required conversation history to the selected provider. Credentials are stored locally with file-permission protection.
 
-This project is experimental. Same-session switching is tested with a real Codex process and simulated upstreams; real-provider access, the VS Code Remote interface, and server reboot recovery still require end-to-end validation. Read the full [disclaimer](docs/DISCLAIMER.md) and [operational limits](docs/usage.md#protocol-support-and-limits) before deployment.
+This project is experimental. Same-session switching is tested with real Codex and Claude Code processes and simulated upstreams; real-provider access, the VS Code Remote interface, and server reboot recovery still require end-to-end validation. Read the full [disclaimer](docs/DISCLAIMER.md) and [operational limits](docs/usage.md#protocol-support-and-limits) before deployment.
 
 <a id="contributing"></a>
 

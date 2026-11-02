@@ -2,6 +2,14 @@
 
 [English README](../README.md) · [简体中文 README](README.zh-CN.md)
 
+## Codex and Claude Code
+
+The top client selector and tray menu manage independent provider lists for Codex and Claude Code. Adding a provider in one list does not add or switch the other. Both routes share the application lifetime; quitting restores both configurations. Each provider row has a pencil action to edit its alias and, for APIs, its Base URL/key. A blank replacement key keeps the original; existing keys never enter the renderer. Updating an endpoint or key invalidates its cached model selection.
+
+Claude API and subscription setup, protocol requirements and first-release limits are documented in the [Claude Code guide](claude-code.md). Claude Code must be installed separately for official subscription login. Codex’s bundled sign-in helper and existing quota/image features are unchanged.
+
+顶部客户端选择器与托盘菜单分别管理 Codex 和 Claude Code 的服务商，互不切换；两个路由均随软件退出恢复。点击条目的铅笔图标可编辑别名及 API 地址、密钥，密钥留空保留；原密钥不传入界面。更改地址或密钥会清除旧模型选择。Claude 的 API、订阅认证与首批适配限制见 [Claude Code 指南](claude-code.md)。
+
 ## Install
 
 Download an installer from [GitHub Releases](https://github.com/JasperRoc/easy-switch/releases). Windows 10/11 x64 uses the `.exe` installer. macOS 13+ uses the `.dmg` matching Apple silicon (`arm64`) or Intel (`x64`); drag easy-switch to Applications and launch it. A zip distribution is also provided for macOS.

@@ -8,8 +8,11 @@ let catalogLoading = false, catalogFailed = false, catalogLoaded = null, effortS
 let modelTarget = null, renderedSessions = '', modelFeedback = null;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
 let renderedState = '';
+let editingProvider = null;
 const resetAttempts = new Map();
-const t = (key, values) => translate(language, key, values);
+const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'sessionsEmpty', 'modelLimits'].includes(key) ? 'claude_' + key : key, values)
+  .replaceAll('Codex', state?.client === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
+const catalogKey = value => JSON.stringify([value.client || 'codex', value.active, value.providers?.find(provider => provider.active)?.revision || 0]);
 function appearance() {
   language = normalizeLanguage(state.language);
   document.documentElement.lang = language;
@@ -18,8 +21,8 @@ function appearance() {
   $('theme-symbol').setAttribute('href', `assets/ui.svg#${state.theme === 'dark' ? 'moon' : state.theme === 'light' ? 'sun' : 'monitor'}`);
   for (const item of document.querySelectorAll('[data-language]')) item.setAttribute('aria-checked', String(item.dataset.language === language));
   for (const item of document.querySelectorAll('[data-theme]')) if (item.tagName === 'BUTTON') item.setAttribute('aria-checked', String(item.dataset.theme === state.theme));
-  if (appliedLanguage === language) return;
-  appliedLanguage = language;
+  if (appliedLanguage === language + state.client) return;
+  appliedLanguage = language + state.client;
   for (const element of document.querySelectorAll('[data-i18n]')) element.textContent = t(element.dataset.i18n);
   for (const element of document.querySelectorAll('[data-i18n-placeholder]')) element.placeholder = t(element.dataset.i18nPlaceholder);
   for (const element of document.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
@@ -115,7 +118,7 @@ function animateProviders(before) {
   }
 }
 function renderProviders() {
-  const signature = JSON.stringify([language, state.providers]);
+  const signature = JSON.stringify([language, state.client, state.providers]);
   if (signature === renderedProviders || dragging) return;
   const before = providerPositions();
   renderedProviders = signature; $('provider-list').replaceChildren(); $('empty').hidden = !!state.providers.length;
@@ -130,7 +133,7 @@ function renderProviders() {
     const identity = node('div', null, 'identity');
     const plan = provider.usage?.data?.plan;
     identity.append(node('strong', provider.alias), node('small', provider.type === 'account' ? ['plus', 'pro'].includes(plan) ? `ChatGPT ${plan === 'plus' ? 'Plus' : 'Pro'}` : t('account') : provider.baseUrl)); row.append(identity);
-    if (provider.type === 'account') {
+    if (provider.type === 'account' && state.client !== 'claude') {
       row.append(quotaDisplay(provider));
       const reset = button('', () => openResetCards(provider.alias), 'icon-button reset-quota'); reset.append(icon('refresh'));
       reset.title = t('resetQuota'); reset.setAttribute('aria-label', t('resetQuota')); row.append(reset);
@@ -138,6 +141,8 @@ function renderProviders() {
     if (provider.active) { const tag = node('span', t('activeRoute'), 'tag'); tag.title = t('activeRouteHelp'); row.append(tag); }
     if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
     row.append(button(provider.active ? t('selected') : t('use'), () => run('switch', provider.alias), provider.active ? 'secondary' : ''));
+    const edit = button('', () => openProvider('edit', provider.alias), 'icon-button edit-provider');
+    edit.append(icon('edit')); edit.title = t('editProvider'); edit.setAttribute('aria-label', t('editProvider') + ' · ' + provider.alias); row.append(edit);
     const remove = button('', async () => { if (confirm(t('removeConfirm', {alias:provider.alias}))) await run('remove', provider.alias); }, 'icon-button delete-provider');
     remove.append(icon('trash')); remove.setAttribute('aria-label', t('remove',{alias:provider.alias})); row.append(remove); $('provider-list').append(row);
   });
@@ -200,6 +205,7 @@ function refresh(nextState) {
     const signature = JSON.stringify(state);
     if (signature === renderedState) return;
     renderedState = signature; appearance();
+    for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(item.dataset.client === (state.client || 'codex')));
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
     const customized = state.sessions.filter(session => session.overridden).length;
@@ -214,9 +220,9 @@ function refresh(nextState) {
     $('failover').hidden = !state.lastFailover;
     if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
     renderLogin(); renderNetwork(); renderSessions(); renderCatalogStatus();
-    if (catalogAlias && catalogAlias !== state.active && activeTab === 'model') notice('catalogChanged');
+    if (catalogAlias && catalogAlias !== catalogKey(state) && activeTab === 'model') notice('catalogChanged');
     else notice(catalogNotice, rawNotice);
-    if (catalogAlias === state.active && !modelDirty) {
+    if (catalogAlias === catalogKey(state) && !modelDirty) {
       $('model-select').value = targetSelection()?.model || ''; efforts();
     }
   } catch (error) { showError(error); }
@@ -324,9 +330,9 @@ function renderCatalogStatus() {
   const target = modelTarget === 'global' || state?.sessions.some(session => session.id === modelTarget);
   $('model-picker').disabled = !target;
   $('reset-model').disabled = !target;
-  $('apply-model').disabled = !target || catalogLoading || catalogAlias !== state?.active || catalogFailed;
+  $('apply-model').disabled = !target || catalogLoading || (!$('manual-model').value.trim() && (catalogAlias !== catalogKey(state) || catalogFailed));
   $('catalog-status').classList.toggle('failed', catalogFailed);
-  const changed = catalogLoaded && catalogLoaded.alias !== state?.active;
+  const changed = catalogLoaded && catalogLoaded.alias !== catalogKey(state);
   $('catalog-status').textContent = catalogLoading ? t('catalogLoading') : catalogFailed ? t('catalogFailed') : changed ? t('catalogChanged') : catalogLoaded
     ? t('catalogRefreshed', { count: catalogLoaded.count, time: new Date(catalogLoaded.at).toLocaleTimeString(language) }) : '';
 }
@@ -334,9 +340,9 @@ async function loadModels() {
   if (catalogLoading) return;
   catalogLoading = true; catalogFailed = false; $('refresh-models').disabled = true; renderCatalogStatus(); notice('catalogLoading');
   try {
-    const alias = (await call('state')).active;
+    const alias = catalogKey(await call('state'));
     const result = await call('models');
-    if ((await call('state')).active !== alias) throw new Error(t('catalogChanged'));
+    if (catalogKey(await call('state')) !== alias) throw new Error(t('catalogChanged'));
     catalog = result.models; catalogAlias = alias; catalogLoaded = { alias, at: Date.now(), count: catalog.length };
     $('model-select').value = targetSelection()?.model || ''; efforts(); notice(result.notice || '', true); modelDirty = false;
   } catch (error) { catalogFailed = true; notice(error.message, true); }
@@ -348,7 +354,7 @@ async function changeTab(tab) {
   activeTab = tab;
   for (const element of document.querySelectorAll('nav button')) element.classList.toggle('selected', element.dataset.tab === tab);
   for (const id of ['providers', 'model', 'network']) $(id).hidden = id !== tab;
-  if (tab === 'model' && (!catalogAlias || catalogAlias !== state.active)) await loadModels();
+  if (tab === 'model' && (!catalogAlias || catalogAlias !== catalogKey(state))) await loadModels();
   if (tab === 'network') {
     try {
       networkState = await call('network');
@@ -367,7 +373,7 @@ async function changeTab(tab) {
 async function startLogin(alias) {
   if (!$('add-dialog').open) openProvider('account', alias);
   const result = await run('login', alias);
-  if (result?.login?.url) await call('open-login');
+  if (result?.login?.url && !(state.client === 'claude' && state.platform === 'win32')) await call('open-login');
   return result;
 }
 function decodeCredential(value) { try { return decodeURIComponent(value); } catch { return value; } }
@@ -386,9 +392,10 @@ function renderLogin() {
   const login = dialogLogin(), pending = login && ['starting', 'pending'].includes(login.phase);
   $('login-status').hidden = !login;
   $('provider-alias').disabled = !!pending;
-  $('save-provider').disabled = !!pending;
+  $('save-provider').disabled = !!pending && !login.codeRequired;
+  $('claude-code-field').hidden = !pending || !login.codeRequired;
   if (providerMode === 'import' && importLoading) $('save-provider').disabled = true;
-  $('save-provider').textContent = t(login?.phase === 'complete' ? 'done' : providerMode === 'api' ? 'addAPI' : providerMode === 'import' ? 'importAction' : 'addSubscription');
+  $('save-provider').textContent = t(providerMode === 'edit' ? 'saveChanges' : login?.phase === 'complete' ? 'done' : login?.codeRequired ? 'completeSignIn' : providerMode === 'api' ? 'addAPI' : providerMode === 'import' ? 'importAction' : 'addSubscription');
   $('login-code').textContent = pending ? login.code || '' : '';
   $('open-login').hidden = !pending || !login.url;
   if (!login) return;
@@ -398,8 +405,10 @@ function renderLogin() {
 for (const element of document.querySelectorAll('nav button')) element.addEventListener('click', () => changeTab(element.dataset.tab));
 function openProvider(mode, alias = '') {
   providerMode = mode; $('dialog-error').hidden = true; $('provider-form').reset();
+  editingProvider = mode === 'edit' ? state.providers.find(provider => provider.alias === alias) : null;
   const pending = state.login && ['starting', 'pending'].includes(state.login.phase);
   $('provider-alias').value = alias || (mode === 'account' && pending ? state.login.alias : '');
+  $('base-url').value = editingProvider?.baseUrl || '';
   $('import-preview').hidden = true;
   providerType(); renderLogin(); $('add-dialog').showModal();
 }
@@ -417,9 +426,10 @@ $('import-existing').addEventListener('click', async () => {
 });
 $('close-dialog').addEventListener('click', () => $('add-dialog').close());
 function providerType() {
-  const api = providerMode === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api;
+  const api = providerMode === 'api' || editingProvider?.type === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api || providerMode === 'edit';
+  $('edit-key-help').hidden = providerMode !== 'edit';
   $('account-help').textContent = t(imported ? 'importHelp' : 'subscriptionHelp');
-  $('provider-dialog-title').textContent = t(api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
+  $('provider-dialog-title').textContent = t(providerMode === 'edit' ? 'editProvider' : api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
   $('save-provider').textContent = t(api ? 'addAPI' : imported ? 'importAction' : 'addSubscription');
 }
 $('provider-form').addEventListener('submit', async event => {
@@ -427,7 +437,9 @@ $('provider-form').addEventListener('submit', async event => {
   try {
     if (dialogLogin()?.phase === 'complete') { $('add-dialog').close(); return; }
     const alias = $('provider-alias').value.trim();
-    if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
+    if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
+    else if (dialogLogin()?.codeRequired) { await call('login-code', $('authorization-code').value.trim()); $('authorization-code').value = ''; }
+    else if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
     else if (providerMode === 'import') { await call('import-login',alias); $('add-dialog').close(); }
     else { await startLogin(alias); }
     await refresh();
@@ -435,6 +447,12 @@ $('provider-form').addEventListener('submit', async event => {
   finally { renderLogin(); }
 });
 $('provider-alias').addEventListener('input', renderLogin);
+for (const item of document.querySelectorAll('[data-client]')) item.addEventListener('click', async () => {
+  if (item.dataset.client === state.client) return;
+  $('add-dialog').close(); $('reset-dialog').close(); editingProvider = null; providerMode = 'account';
+  catalogAlias = null; catalog = []; catalogLoaded = null; modelDirty = false; modelTarget = null; networkState = null; $('manual-model').value = '';
+  try { await run('client', item.dataset.client); if (activeTab !== 'providers') await changeTab(activeTab); } catch {}
+});
 $('provider-list').addEventListener('dragover', event => {
   if (!dragging) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move';
   const row = event.target.closest('.provider'), moving = [...$('provider-list').children].find(item=>item.dataset.alias===dragging);
@@ -471,9 +489,10 @@ async function saveModel(selection) {
   $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions();
 }
 $('model-form').addEventListener('submit', async event => {
-  event.preventDefault(); const model = $('model-select').value;
-  try { await saveModel(model ? { model, effort: $('effort-select').value || null } : null); } catch {}
+  event.preventDefault(); const manual = $('manual-model').value.trim(), model = manual || $('model-select').value;
+  try { await saveModel(model ? { model, effort: manual ? null : $('effort-select').value || null, ...(manual ? { manual: true } : {}) } : null); } catch {}
 });
+$('manual-model').addEventListener('input', () => { modelDirty = true; renderCatalogStatus(); });
 $('reset-model').addEventListener('click', async () => { try { await saveModel(null); } catch {} });
 $('network-form').addEventListener('submit', async event => {
   event.preventDefault();

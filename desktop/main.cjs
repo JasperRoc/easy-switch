@@ -10,9 +10,9 @@ const root = path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.c
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
-let window, tray, controller, updater, restoreSession, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '', lastFailover;
-let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', translate;
-const t = (key, values) => translate(uiLanguage, key, values);
+let window, tray, controller, updater, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '', lastFailover;
+let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
+const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const repository = 'https://github.com/JasperRoc/easy-switch';
 
@@ -31,12 +31,16 @@ function report(error) {
 function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details, sessions: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
 function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
-  const signature = JSON.stringify([state.running, state.active, state.providers.map(({ alias, type, active, needsLogin }) => ({ alias, type, active, needsLogin })), state.model, state.loginItem, state.lastFailover, uiLanguage]);
+  uiClient = state.client || 'codex';
+  const signature = JSON.stringify([state.client, state.running, state.active, state.providers.map(({ alias, type, active, needsLogin }) => ({ alias, type, active, needsLogin })), state.model, state.loginItem, state.lastFailover, uiLanguage]);
   if (signature === trayState) return;
   trayState = signature;
   const model = state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
-  tray.setToolTip(`easy-switch · ${state.active || t('addProvider')} · ${model}`);
+  tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude Code' : 'Codex'} · ${state.active || t('addProvider')} · ${model}`);
   trayMenu = Menu.buildFromTemplate([
+    ...['codex', 'claude'].map(client => ({ label: client === 'codex' ? 'Codex' : 'Claude Code', type: 'radio', checked: state.client === client,
+      click: () => { controller.clientSelection(client); updateTray(); window?.webContents.send('easy-switch:changed'); } })),
+    { type: 'separator' },
     { label: state.running ? t('trayActive', { alias: state.active || t('noProvider') }) : t('trayStopped'), enabled: false },
     { label: model, enabled: false }, { type: 'separator' },
     ...state.providers.map(provider => ({ label: `${provider.alias} · ${t(provider.type === 'account' ? 'account' : 'api')}${provider.needsLogin ? ' · ' + t('loginNeeded') : ''}`, type: 'radio', checked: provider.active,
@@ -77,7 +81,6 @@ async function boot() {
   const { DesktopUpdater } = await import('./updater.js');
   const i18n = await import('./i18n.js'); translate = i18n.translate;
   loginItem = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {});
-  ({ restoreSession } = await import('./config.js'));
   const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const bundled = app.isPackaged ? path.join(process.resourcesPath, 'codex', exe) : path.join(__dirname, '..', '.desktop-cache', `codex-${process.platform}-${process.arch}`, exe);
   const binary = process.env.SWITCH_CODEX_BIN || bundled;
@@ -96,21 +99,24 @@ async function boot() {
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   window.on('hide', () => { if (process.platform === 'darwin') { app.dock.hide(); app.setActivationPolicy('accessory'); } });
-  window.on('session-end', () => { try { restoreSession(controller.runtime.recordFile); } catch {} });
-  powerMonitor.on('shutdown', () => { try { restoreSession(controller.runtime.recordFile); } catch {} });
+  window.on('session-end', () => { try { controller.runtime.restore(); } catch {} });
+  powerMonitor.on('shutdown', () => { try { controller.runtime.restore(); } catch {} });
   ipcMain.handle('easy-switch:call', async (event, action, payload) => {
     if (event.senderFrame?.url !== page) throw new Error('Untrusted application frame.');
     try {
       let result;
       switch (action) {
         case 'state': return snapshot();
+        case 'client': result = controller.clientSelection(payload); break;
         case 'switch': result = controller.switchProvider(payload); break;
-        case 'remove': result = controller.remove(payload); break;
+        case 'edit': result = controller.edit(payload); break;
+        case 'remove': result = await controller.remove(payload); break;
         case 'order': result = controller.order(payload); break;
         case 'add-api': result = controller.addAPI(payload); break;
         case 'login': result = await controller.startLogin(payload); break;
+        case 'login-code': result = controller.submitLogin(payload); break;
         case 'existing-login': return controller.existingLogin();
-        case 'import-login': result = controller.importLogin(payload); break;
+        case 'import-login': result = await controller.importLogin(payload); break;
         case 'models': return await controller.models();
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
@@ -129,8 +135,8 @@ async function boot() {
           window.webContents.send('easy-switch:changed'); nativeMenu(); result = snapshot(); break;
         case 'autostart': setAutoStart(payload); result = snapshot(); break;
         case 'open-login': {
-          const url = controller.login?.url;
-          if (url === 'https://auth.openai.com/codex/device') await shell.openExternal(url);
+          const url = controller.currentLogin?.url;
+          if (url === 'https://auth.openai.com/codex/device' || /^https:\/\/(?:claude\.com|claude\.ai)\/(?:cai\/)?oauth\/authorize\?/.test(url || '')) await shell.openExternal(url);
           return null;
         }
         case 'updates': return await updater.check();

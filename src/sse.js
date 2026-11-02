@@ -2,7 +2,7 @@ import { atCapacity } from './failover.js';
 
 // Hold only the startup preamble. Once any output/tool event is accepted, pass
 // bytes through unchanged and never replay the request.
-export async function inspectStartup(stream) {
+export async function inspectStartup(stream, preamble = ['response.created', 'response.in_progress', 'response.queued']) {
   const reader = stream.getReader(), chunks = [], decoder = new TextDecoder();
   let buffered = '', inspected = 0;
   const passthrough = () => new ReadableStream({
@@ -29,10 +29,11 @@ export async function inspectStartup(stream) {
         try { event = JSON.parse(data); } catch { return { stream: passthrough() }; }
         const type = event?.type || record.match(/^event:\s*(.*)$/m)?.[1].trim();
         if (event?.response?.output?.length) return { stream: passthrough() };
+        if (event?.message?.content?.length) return { stream: passthrough() };
         if (['error', 'response.failed'].includes(type)) {
-          return { stream: passthrough(), capacity: atCapacity(data) };
+          return { stream: passthrough(), capacity: atCapacity(data), error: event.error };
         }
-        if (!['response.created', 'response.in_progress', 'response.queued'].includes(type)) return { stream: passthrough() };
+        if (!preamble.includes(type)) return { stream: passthrough() };
       }
     }
     return { stream: passthrough() };

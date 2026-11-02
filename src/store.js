@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
-const reserved = new Set(['add', 'list', 'current', 'help', 'service', 'order', 'update', 'model']);
+const reserved = new Set(['add', 'edit', 'list', 'current', 'help', 'service', 'order', 'update', 'model', 'claude']);
 export function aliasName(value) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) || reserved.has(value)) throw new Error('别名须为 1–64 位字母、数字、_、-，且不能是命令名');
   return value;
@@ -53,6 +53,32 @@ export function addProvider(alias, provider, root = home()) {
 export function providerOrder(state) {
   return state.order || Object.keys(state.providers);
 }
+export function editProvider(alias, { alias: renamed = alias, baseUrl, apiKey } = {}, root = home()) {
+  aliasName(renamed);
+  return update(s => {
+    const provider = Object.hasOwn(s.providers, alias) ? s.providers[alias] : null;
+    if (!provider) throw new Error('Unknown provider.');
+    if (renamed !== alias && Object.hasOwn(s.providers, renamed)) throw new Error('That alias already exists.');
+    if (provider.type !== 'api' && (baseUrl !== undefined || apiKey !== undefined)) throw new Error('Only API providers have a Base URL and API key.');
+    if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 8192)) throw new Error('Enter a valid API key.');
+    const next = { ...provider, revision: (provider.revision || 0) + 1 };
+    if (baseUrl !== undefined) next.baseUrl = baseURL(baseUrl);
+    if (apiKey !== undefined) next.apiKey = apiKey.trim();
+    s.order = providerOrder(s).map(name => name === alias ? renamed : name);
+    delete s.providers[alias]; s.providers[renamed] = next;
+    if (s.modelSelectionAlias === alias) s.modelSelectionAlias = renamed;
+    if (s.active === alias) {
+      s.active = renamed;
+    }
+    if ((baseUrl !== undefined || apiKey !== undefined) && (s.active === renamed || s.modelSelectionAlias === renamed)) {
+      delete s.modelSelection; delete s.modelSelectionAlias; delete s.sessionModels;
+    }
+    if (s.lastFailover) for (const key of ['from', 'to']) if (s.lastFailover[key] === alias) s.lastFailover[key] = renamed;
+    s.generation = (s.generation || 0) + 1;
+    s.manualGeneration = (s.manualGeneration || 0) + 1;
+    s.reason = 'manual';
+  }, root);
+}
 export function removeProvider(alias, root = home()) {
   return update(s => {
     if (!Object.hasOwn(s.providers, alias)) throw new Error('未知别名');
@@ -76,7 +102,7 @@ export function setOrder(aliases, root = home()) {
   }, root);
 }
 export function setModel(selection, root = home(), expectedAlias, sessionId) {
-  if (selection && (typeof selection.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(selection.model) ||
+  if (selection && (typeof selection.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}(?:\[1m\])?$/.test(selection.model) ||
       (selection.effort !== null && (typeof selection.effort !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(selection.effort))))) {
     throw new Error('无效的模型或 effort');
   }
@@ -90,6 +116,7 @@ export function setModel(selection, root = home(), expectedAlias, sessionId) {
     }
     if (selection) s.modelSelection = { model: selection.model, effort: selection.effort };
     else delete s.modelSelection;
+    if (selection) s.modelSelectionAlias = s.active; else delete s.modelSelectionAlias;
   }, root);
 }
 export function activate(alias, root = home()) {

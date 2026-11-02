@@ -22,7 +22,7 @@ async function launch(t, extraEnv = {}, initialConfig) {
   fs.writeFileSync(file, original);
   // Never touch the developer's credentials, configuration or login items.
   const options = { ...(executable ? { executablePath: executable, args: [] } : { args: [project] }),
-    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
+    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(directory, 'claude'), SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
   const app = await _electron.launch(options);
   app.process().stderr?.resume();
   t.after(async () => {
@@ -81,6 +81,50 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,undefined);
   assert.deepEqual(uiErrors,[]);
 });
+test('provider editing, separate Claude settings and manual model selection work in the desktop UI', { skip: !enabled, timeout: 30000 }, async t => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(404); res.end(); }).listen(0, '127.0.0.1');
+  await once(upstream, 'listening'); t.after(() => upstream.close());
+  const { app, page, root, options } = await launch(t);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.click('#add-api'); await page.fill('#provider-alias', 'old'); await page.fill('#api-key', 'original-secret');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/v1`); await page.click('#save-provider');
+  await page.locator('.edit-provider').click(); assert.equal(await page.locator('#api-key').inputValue(), '');
+  await page.fill('#provider-alias', 'renamed'); await page.click('#save-provider');
+  await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
+  await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
+  await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
+  await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
+  await page.click('[data-tab="model"]'); await page.click('#global-model');
+  await page.locator('#catalog-status.failed').waitFor();
+  await page.locator('.manual-model summary').click(); await page.fill('#manual-model', 'deepseek-flash'); await page.click('#apply-model');
+  await page.locator('#current-model').filter({ hasText: 'deepseek-flash' }).waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).modelSelection.model, 'deepseek-flash');
+  const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
+  assert.match(JSON.parse(fs.readFileSync(claudeFile)).env.ANTHROPIC_BASE_URL, /\/claude$/);
+  await page.click('[data-client="codex"]'); await page.locator('#current-model').filter({ hasText: 'Follow Codex' }).waitFor();
+  await page.evaluate(() => window.easySwitch.call('stop')); assert.equal(fs.existsSync(claudeFile), false);
+  assert.deepEqual(errors, []);
+});
+test('Claude subscription authorization codes stay in the add dialog and disappear after sign-in', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');
+  fs.writeFileSync(binary, `#!${process.execPath}\nconst fs=require('fs'),path=require('path');
+process.stdout.write('https://claude.com/cai/oauth/authorize?code=true&state=fixture\\n');
+process.stdin.once('data',()=>{fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-oauth-secret',refreshToken:'fixture-refresh',expiresAt:Date.now()+3600000,scopes:['user:inference']}}),{mode:0o600});process.exit(0);});\n`, { mode: 0o700 });
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const { page, root } = await launch(t, { SWITCH_CLAUDE_BIN: binary });
+  await page.click('[data-client="claude"]'); await page.click('#add-subscription'); await page.fill('#provider-alias', 'personal');
+  // Invoke login without opening a real browser for this simulated OAuth page.
+  await page.evaluate(() => window.easySwitch.call('login', 'personal'));
+  await page.locator('#claude-code-field').waitFor(); await page.fill('#authorization-code', 'fixture-code#state'); await page.click('#save-provider');
+  await page.locator('#login-message').filter({ hasText: 'Signed in successfully.' }).waitFor();
+  assert.equal(await page.locator('#claude-code-field').isVisible(), false); assert.equal(await page.locator('#authorization-code').inputValue(), '');
+  const state = await page.evaluate(() => window.easySwitch.call('state')); assert.equal(state.providers[0].type, 'account');
+  assert.ok(!JSON.stringify(state).includes('fixture-oauth-secret'));
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.personal;
+  assert.equal(JSON.parse(fs.readFileSync(path.join(saved.accountHome, 'oauth.json'))).accessToken, 'fixture-oauth-secret');
+});
 test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foreground work while routing remains usable', { skip: !enabled, timeout: 30000 }, async t => {
   const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }).listen(0, '127.0.0.1');
   await once(upstream, 'listening'); t.after(() => upstream.close());
@@ -124,7 +168,8 @@ test('subscription quota rings, purchased credits, stale data and image setup no
     data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
   const uiState = { running: true, imageTools: true, active: 'api', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0), { alias: 'api', type: 'api', active: true, baseUrl: 'https://api.example.com/v1' }],
     sessions: [], version: '0.4.8', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
-  await app.evaluate(({ ipcMain, BrowserWindow }, state) => {
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, state) => {
+    powerMonitor.emit('lock-screen'); // Keep periodic real snapshots from replacing this fixture.
     globalThis.easySwitchQuotaState = state; globalThis.easySwitchQuotaRefreshes = 0;
     globalThis.easySwitchResetAttempts = [];
     globalThis.easySwitchResetCards = { availableCount: 2, credits: [
@@ -226,12 +271,16 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   assert.equal(await page.locator('main').evaluate(element => element.scrollTop > 0), true, 'many accounts remain accessible by scrolling');
   assert.equal(await page.locator('.provider[data-alias="api"] .tag').innerText(), '当前路由');
 });
-test('Electron recovery helper restores configuration after main process is killed', { skip: !enabled,timeout:30000 }, async t => {
-  const { app,file,original,root } = await launch(t);
+test('Electron recovery helper restores both clients after the main process is killed', { skip: !enabled,timeout:30000 }, async t => {
+  const { app,page,file,original,root,options } = await launch(t);
+  await page.evaluate(async () => { await window.easySwitch.call('client', 'claude'); await window.easySwitch.call('add-api', { alias: 'claude-api', key: 'fixture' }); });
+  const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json'); assert.ok(fs.existsSync(claudeFile));
   const child = app.process(); const exit = once(child,'exit'); child.kill('SIGKILL'); await exit;
   for (let attempt=0; attempt<100 && fs.existsSync(path.join(root,'desktop-session.json')); attempt++) await new Promise(resolve=>setTimeout(resolve,50));
   assert.equal(fs.readFileSync(file,'utf8'),original);
   assert.equal(fs.existsSync(path.join(root,'desktop-session.json')),false);
+  for (let attempt = 0; attempt < 100 && fs.existsSync(path.join(root, 'claude-session.json')); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(fs.existsSync(claudeFile), false);
 });
 
 test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {

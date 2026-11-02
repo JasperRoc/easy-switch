@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse } from 'smol-toml';
 import { init, atomic } from './store.js';
 import { saveNetwork } from './network.js';
+import { restoreClaude } from './claude-config.js';
 
 const providerName = 'easy_switch';
 const unitName = 'easy-switch.service';
@@ -131,6 +132,7 @@ export function service(action, root) {
   if (fs.existsSync(unitFile()) && !fs.readFileSync(unitFile(), 'utf8').includes(`Environment=${quote('SWITCH_HOME=' + root)}\n`)) throw new Error('服务属于其他 SWITCH_HOME，拒绝操作');
   if (action === 'uninstall') {
     restoreConfig(root);
+    restoreClaude(path.join(root, 'claude-session.json'));
     command('systemctl', ['--user', 'disable', '--now', unitName]);
     fs.rmSync(unitFile(), { force: true });
     command('systemctl', ['--user', 'daemon-reload']);

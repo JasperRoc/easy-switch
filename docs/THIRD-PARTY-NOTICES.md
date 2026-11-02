@@ -6,4 +6,6 @@ The bundled Codex executable comes from the matching, pinned `@openai/codex` npm
 
 Runtime dependencies include `smol-toml` (MIT) and `undici` (MIT). Their license files and Electron's component notices are included with the packaged dependencies. Build-time dependencies are listed in `package.json` and `package-lock.json`.
 
-OpenAI, ChatGPT, Codex, Windows and macOS are trademarks of their respective owners. This independent project does not imply sponsorship or endorsement.
+Claude subscription login invokes the user's separately installed official Claude Code CLI. Claude Code is proprietary software governed by Anthropic's terms and is not included in easy-switch's MIT distribution. The tool reads only the selected official credential store and uses isolated sign-ins when adding accounts; credentials are not redistributed.
+
+OpenAI, ChatGPT, Codex, Anthropic, Claude, Windows and macOS are trademarks of their respective owners. This independent project does not imply sponsorship or endorsement.

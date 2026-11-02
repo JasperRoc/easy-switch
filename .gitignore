@@ -6,6 +6,10 @@ node_modules/
 coverage/
 .switch/
 auth.json
+oauth.json
+.credentials.json
+claude-session.json
+desktop-session.json
 state.json
 network.json
 

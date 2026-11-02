@@ -4,6 +4,8 @@ import { fork, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { init } from '../src/store.js';
+import { SessionTracker } from '../src/sessions.js';
+import { activateClaude, restoreClaude } from '../src/claude-config.js';
 import { createProxy } from '../src/proxy.js';
 import { CodexSessions } from './codex-sessions.js';
 import { activateSession, restoreSession, syncSession } from './config.js';
@@ -19,12 +21,13 @@ export function protectDirectory(root) {
 }
 
 export class DesktopRuntime {
-  constructor({ root, codexHome, port = 18345, reauth, createServer = createProxy, guardExec = process.execPath }) {
-    Object.assign(this, { root, codexHome, port, reauth, createServer, guardExec });
+  constructor({ root, codexHome, claudeHome, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
+    Object.assign(this, { root, codexHome, claudeHome, port, reauth, claudeReauth, createServer, guardExec });
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
     this.sessions = new CodexSessions(codexHome);
+    this.claudeSessions = new SessionTracker();
   }
   transition(action) {
     const result = this.pending.then(action);
@@ -35,8 +38,13 @@ export class DesktopRuntime {
   stop() { return this.transition(() => this.stopRouting()); }
   restartNetwork() { return this.transition(() => this.restartRouting()); }
   syncTools() { if (this.active) this.imageTools = syncSession(this.root, this.codexHome); }
+  syncClaude() {
+    if (this.active && this.claudeHome && Object.keys(init(path.join(this.root, 'claude')).providers).length)
+      activateClaude(this.root, this.claudeHome, this.port, init(path.join(this.root, 'claude')).token);
+  }
+  restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); }
   async listen() {
-    const server = this.createServer({ root: this.root, reauth: this.reauth, sessions: this.sessions });
+    const server = this.createServer({ root: this.root, reauth: this.reauth, sessions: this.sessions, claudeSessions: this.claudeSessions, claudeReauth: this.claudeReauth });
     server.on('request', (req, res) => {
       if (req.method !== 'POST') return;
       this.activeRequests++;
@@ -65,7 +73,7 @@ export class DesktopRuntime {
   async startRouting() {
     if (this.server) return;
     protectDirectory(this.root);
-    restoreSession(this.recordFile);
+    this.restore();
     if (fs.existsSync(path.join(this.root, 'installation.json'))) throw new Error('A CLI service installation already owns the configuration. Uninstall that service before using desktop mode.');
     const { token } = init(this.root);
     try {
@@ -74,13 +82,14 @@ export class DesktopRuntime {
       activateSession(this.root, this.codexHome, this.port, token);
       this.active = true;
       this.syncTools();
+      this.syncClaude();
     } catch (error) {
       await this.stopRouting(); throw error;
     }
   }
   async stopRouting() {
     // Restore while the proxy is still available. A conflict leaves it running.
-    restoreSession(this.recordFile);
+    this.restore();
     this.active = false;
     this.imageTools = false;
     if (this.guard?.connected) this.guard.send({ type: 'disarm' });

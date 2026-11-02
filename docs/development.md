@@ -24,6 +24,16 @@ This starts a real app-server with a temporary `CODEX_HOME`, reads the installed
 
 The shell installer targets Linux systemd. The desktop build targets Windows and macOS. Run the checks above locally before submitting changes.
 
+## Real Claude Code integration
+
+```bash
+SWITCH_TEST_CLAUDE="$(command -v claude)" node --test test/claude.integration.test.js
+```
+
+Runs the official client with an isolated `CLAUDE_CONFIG_DIR` against local mock upstreams. The test keeps one process and conversation open, switches APIs, and checks that the next message uses the new key with the original history. It makes no paid model calls. Subscription OAuth, refresh, header isolation, failover and settings restoration also have mock tests; live subscription inference requires a separately authorized account.
+
+Claude support uses `src/claude-auth.js` for official sign-in and token refresh, `src/claude-config.js` for recoverable user settings, and `src/claude-proxy.js` for Messages routing. State lives in `SWITCH_HOME/claude`; the existing proxy listener dispatches `/claude/*` to this independent route. The desktop controller and CLI use the same store and protocol implementation.
+
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pull request guidelines.
 
 ## Publish to GitHub

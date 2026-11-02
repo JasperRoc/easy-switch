@@ -7,6 +7,7 @@
 <symbol id="refresh" viewBox="0 0 24 24"><path d="M20 8a8 8 0 1 0 1 6M20 3v5h-5"/></symbol>
 <symbol id="grip" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></g></symbol>
 <symbol id="trash" viewBox="0 0 24 24"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></symbol>
+<symbol id="edit" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l1-6L16 3l5 5-11 11-6 1Z"/></symbol>
 <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
 <symbol id="download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
 <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
