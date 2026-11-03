@@ -8,11 +8,12 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'smol-toml';
 import { codexThread } from './fixtures/codex-metadata.js';
+import { addProvider, init } from '../src/store.js';
 
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
 const project = fileURLToPath(new URL('..', import.meta.url));
 const executable = process.env.SWITCH_TEST_DESKTOP_EXE;
-async function launch(t, extraEnv = {}, initialConfig) {
+async function launch(t, extraEnv = {}, initialConfig, prepare) {
   const { _electron } = await import('playwright-core');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-electron-'));
   const root = path.join(directory, 'switch'), home = path.join(directory, 'codex');
@@ -20,6 +21,7 @@ async function launch(t, extraEnv = {}, initialConfig) {
   fs.writeFileSync(path.join(root, 'desktop.json'), JSON.stringify({ language: 'en', theme: 'light' }));
   const file = path.join(home, 'config.toml'), original = initialConfig ?? '# Original user config\nmodel="gpt-6.1-sol"\n';
   fs.writeFileSync(file, original);
+  prepare?.(root);
   // Never touch the developer's credentials, configuration or login items.
   const options = { ...(executable ? { executablePath: executable, args: [] } : { args: [project] }),
     env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(directory, 'claude'), SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
@@ -30,10 +32,38 @@ async function launch(t, extraEnv = {}, initialConfig) {
     await app.close().catch(() => {}); fs.rmSync(directory, { recursive: true, force: true });
   });
   const page = await app.firstWindow();
-  await page.locator('#status').filter({ hasText: 'Routing active' }).waitFor();
+  await page.locator('#status').filter({ hasText: /Routing active|路由已启用/ }).waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
   return { app, page, file, original, root, home, options };
 }
+test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
+  const { app, page, root } = await launch(t, {}, undefined, directory => {
+    init(directory); addProvider('saved', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture-private' }, directory);
+    fs.chmodSync(path.join(directory, 'desktop.json'), 0);
+  });
+  const file = path.join(root, 'desktop.json');
+  await page.locator('#preferences-warning').filter({ hasText: 'EACCES' }).waitFor();
+  await page.locator('.provider strong').filter({ hasText: 'saved' }).waitFor();
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.locator('#error').filter({ hasText: 'desktop.json' }).waitFor();
+  assert.equal(fs.statSync(file).mode & 0o777, 0);
+  fs.chmodSync(file, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'en', theme: 'light' });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
+  await page.locator('#preferences-warning').waitFor({ state: 'hidden' });
+  await page.click('#language-button'); await page.click('[data-language="en"]');
+  fs.chmodSync(file, 0);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
+  await page.locator('#preferences-warning').filter({ hasText: 'Desktop preferences could not be read' }).waitFor();
+  fs.chmodSync(file, 0o600);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  fs.chmodSync(file, 0);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
+  await page.locator('#preferences-warning').filter({ hasText: '无法读取界面设置' }).waitFor();
+  fs.chmodSync(file, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'zh-CN', theme: 'light' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.saved.apiKey, 'fixture-private');
+});
 test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { skip: !enabled, timeout: 60000 }, async t => {
   const upstream = http.createServer((req,res) => {
     res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-6.1-sol' }, { id: 'relay-only-model' }] }));

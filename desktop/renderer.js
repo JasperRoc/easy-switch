@@ -212,6 +212,8 @@ function refresh(nextState) {
     $('current-model').textContent = customized ? t('sessionSummary', { count: customized }) : state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
+    $('preferences-warning').hidden = !state.preferencesError;
+    $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
     $('native-images').hidden = !state.imageTools && !state.imageToolsBlocked;
     const selected = state.providers.find(provider => provider.active);
     $('native-images').textContent = t(state.imageToolsBlocked ? 'freeImagesHelp' : 'nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });

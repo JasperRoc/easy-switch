@@ -18,6 +18,7 @@
   <main>
     <div class="client-picker" role="group" aria-label="Client"><button class="secondary" data-client="codex" aria-pressed="true">Codex</button><button class="secondary" data-client="claude" aria-pressed="false">Claude Code</button><span class="help" data-i18n="clientHelp"></span></div>
     <div id="tray-hint" class="notice" data-i18n="trayHidden" hidden></div>
+    <div id="preferences-warning" class="notice" role="status" hidden></div>
     <div id="error" class="notice error" role="alert" hidden></div>
     <section class="summary glass"><div><span class="eyebrow" data-i18n="currentProvider">CURRENT PROVIDER</span><strong id="current-provider">—</strong></div><div><span class="eyebrow" data-i18n="currentModel">MODEL & EFFORT</span><strong id="current-model">—</strong></div><div class="route-controls"><span id="status" class="badge" role="status">Starting…</span><button id="routing-toggle" class="secondary">Stop routing</button></div></section>
     <nav aria-label="Settings"><button data-tab="providers" class="selected" data-i18n="providers">Providers</button><button data-tab="model" data-i18n="modelTab">Model & effort</button><button data-tab="network" data-i18n="networkTab">Network</button></nav>

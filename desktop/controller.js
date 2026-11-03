@@ -37,15 +37,25 @@ export class DesktopController {
     this.setPreferences({ client }); this.catalog = null; return this.snapshot();
   }
   preferences() {
-    try { return JSON.parse(fs.readFileSync(this.preferencesFile, 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+    try {
+      const preferences = JSON.parse(fs.readFileSync(this.preferencesFile, 'utf8'));
+      this.preferencesError = null; this.lastPreferences = preferences;
+      return preferences;
+    } catch (error) {
+      if (error.code === 'ENOENT') { this.preferencesError = null; this.lastPreferences = {}; return {}; }
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+      this.preferencesError = error.code;
+      return this.lastPreferences || {};
+    }
   }
   setPreferences(patch) {
     for (const [key, value] of Object.entries(patch)) {
       const valid = key === 'client' ? ['codex', 'claude'].includes(value) : key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : key === 'startAtLogin' && typeof value === 'boolean';
       if (!valid) throw new Error('Invalid desktop preference.');
     }
-    atomic(this.preferencesFile, { ...this.preferences(), ...patch });
+    const current = this.preferences();
+    if (this.preferencesError) throw new Error('Restore access to desktop.json before saving desktop preferences.');
+    atomic(this.preferencesFile, { ...current, ...patch });
   }
   async start() {
     process.env.SWITCH_CODEX_BIN = this.binary;
@@ -81,6 +91,7 @@ export class DesktopController {
   }
   async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
   snapshot({ usage: includeUsage = true, sessions: includeSessions = true } = {}) {
+    const preferences = this.preferences();
     const client = this.client, state = init(this.providerRoot);
     const usage = client === 'codex' && this.runtime.active && includeUsage ? this.usage.snapshot(state) : {};
     let freeImages = false;
@@ -98,7 +109,7 @@ export class DesktopController {
     const login = this.currentLogin;
     return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: client === 'claude' && state.modelSelectionAlias && state.modelSelectionAlias !== state.active ? null : state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences: this.preferences() };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences, preferencesError: this.preferencesError || null };
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }

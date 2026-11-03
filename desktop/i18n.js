@@ -1,5 +1,6 @@
 export const messages = {
   en: {
+    preferencesUnavailable: 'Desktop preferences could not be read ({code}). Using defaults or the last settings read during this run. The original desktop.json is preserved; restore file access to save preferences again.',
     clientHelp: 'Independent providers and priorities for each client.', editProvider: 'Edit provider', saveChanges: 'Save changes',
     keepKey: 'Leave the API key blank to keep the saved key. Saved keys are never sent to this window.',
     manualModel: 'Specify a model ID', manualModelHint: 'Exact model ID from your provider',
@@ -97,6 +98,7 @@ export const messages = {
     loginPermission: 'The operating system did not apply the login startup setting. Check login-item permissions in system settings.',
   },
   'zh-CN': {
+    preferencesUnavailable: '无法读取界面设置（{code}），暂时使用默认设置或本次运行已读取的设置。原 desktop.json 已保留，恢复文件访问后即可继续保存设置。',
     clientHelp: '分别管理两个客户端的服务商与优先级。', editProvider: '编辑服务商', saveChanges: '保存修改',
     keepKey: '密钥留空则保留已保存的密钥；原密钥不会传入此窗口。',
     manualModel: '手动指定模型 ID', manualModelHint: '填写服务商提供的准确模型 ID',
@@ -200,6 +202,7 @@ export function translate(language, key, values = {}) {
   return text.replace(/\{(\w+)\}/g, (match, name) => String(values[name] ?? match));
 }
 const notices = [
+  ['请先恢复 desktop.json 的访问权限，再保存界面设置。', 'Restore access to desktop.json before saving desktop preferences.'],
   ['请选择订阅账号。', 'Choose a subscription account.'],
   ['请选择一张重置卡后重试。', 'Choose a reset card and retry.'],
   ['此账号正在进行重置，请等待结果。', 'A reset is already in progress for this account.'],

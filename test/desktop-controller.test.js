@@ -50,6 +50,49 @@ test('desktop appearance preferences persist and invalid choices never replace t
   for (const patch of [{language:'unknown'}, {theme:'unknown'}, {extra:'unrequested'}, {startAtLogin:'yes'}]) assert.throws(()=>controller.setPreferences(patch), /Invalid/);
   assert.deepEqual(controller.preferences(),{language:'zh-CN',theme:'dark'});
 });
+test('unreadable desktop preferences do not prevent routing or overwrite the original settings', async t => {
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    const controller = setup(t);
+    controller.addAPI({ alias: 'saved', key: 'fixture-key' });
+    controller.setPreferences({ language: 'zh-CN', theme: 'dark' });
+    const original = fs.readFileSync(controller.preferencesFile, 'utf8');
+    const providers = fs.readFileSync(path.join(controller.root, 'state.json'), 'utf8');
+    const reopened = new DesktopController({ root: controller.root, codexHome: controller.codexHome, binary: 'not-used', port: 0 });
+    const read = fs.readFileSync;
+    let blocked = true;
+    const mock = t.mock.method(fs, 'readFileSync', function(file, ...args) {
+      if (file === controller.preferencesFile && blocked) throw Object.assign(new Error('Access denied'), { code });
+      return read.call(this, file, ...args);
+    });
+    t.after(() => reopened.stop());
+    assert.deepEqual(reopened.preferences(), {});
+    await reopened.start();
+    assert.equal(reopened.snapshot().running, true);
+    assert.equal(reopened.snapshot().preferencesError, code);
+    assert.equal(reopened.snapshot().providers[0].alias, 'saved');
+    assert.throws(() => reopened.setPreferences({ theme: 'light' }), /Restore access to desktop.json/);
+    assert.equal(read(controller.preferencesFile, 'utf8'), original);
+    assert.equal(read(path.join(controller.root, 'state.json'), 'utf8'), providers);
+    blocked = false;
+    assert.deepEqual(reopened.preferences(), { language: 'zh-CN', theme: 'dark' });
+    assert.equal(reopened.snapshot().preferencesError, null);
+    reopened.setPreferences({ theme: 'light' });
+    assert.deepEqual(reopened.preferences(), { language: 'zh-CN', theme: 'light' });
+    await reopened.stop(); mock.mock.restore();
+  }
+});
+test('a later preference read failure keeps the current client and appearance until access recovers', t => {
+  const controller = setup(t);
+  controller.setPreferences({ client: 'claude', language: 'zh-CN', theme: 'dark' });
+  const previous = controller.preferences(), read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', function(file, ...args) {
+    if (file === controller.preferencesFile) throw Object.assign(new Error('Access denied'), { code: 'EPERM' });
+    return read.call(this, file, ...args);
+  });
+  assert.deepEqual(controller.preferences(), previous);
+  assert.equal(controller.snapshot().client, 'claude');
+  assert.equal(controller.snapshot().preferencesError, 'EPERM');
+});
 test('desktop applies a model only to the explicitly selected observed session', t => {
   const controller = setup(t); controller.addAPI({ alias: 'api', key: 'fixture' });
   const thread = codexThread(controller.codexHome, 'session-a', 'Fix a bug');

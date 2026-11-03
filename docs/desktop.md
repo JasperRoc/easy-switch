@@ -20,6 +20,21 @@ The current packages have no publisher certificate; macOS uses ad hoc code signi
 
 Apple silicon macOS packaged-app tests cover adding an API, model discovery, model/effort selection, routing start/stop, window hiding, normal exit and forced-process-exit recovery. Intel macOS and Windows packages are built, but have not been run on those systems. This release is experimental.
 
+## Desktop preferences access errors
+
+An `EPERM`, `EACCES` or `EBUSY` error opening `desktop.json` concerns local desktop preferences, not an upstream model or subscription. Versions 0.5.0–0.5.1 exit if that read fails. From 0.5.2, the app opens with defaults or the last preferences read during the current run, displays a notice, and preserves the inaccessible file. Saving desktop preferences remains blocked until the file can be read again. Provider and account files are handled separately; their errors are not silently ignored. The error alone does not establish whether a Windows ACL, file lock or security application caused it.
+
+If an older version cannot open, download the current installer manually from Releases. To reset only desktop preferences, fully quit easy-switch, then back up the preference file in a normal PowerShell window:
+
+```powershell
+$p = Join-Path $env:USERPROFILE '.codex-switch\desktop.json'
+Rename-Item -LiteralPath $p -NewName ("desktop.json.bak-" + (Get-Date -Format yyyyMMddHHmmss))
+```
+
+Launch the app again. This preserves the old file as a backup and leaves provider credentials in place. If renaming also fails, inspect the file's access permissions and locks before changing them; do not delete the data directory.
+
+中文版：`desktop.json` 保存语言、外观等桌面偏好。0.5.0–0.5.1 遇到该文件不可读时会退出；0.5.2 起保留原文件、显示提示，并使用默认设置或本次运行已读取的设置继续打开，恢复访问后可重新保存。服务商和账号文件单独处理，不会忽略它们的读取错误。报错本身不能证明是权限、文件占用还是安全软件造成的。旧版打不开时可手动下载安装包；也可完全退出后执行上面的 PowerShell 命令，仅将偏好文件重命名为备份，再重新打开。该操作保留服务商和凭据；若重命名同样失败，应先检查权限和占用，不要删除整个数据目录。
+
 ## macOS preview and the damaged-app alert
 
 Version 0.3.0 skipped signing after modifying Electron’s application bundle, leaving invalid resource signatures. This could produce “easy-switch is damaged and can’t be opened.” Version 0.3.1 re-signs the app and its nested code, fails the build if strict signature validation fails, and verifies the final DMG’s mounted application before release. Replace the old application with a fresh 0.3.1 or later download.

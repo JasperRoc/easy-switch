@@ -176,7 +176,7 @@ async function boot() {
   const nativeMenu = () => { if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'easy-switch', submenu: [{ role: 'about' }, { label: t('updates'), click: () => showWindow('updates') }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' }, { label: t('quit'), accelerator: 'Command+Q', click: () => app.quit() }] }, { role: 'editMenu' }, { role: 'windowMenu' }])); };
   nativeMenu();
   const hidden = process.argv.includes('--hidden') || loginItem.wasOpenedAtLogin;
-  if (!hidden || !controller.snapshot({ usage: false, sessions: false }).providers.length || startupError) showWindow();
+  if (!hidden || !controller.snapshot({ usage: false, sessions: false }).providers.length || startupError || controller.preferencesError) showWindow();
 }
 
 if (!ownsLock) app.quit();
