@@ -454,6 +454,114 @@ test('images use an API when no subscription exists and do not retry policy or v
   assert.equal(unauthorized.status, 401); assert.equal(calls, 1);
 });
 
+test('Free accounts are skipped for image generation and edits without changing their text selection', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const [alias, plan] of [['free', 'free'], ['paid', 'plus']]) {
+    const accountHome = path.join(root, 'accounts', alias);
+    const id = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })).toString('base64url') + '.fixture';
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, id_token: id, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, ...options }); return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+  } }));
+  for (const route of ['generations', 'edits']) {
+    const response = await fetch(proxy + '/v1/images/' + route, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'fixture' }) });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'paid'); await response.text();
+  }
+  assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer paid', 'Bearer paid']);
+  assert.equal(readState(root).active, 'free'); assert.equal(readState(root).lastFailover, undefined);
+});
+
+test('Free-only image requests explain access limits, while an API can supply images for a Free text account', async t => {
+  const { root, token } = fixture(t); let calls = 0, logins = 0;
+  const accountHome = path.join(root, 'accounts', 'free');
+  const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: jwt, account_id: 'free' } });
+  addProvider('free', { type: 'account', accountHome }, root);
+  const proxy = await listen(t, createProxy({ root, reauth: { prompt() { logins++; return 'sign in'; }, close() {} }, fetchImpl: async (url, options) => {
+    calls++; assert.equal(url, 'https://api.example/v1/images/generations'); assert.equal(options.headers.authorization, 'Bearer api');
+    return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+  } }));
+  const sendImage = () => fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  const denied = await sendImage(); assert.equal(denied.status, 403); assert.match(await denied.text(), /Free.*(?:API|付费)/); assert.equal(calls, 0); assert.equal(logins, 0);
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
+  const response = await sendImage(); assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1); assert.equal(readState(root).active, 'free');
+});
+
+test('image entitlement rejections fail over before output, including startup SSE, but safety refusals do not', async t => {
+  for (const style of ['http', 'sse', 'policy']) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['first', 'second']) {
+      const accountHome = path.join(root, 'accounts', alias);
+      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+      addProvider(alias, { type: 'account', accountHome }, root);
+    }
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+      calls.push(options.headers.authorization);
+      if (calls.length === 1) {
+        if (style === 'policy') return Response.json({ error: { code: 'content_policy_violation', message: 'Image generation is not available for this prompt due to safety policy.' } }, { status: 403 });
+        const failure = { code: 'image_generation_not_supported', message: 'Image generation is not available for your plan.' };
+        return style === 'http' ? Response.json({ error: failure }, { status: 403 })
+          : new Response('data: ' + JSON.stringify({ type: 'error', error: failure }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.status, style === 'policy' ? 403 : 200); await response.text();
+    assert.deepEqual(calls, style === 'policy' ? ['Bearer first'] : ['Bearer first', 'Bearer second']);
+    assert.equal(readState(root).active, 'first');
+  }
+});
+
+test('model access fallback preserves the chosen model and history, caches only that model, and keeps the preferred Free route', async t => {
+  for (const style of ['http', 'sse']) {
+    const { root, token } = fixture(t), calls = []; let clock = 0;
+    const accountHome = path.join(root, 'accounts', 'free');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'free', account_id: 'free' } });
+    addProvider('free', { type: 'account', accountHome }, root);
+    addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api', model: 'legacy-model' }, root);
+    const proxy = await listen(t, createProxy({ root, now: () => clock, fetchImpl: async (url, options) => {
+      const input = JSON.parse(options.body); calls.push({ url, input, headers: options.headers });
+      if (url.startsWith('https://chatgpt.com') && input.model === 'paid-model') {
+        const failure = { code: 'model_not_supported', message: 'The paid-model model is not supported when using Codex with a ChatGPT account.' };
+        return style === 'http' ? Response.json({ error: failure }, { status: 400 })
+          : new Response('data: ' + JSON.stringify({ type: 'response.failed', response: { error: failure } }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const input = [...payload.input, { type: 'function_call_output', call_id: 'done', output: 'already done' }];
+    const sendModel = model => send(proxy, token, { ...payload, input, model });
+    const first = await sendModel('paid-model'); assert.equal(first.status, 200); assert.equal(first.headers.get('x-switch-alias'), 'api'); await first.text();
+    assert.equal(calls.length, 2); assert.ok(calls.every(call => call.input.model === 'paid-model')); assert.ok(calls.every(call => JSON.stringify(call.input.input) === JSON.stringify(input)));
+    assert.equal(calls[1].headers.authorization, 'Bearer api'); assert.equal(calls[1].headers['ChatGPT-Account-ID'], undefined);
+    assert.equal(readState(root).active, 'free'); assert.equal(readState(root).lastFailover, undefined);
+    await (await sendModel('paid-model')).text(); assert.equal(calls.length, 3); assert.ok(calls.at(-1).url.startsWith('https://api.example')); assert.equal(calls.at(-1).input.model, 'paid-model');
+    await (await sendModel('free-model')).text(); assert.ok(calls.at(-1).url.startsWith('https://chatgpt.com'));
+    clock = 61000; await (await sendModel('paid-model')).text(); assert.equal(calls.length, 6);
+    activate('free', root); await (await sendModel('paid-model')).text(); assert.equal(calls.length, 8);
+  }
+});
+
+test('model failures exhaust the queue without substitution or replay, and a manual choice wins over a late model rejection', async t => {
+  const { root, token } = fixture(t); let calls = 0;
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    calls++; assert.equal(JSON.parse(options.body).model, 'same-model');
+    return Response.json({ error: { code: 'model_not_found' } }, { status: 404 });
+  } }));
+  const denied = await send(proxy, token, { ...payload, model: 'same-model' }); assert.equal(denied.status, 404); await denied.text(); assert.equal(calls, 2); assert.equal(readState(root).active, 'first');
+  const late = await listen(t, createProxy({ root, fetchImpl: async url => {
+    if (url.includes('first.example')) { activate('second', root); return Response.json({ error: { code: 'model_not_found' } }, { status: 404 }); }
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const selected = await send(late, token); assert.equal(selected.status, 200); await selected.text(); assert.equal(readState(root).active, 'second'); assert.equal(readState(root).reason, 'manual');
+  activate('first', root); let accepted = 0;
+  const stream = 'data: {"type":"response.output_text.delta","delta":"accepted"}\n\ndata: {"type":"response.failed","response":{"error":{"code":"model_not_found"}}}\n\n';
+  const output = await listen(t, createProxy({ root, fetchImpl: async () => { accepted++; return new Response(stream, { headers: { 'content-type': 'text/event-stream' } }); } }));
+  assert.equal(await (await send(output, token)).text(), stream); assert.equal(accepted, 1);
+});
+
 const capacityEvent = 'data: {"type":"response.failed","response":{"error":{"code":"server_overloaded","message":"Selected model is at capacity. Please try a different model."}}}\n\n';
 const createdEvent = 'event: response.created\ndata: {"type":"response.created","response":{"id":"failed-response","output":[]}}\n\n';
 test('capacity before any output falls back transparently for HTTP and split startup SSE errors', async t => {

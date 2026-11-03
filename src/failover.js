@@ -6,6 +6,19 @@ export function recoverable(status, message = '') {
   if ([401, 402, 429].includes(status)) return true;
   return status === 403 && /额度不足|余额不足|配额(?:不足|已耗尽)|insufficient[ _](?:quota|balance|credits)|quota (?:exceeded|exhausted)/i.test(message);
 }
+export function modelUnavailable(status, message = '') {
+  if (![400, 403, 404, 422].includes(status)) return false;
+  try {
+    const data = JSON.parse(message), failure = data.response?.error || data.error || data;
+    message = [failure.code, failure.type, failure.message, data.detail].filter(value => typeof value === 'string').join(' ');
+  } catch {}
+  if (/policy|safety|moderation|content_filter|refusal/i.test(message)) return false;
+  return /\b(?:model_not_found|model_not_supported|unsupported_model|model_access_denied|model_permission_denied|model_not_available)\b/i.test(message)
+    || /\bmodel\b.{0,160}\b(?:does not exist|not found|not (?:supported|available|accessible|enabled|allowed|permitted)|access denied|permission denied)\b/i.test(message)
+    || /\b(?:do not|don't|does not|doesn't) have access to (?:the )?(?:requested )?model\b/i.test(message)
+    || /\bnot (?:allowed|authorized|permitted) to (?:access|use) (?:the )?(?:requested )?model\b/i.test(message)
+    || /模型.{0,100}(?:不(?:支持|存在|可用)|无(?:权限|访问权限))|(?:无权|无权限|没有权限|不支持).{0,50}模型/.test(message);
+}
 export function atCapacity(message = '') {
   try {
     const data = JSON.parse(message);

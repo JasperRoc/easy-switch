@@ -5,6 +5,7 @@ import { parse, stringify } from 'smol-toml';
 import { createHash } from 'node:crypto';
 import { atomic, readState, providerOrder, accountAuth } from '../src/store.js';
 import { patchedConfig, writeText } from '../src/install.js';
+import { imageEligible } from '../src/images.js';
 
 const provider = 'easy_switch';
 const normalized = value => JSON.parse(JSON.stringify(value));
@@ -129,7 +130,10 @@ function subscription(root) {
   for (const alias of [state.active, ...providerOrder(state)]) {
     const provider = state.providers[alias];
     if (provider?.type !== 'account') continue;
-    try { return { provider, auth: accountAuth(provider) }; } catch {}
+    try {
+      const auth = accountAuth(provider);
+      if (imageEligible(auth)) return { provider, auth };
+    } catch {}
   }
 }
 
@@ -151,8 +155,12 @@ export function syncSession(root, codexHome) {
     atomic(recordFile, replacement); writeText(record.file, next);
     return syncSession(root, codexHome);
   }
-  if (record.nativeTools) return true;
   const selected = subscription(root);
+  if (record.nativeTools) {
+    try {
+      if (imageEligible(JSON.parse(read(path.join(codexHome, 'auth.json'))))) return true;
+    } catch { return true; }
+  }
   if (!selected) return false;
   const current = read(record.file), authFile = path.join(codexHome, 'auth.json');
   const config = parse(record.installed).model_providers.easy_switch;

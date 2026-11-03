@@ -120,6 +120,8 @@ Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code 
 
 Codex’s native model menu describes its own catalog and sign-in, not the API selected inside easy-switch. easy-switch queries the selected provider’s model endpoint and no longer substitutes the Codex catalog when that query fails. The native menu is not rewritten. A listed model still needs inference/tool permissions; use easy-switch’s catalog or an explicit provider model ID. HTTP 503 alone cannot distinguish a capacity problem from another upstream failure.
 
+If a Codex upstream explicitly rejects a model as missing, unsupported or inaccessible, easy-switch tries the same model through alternatives before accepting output. That fallback keeps the preferred route selected: a Free account can remain preferred for models it supports while an API handles another model. Rejections are cached for that provider/model for 60 seconds; manual provider selection clears the cache. If every provider rejects it, choose another model or add access. Requests blocked inside the client before reaching the proxy cannot be rerouted.
+
 ### Will macOS and Windows be supported?
 
 Windows x64 and macOS Apple silicon/Intel desktop installers are available alongside the Linux systemd CLI. Desktop routing follows the application lifetime; Linux routing follows its systemd service. Apple silicon macOS has packaged-app tests; Windows and Intel macOS need native runtime validation. See the [desktop guide](docs/desktop.md).
@@ -135,6 +137,8 @@ Desktop subscription rows include a reset button. Open it to see individual card
 ### Can a subscription handle image generation while text uses an API?
 
 Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, adding a subscription also configures native image tools and temporarily connects its sign-in when Codex was using API authentication. Reload an already-open Codex client once after this setup; later provider switches keep these tools available. Quitting restores the original connection and any temporary sign-in. See [image routing](docs/usage.md#image-generation-routing).
+
+Free accounts do not provide Codex image generation. easy-switch skips known Free accounts for image requests and can temporarily use an added, eligible paid account to enable the tool when the native login is Free. Reload Codex once afterward. An image API can handle requests reaching the proxy when no eligible subscription exists, but cannot enable a tool that the Free client has disabled. Plan/model access rejections before output can try another account; safety refusals are not retried through alternatives.
 
 ### Why does Codex show a subscription sign-in when I select an API?
 

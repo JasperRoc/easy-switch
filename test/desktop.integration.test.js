@@ -240,6 +240,14 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   });
   await plus.locator('.quota.stale').waitFor(); await pro.locator('.quota-message').filter({ hasText: '额度暂不可用' }).waitFor();
   assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await page.locator('#native-images').isVisible(), false);
+  await app.evaluate(({ BrowserWindow }) => {
+    globalThis.easySwitchQuotaState.imageToolsBlocked = true;
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
+  });
+  await page.locator('#native-images').filter({ hasText: 'Free 账号无法启用' }).waitFor();
+  await page.click('#language-button'); await page.click('[data-language="en"]');
+  await page.locator('#native-images').filter({ hasText: 'Free accounts cannot enable' }).waitFor();
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await plus.locator('.reset-quota').click();
   await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();
   assert.equal(await page.locator('#reset-confirm').isDisabled(), true, 'a card must be chosen explicitly');

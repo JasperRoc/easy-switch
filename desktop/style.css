@@ -166,7 +166,7 @@ button.effort-option[aria-checked="true"] {color:var(--accent);border-color:colo
 .provider.dragging {opacity:.45;}
 button.delete-provider {color:var(--muted);width:30px;height:30px;padding:7px;background:transparent;border:0;box-shadow:none;}
 button.delete-provider:hover {color:#e54d59;background:rgba(232,80,98,.08);}
-.client-picker {display:flex;align-items:center;gap:7px;margin-bottom:15px;}
+.client-picker {display:flex;align-items:center;gap:7px;padding-top:6px;margin-bottom:15px;}
 .client-picker button {padding:7px 15px;border-radius:12px;}
 .client-picker button[aria-pressed="true"] {background:var(--notice);border-color:var(--accent);}
 .client-picker .help {margin:0 0 0 6px;font-size:11px;}

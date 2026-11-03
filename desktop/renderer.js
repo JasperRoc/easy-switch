@@ -212,9 +212,9 @@ function refresh(nextState) {
     $('current-model').textContent = customized ? t('sessionSummary', { count: customized }) : state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
-    $('native-images').hidden = !state.imageTools;
+    $('native-images').hidden = !state.imageTools && !state.imageToolsBlocked;
     const selected = state.providers.find(provider => provider.active);
-    $('native-images').textContent = t('nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });
+    $('native-images').textContent = t(state.imageToolsBlocked ? 'freeImagesHelp' : 'nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;

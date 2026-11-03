@@ -42,6 +42,29 @@ test('desktop preserves native subscription tools and leaves native auth untouch
   await runtime.stop();
   assert.equal(fs.readFileSync(authFile, 'utf8'), auth); assert.equal(fs.readFileSync(file, 'utf8'), original);
 });
+test('a Free native login borrows a paid tool identity on startup or when added later, then restores the Free login', async t => {
+  for (const later of [false, true]) {
+    const { runtime, codexHome, root } = await setup(t); init(root);
+    const auth = plan => ({ tokens: { access_token: plan, id_token: 'fixture.' + Buffer.from(JSON.stringify({ sub: plan, 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })).toString('base64url') + '.fixture', account_id: plan } });
+    const authFile = path.join(codexHome, 'auth.json'); atomic(authFile, auth('free'));
+    const original = fs.readFileSync(authFile, 'utf8');
+    const freeHome = path.join(root, 'accounts', 'free'); atomic(path.join(freeHome, 'auth.json'), auth('free'));
+    addProvider('free', { type: 'account', accountHome: freeHome }, root);
+    const addPaid = () => {
+      const accountHome = path.join(root, 'accounts', 'paid'); atomic(path.join(accountHome, 'auth.json'), auth('plus'));
+      addProvider('paid', { type: 'account', accountHome }, root);
+    };
+    if (!later) addPaid();
+    await runtime.start();
+    if (later) { assert.equal(runtime.imageTools, false); addPaid(); runtime.syncTools(); }
+    assert.equal(JSON.parse(fs.readFileSync(authFile)).tokens.account_id, 'plus');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).active, 'free');
+    assert.equal(runtime.imageTools, true);
+    removeProvider('paid', root); runtime.syncTools();
+    assert.equal(fs.readFileSync(authFile, 'utf8'), original); assert.equal(runtime.imageTools, false);
+    await runtime.stop(); assert.equal(fs.readFileSync(authFile, 'utf8'), original);
+  }
+});
 test('an easy-switch subscription enables native images over an original API/keyring login and restores both', async t => {
   const { runtime, codexHome, file, original } = await setup(t, 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\nmodel="original"\n[features]\nimage_generation=false\nshell_tool=true\n');
   const authFile = path.join(codexHome, 'auth.json'), oldAuth = '{"auth_mode":"apikey","OPENAI_API_KEY":"original-api"}\n';

@@ -5,6 +5,7 @@ import { createReauth, expired } from '../src/auth.js';
 import { codexModels, discoverModels, discoverClaudeModels } from '../src/catalog.js';
 import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin } from '../src/claude-auth.js';
 import { randomUUID } from 'node:crypto';
+import { imageEligible } from '../src/images.js';
 import { saveNetwork, networkEnvironment } from '../src/network.js';
 import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
 import { DesktopRuntime, protectDirectory } from './runtime.js';
@@ -82,11 +83,12 @@ export class DesktopController {
   snapshot({ usage: includeUsage = true, sessions: includeSessions = true } = {}) {
     const client = this.client, state = init(this.providerRoot);
     const usage = client === 'codex' && this.runtime.active && includeUsage ? this.usage.snapshot(state) : {};
+    let freeImages = false;
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
       let needsLogin = false;
       if (provider.type === 'account') {
-        try { const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider); needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth); }
+        try { const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider); needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth); if (client === 'codex' && !imageEligible(auth)) freeImages = true; }
         catch { needsLogin = true; }
       }
       return { alias, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null };
@@ -96,7 +98,7 @@ export class DesktopController {
     const login = this.currentLogin;
     return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: client === 'claude' && state.modelSelectionAlias && state.modelSelectionAlias !== state.active ? null : state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences: this.preferences() };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences: this.preferences() };
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }

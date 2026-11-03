@@ -1,6 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverable, rejectionText, atCapacity, capacityDelay } from '../src/failover.js';
+import { recoverable, rejectionText, atCapacity, capacityDelay, modelUnavailable } from '../src/failover.js';
+test('model access classification requires explicit model errors and never treats safety, parameters or capacity as access failures', () => {
+  for (const message of [
+    '{"error":{"code":"model_not_found","message":"The requested model does not exist or you do not have access to it."}}',
+    '{"detail":"The gpt-example model is not supported when using Codex with a ChatGPT account."}',
+    '{"error":{"type":"permission_error","message":"You do not have access to the requested model."}}',
+    '当前账号无权限使用此模型', '该模型不支持当前套餐',
+  ]) for (const status of [400, 403, 404]) assert.equal(modelUnavailable(status, message), true, message);
+  for (const message of [
+    'access denied', 'invalid effort parameter', 'unsupported image size', 'context window exceeded',
+    '{"error":{"code":"content_policy_violation","message":"This model is not available for this content."}}',
+    '{"error":{"code":"invalid_request_error","message":"invalid temperature"},"input":"model not found"}',
+    'Selected model is at capacity. Please try a different model.',
+  ]) assert.equal(modelUnavailable(400, message), false, message);
+  assert.equal(modelUnavailable(503, 'model not found'), false);
+});
 test('capacity classification is explicit and Retry-After respects backoff and HTTP dates', () => {
   for (const text of ['Selected model is at capacity. Please try a different model.', '{"error":{"code":"server_overloaded"}}', '{"response":{"error":{"code":"model_at_capacity"}}}']) assert.equal(atCapacity(text), true);
   for (const text of ['invalid image', 'context window exceeded', 'internal server error', '{"error":{"code":"invalid_request","message":"denied"},"input":"Selected model is at capacity"}']) assert.equal(atCapacity(text), false);

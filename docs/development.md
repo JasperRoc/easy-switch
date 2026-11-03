@@ -77,6 +77,8 @@ This checks image checksums, mounts each image read-only without opening Finder,
 
 The editable logo lives in `desktop/assets/icon.svg`. Run `npm run desktop:icons` to render packager PNGs and the macOS template icon at 1×/2×. The background tile has standard transparent padding, so its visual size fits other macOS icons. `desktop/i18n.js` holds paired English/Chinese strings used by both the renderer and main-process tray menus. Theme and language preferences live in `desktop.json`; appearance tests verify live changes and restart persistence.
 
+The Windows NSIS wizard uses that same approved logo, a pale ocean sidebar and a matching white header. `npm run desktop:installer-assets` regenerates its 24-bit BMP artwork from `scripts/installer-assets.cjs`; the Windows build runs it automatically. `desktop/assets/installer.nsh` sets Segoe UI typography and paired English/Simplified Chinese welcome/finish copy. Installer language follows Windows. Silent in-app updates skip the welcome page. Installation alone does not activate routing or enable startup at login.
+
 Run real Electron integration tests after preparing the native helper:
 
 ```bash

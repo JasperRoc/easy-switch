@@ -5,13 +5,14 @@ import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readState, accountAuth, activateFallback } from './store.js';
 import { createReauth, expired } from './auth.js';
-import { alternate, recoverable, rejectionText, atCapacity, capacityDelay } from './failover.js';
+import { alternate, recoverable, rejectionText, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
 import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
 import { SessionTracker, selectedModel } from './sessions.js';
 import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
+import { imageEligible, imageUnavailable } from './images.js';
 
 function authorized(req, token) {
   // Native subscription auth replaces Authorization inside Codex. The dedicated
@@ -86,7 +87,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, sessions: claudeSessions, reauth: claudeReauth });
-  const cooldown = new Map(), imageCooldown = new Map();
+  const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
     if (req.url.startsWith('/claude/')) return claude(req, res);
@@ -115,7 +116,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       session = image ? null : sessions.begin(req.headers, payload);
       if (session) res.once('close', session.finish);
       if (manualGeneration !== (state.manualGeneration || 0)) {
-        cooldown.clear(); imageCooldown.clear(); manualGeneration = state.manualGeneration || 0;
+        cooldown.clear(); imageCooldown.clear(); modelCooldown.clear(); manualGeneration = state.manualGeneration || 0;
       }
       if (!image) {
         if (Array.isArray(payload.input)) payload.input = payload.input.filter(i => i.type !== 'reasoning');
@@ -124,14 +125,28 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         payload.stream = true;
       }
       const modelSelection = selectedModel(state, session?.id);
+      const requestedModel = modelSelection?.model || payload?.model;
+      const modelKey = alias => JSON.stringify([requestedModel, alias]);
+      for (const [key, until] of modelCooldown) if (until <= now()) modelCooldown.delete(key);
       let alias = state.active;
-      const accountsOnly = image && Object.values(state.providers).some(provider => provider.type === 'account');
-      const accepts = provider => !!provider && (!accountsOnly || provider.type === 'account');
-      const cooling = image ? imageCooldown : cooldown;
-      if (accountsOnly) {
+      let modelRouting = false, rejectedModel;
+      const imageAccount = provider => {
+        if (provider?.type !== 'account') return false;
+        try { return imageEligible(accountAuth(provider)); } catch { return true; }
+      };
+      const accountsOnly = image && Object.values(state.providers).some(imageAccount);
+      const accepts = provider => !!provider && (!image || imageAccount(provider) || !accountsOnly && provider.type === 'api');
+      const cooling = image ? imageCooldown : new Map(Object.keys(state.providers).map(name => [name, Math.max(cooldown.get(name) || 0, modelCooldown.get(modelKey(name)) || 0)]));
+      if (!image && (modelCooldown.get(modelKey(alias)) || 0) > now()) {
+        modelRouting = true; rejectedModel = requestedModel;
+        alias = alternate(state, null, cooling, now());
+        if (!alias) return error(res, 400, '已配置的服务商暂无法使用此模型；请添加有权限的服务商或选择其他模型。');
+      }
+      if (accountsOnly || image && !accepts(state.providers[alias])) {
         const first = alternate(state, null, cooling, now(), new Set(), accepts);
         if (!first) {
-          const account = Object.values(state.providers).find(provider => provider.type === 'account');
+          const account = Object.values(state.providers).find(imageAccount);
+          if (!account) return error(res, 403, 'Free 账号不支持 Codex 图片生成；请添加有图片权限的付费账号或图片 API。');
           let valid = false;
           try { valid = !expired(accountAuth(account)); } catch {}
           return valid ? error(res, 429, '订阅图片生成暂不可用，请稍后重试') : error(res, 401, await reauth.prompt(account));
@@ -164,6 +179,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (!image) {
           if (provider.model) outgoing.model = provider.model;
           outgoing = applyModel(outgoing, modelSelection);
+          if (rejectedModel) outgoing.model = rejectedModel;
         }
         session?.used(alias, outgoing);
         const upstream = await fetchImpl(url, {
@@ -177,20 +193,34 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           startup = await inspectStartup(stream); stream = startup.stream;
         }
         const capacity = !upstream.ok ? atCapacity(message) : startup?.capacity;
-        if (!upstream.ok || capacity) {
-          const status = capacity ? 503 : upstream.status;
-          if (capacity || recoverable(status, message)) {
+        const imageDenied = image && imageUnavailable(upstream.ok && startup?.error ? 403 : upstream.status, message || JSON.stringify(startup?.error));
+        const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
+        if (!upstream.ok || capacity || imageDenied || modelDenied) {
+          const status = capacity ? 503 : !upstream.ok ? upstream.status : imageDenied ? 403 : 400;
+          if (capacity || recoverable(status, message) || imageDenied || modelDenied) {
+            if (modelDenied) {
+              modelRouting = true; rejectedModel ??= outgoing.model;
+              modelCooldown.set(modelKey(alias), now() + 60000);
+              if (modelCooldown.size > 256) modelCooldown.delete(modelCooldown.keys().next().value);
+            } else (image ? imageCooldown : cooldown).set(alias, now() + 60000);
             cooling.set(alias, now() + 60000);
-            const next = attempt + 1 < maxAttempts && !abort.signal.aborted && alternate(state, alias, cooling, now(), attempted, accepts);
+            let next = attempt + 1 < maxAttempts && !abort.signal.aborted && alternate(state, alias, cooling, now(), attempted, accepts);
+            if (modelRouting) {
+              const current = readState(root);
+              if (current.generation !== state.generation) {
+                state = current;
+                next = attempt + 1 < maxAttempts && !abort.signal.aborted && current.active !== alias && !attempted.has(current.active) && accepts(current.providers[current.active]) ? current.active : null;
+              }
+            }
             let selected = false;
             // Compare generations so a late rejection cannot overwrite a manual choice.
-            if (next && !image) {
+            if (next && !image && !modelRouting) {
               try { selected = activateFallback(next, state.generation || 0, alias, status, root); }
               catch { /* do not override a concurrent configuration writer */ }
             }
-            if (next && (image || selected)) {
+            if (next && (image || modelRouting || selected)) {
               await stream?.cancel();
-              if (!image) state = { ...state, active: next, generation: (state.generation || 0) + 1 };
+              if (!image && !modelRouting) state = { ...state, active: next, generation: (state.generation || 0) + 1 };
               alias = next; continue;
             }
             const latest = readState(root);
@@ -216,6 +246,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             await pipeline(Readable.fromWeb(stream), res); return;
           }
           if (upstream.status === 401 && provider.type === 'account') return error(res, 401, await reauth.prompt(provider));
+          if (imageDenied) return error(res, status, `图片上游 ${alias} 不具备当前图片模型的使用权限；请添加有图片权限的付费账号或图片 API。`);
+          if (modelDenied) { await stream?.cancel(); return error(res, status, `备用服务商均无法使用模型 ${outgoing.model}；请添加有权限的服务商或选择其他模型。`); }
           return error(res, upstream.status, `上游 ${alias} 返回 HTTP ${upstream.status}`);
         }
         if (image && !stream && !/^application\/json(?:;|$)/i.test(upstream.headers.get('content-type') || '')) {

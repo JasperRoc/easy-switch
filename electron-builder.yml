@@ -38,6 +38,13 @@ win:
       to: codex
 nsis:
   oneClick: false
+  include: desktop/assets/installer.nsh
+  installerSidebar: desktop/assets/installerSidebar.bmp
+  uninstallerSidebar: desktop/assets/installerSidebar.bmp
+  installerHeader: desktop/assets/installerHeader.bmp
+  installerLanguages:
+    - en_US
+    - zh_CN
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
