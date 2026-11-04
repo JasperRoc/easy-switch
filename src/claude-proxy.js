@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { init, readState, providerOrder, activateFallback } from './store.js';
 import { claudeToken } from './claude-auth.js';
-import { rejectionText, recoverable, atCapacity } from './failover.js';
+import { rejectionText, rejectionStatus, recoverable, atCapacity } from './failover.js';
 import { inspectStartup } from './sse.js';
 import { selectedModel } from './sessions.js';
 
@@ -78,10 +78,10 @@ export function createClaudeHandler({ root, fetchImpl, sessions, reauth = () => 
           startup = await inspectStartup(upstream.body, ['ping', 'message_start']); stream = startup.stream;
         }
         const capacity = startup?.capacity || atCapacity(message);
-        const streamStatus = { rate_limit_error: 429, authentication_error: 401, overloaded_error: 503 }[startup?.error?.type];
+        const streamStatus = rejectionStatus(startup?.error);
         if (!upstream.ok || capacity || streamStatus) {
           const status = capacity ? 503 : streamStatus || upstream.status;
-          if (!models && (recoverable(status, message) || capacity)) {
+          if (!models && (recoverable(status, message || JSON.stringify(startup?.error)) || capacity)) {
             cooldown.set(alias, now() + 60000);
             const latest = readState(root);
             // Honor a manual switch that occurred while this request was rejected.

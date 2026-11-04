@@ -41,7 +41,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     requests.push({ label, body, authorization: req.headers.authorization, accountID: req.headers['chatgpt-account-id'] });
     if (label === 'A' && rejectA) {
       res.writeHead(403, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ error: { message: 'insufficient quota' } }));
+      return res.end(JSON.stringify({ error: { message: 'Forbidden' } }));
     }
     const id = `resp_${label}`;
     const item = { id: `msg_${label}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: `reply ${label}`, annotations: [] }] };

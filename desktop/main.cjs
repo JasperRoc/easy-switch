@@ -7,6 +7,7 @@ const { trayIdentity, trayImage, menuBarHidden, bindTrayActions } = require('./t
 const { desktopActivity } = require('./activity.cjs');
 
 const root = path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
+if (process.platform === 'win32') app.setAppUserModelId('io.github.jasperroc.easy-switch');
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
@@ -26,7 +27,7 @@ function showWindow(tab) {
 function report(error) {
   startupError = error.message || String(error);
   window?.webContents.send('easy-switch:changed');
-  dialog.showErrorBox('easy-switch', startupError);
+  dialog.showErrorBox(`easy-switch ${app.getVersion()}`, startupError);
 }
 function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details, sessions: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
 function updateTray(state = snapshot(false)) {
@@ -92,7 +93,9 @@ async function boot() {
     changed: () => { if (activity?.visible()) refreshDesktop(true); } });
   uiLanguage = i18n.normalizeLanguage(controller.preferences().language || app.getLocale());
   nativeTheme.themeSource = controller.preferences().theme || 'system';
-  window = new BrowserWindow({ width: 960, height: 780, minWidth: 780, minHeight: 680, show: false, backgroundColor: process.platform === 'darwin' ? '#00000000' : '#f2f2f6', title: 'easy-switch',
+  const applicationIcon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
+  app.dock?.setIcon(applicationIcon);
+  window = new BrowserWindow({ width: 960, height: 780, minWidth: 780, minHeight: 680, show: false, icon: applicationIcon, backgroundColor: process.platform === 'darwin' ? '#00000000' : '#f2f2f6', title: 'easy-switch',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 22, y: 18 }, vibrancy: 'under-window', visualEffectState: 'active' } : {}),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

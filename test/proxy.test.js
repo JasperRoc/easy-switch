@@ -197,8 +197,8 @@ test('quota rejection transparently retries subscription, preserves input, isola
   assert.match(calls[2].url, /chatgpt.com/);
 });
 
-test('ordinary forbidden, server errors and transport failures never switch', async t => {
-  for (const status of [403, 400, 500, 502, 0]) {
+test('validation, server errors and transport failures never switch', async t => {
+  for (const status of [400, 500, 502, 0]) {
     const { root, token } = fixture(t);
     for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
     let calls = 0;
@@ -210,6 +210,49 @@ test('ordinary forbidden, server errors and transport failures never switch', as
     const response = await send(proxy, token); await response.text();
     assert.equal(calls, 1);
     assert.equal(readState(root).active, 'a');
+  }
+});
+test('generic provider 403 tries a subscription with the same history; policy restrictions and accepted output are not replayed', async t => {
+  for (const style of ['http', 'sse', 'policy', 'region', 'accepted']) {
+    const { root, token } = fixture(t), calls = [];
+    addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-api' }, root);
+    const accountHome = path.join(root, 'accounts', 'backup');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-account', account_id: 'backup-id' } });
+    addProvider('backup', { type: 'account', accountHome }, root);
+    const accepted = 'data: {"type":"response.output_text.delta","delta":"accepted"}\n\n';
+    const event = 'data: {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}\n\n';
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      calls.push({ url, ...options });
+      if (calls.length > 1) return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      if (style === 'sse' || style === 'accepted') return new Response((style === 'accepted' ? accepted : '') + event, { headers: { 'content-type': 'text/event-stream' } });
+      return Response.json({ error: { message: style === 'policy' ? 'content_policy_violation' : style === 'region' ? 'unsupported_country_region_territory' : 'Forbidden private-api' } }, { status: 403 });
+    } }));
+    const response = await send(proxy, token), output = await response.text();
+    const retry = ['http', 'sse'].includes(style);
+    assert.equal(response.status, retry || style === 'accepted' ? 200 : 403);
+    assert.equal(calls.length, retry ? 2 : 1);
+    assert.equal(readState(root).active, retry ? 'backup' : 'aos');
+    if (retry) {
+      assert.equal(calls[1].headers.authorization, 'Bearer private-account');
+      assert.deepEqual(JSON.parse(calls[1].body).input, payload.input);
+      assert.equal(JSON.parse(calls[1].body).model, payload.model);
+    }
+    assert.doesNotMatch(output, /private-api|private-account/);
+  }
+});
+test('an expired or unreadable preferred subscription uses its backup before asking for sign-in', async t => {
+  for (const unavailable of ['expired', 'missing']) {
+    const { root, token } = fixture(t), accountHome = path.join(root, 'accounts', 'first');
+    if (unavailable === 'expired') atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture.' + Buffer.from('{"exp":1}').toString('base64url') + '.fixture', account_id: 'id' } });
+    addProvider('first', { type: 'account', accountHome }, root);
+    addProvider('backup', { type: 'api', baseUrl: 'https://backup.example/v1', apiKey: 'backup-key' }, root);
+    let logins = 0, calls = 0;
+    const proxy = await listen(t, createProxy({ root, reauth: { prompt() { logins++; return 'sign in'; }, close() {} }, fetchImpl: async (url, options) => {
+      calls++; assert.equal(url, 'https://backup.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer backup-key');
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal(logins, 0); assert.equal(readState(root).active, 'backup');
   }
 });
 

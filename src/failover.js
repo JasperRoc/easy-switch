@@ -3,8 +3,19 @@ import { accountAuth, providerOrder } from './store.js';
 import { expired } from './auth.js';
 
 export function recoverable(status, message = '') {
+  try {
+    const data = JSON.parse(message), failure = data.response?.error || data.error || data;
+    message = typeof failure === 'string' ? failure : [failure.code, failure.type, failure.message, data.detail].filter(value => typeof value === 'string').join(' ');
+  } catch {}
+  if (/content[_ -]?(?:policy|filter)|safety|moderation|refusal|refused|unsupported_country|(?:country|region|territory).*(?:not supported|not allowed)|(?:organization|workspace|admin|security) policy|内容安全|内容政策|地区.{0,20}不支持/i.test(message)) return false;
   if ([401, 402, 429].includes(status)) return true;
-  return status === 403 && /额度不足|余额不足|配额(?:不足|已耗尽)|insufficient[ _](?:quota|balance|credits)|quota (?:exceeded|exhausted)/i.test(message);
+  return status === 403;
+}
+export function rejectionStatus(error) {
+  const status = Number(error?.status || error?.status_code);
+  if ([401, 402, 403, 429].includes(status)) return status;
+  const statuses = { __proto__: null, authentication_error: 401, invalid_api_key: 401, permission_error: 403, forbidden: 403, access_denied: 403, rate_limit_error: 429 };
+  return statuses[error?.code] || statuses[error?.type];
 }
 export function modelUnavailable(status, message = '') {
   if (![400, 403, 404, 422].includes(status)) return false;

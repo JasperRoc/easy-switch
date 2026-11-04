@@ -31,7 +31,7 @@ export async function inspectStartup(stream, preamble = ['response.created', 're
         if (event?.response?.output?.length) return { stream: passthrough() };
         if (event?.message?.content?.length) return { stream: passthrough() };
         if (['error', 'response.failed'].includes(type)) {
-          return { stream: passthrough(), capacity: atCapacity(data), error: event.error || event.response?.error };
+          return { stream: passthrough(), capacity: atCapacity(data), error: event.error || event.response?.error || event };
         }
         if (!preamble.includes(type)) return { stream: passthrough() };
       }

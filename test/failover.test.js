@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverable, rejectionText, atCapacity, capacityDelay, modelUnavailable } from '../src/failover.js';
+import { recoverable, rejectionText, rejectionStatus, atCapacity, capacityDelay, modelUnavailable } from '../src/failover.js';
 test('model access classification requires explicit model errors and never treats safety, parameters or capacity as access failures', () => {
   for (const message of [
     '{"error":{"code":"model_not_found","message":"The requested model does not exist or you do not have access to it."}}',
@@ -23,10 +23,16 @@ test('capacity classification is explicit and Retry-After respects backoff and H
   assert.equal(capacityDelay('10', 0), 10000);
   assert.equal(capacityDelay('Thu, 01 Jan 1970 00:00:15 GMT', 1, 0), 15000);
 });
-test('server policy allows only explicit authorization/quota rejections', () => {
+test('server policy retries provider-level access failures but preserves explicit safety and region restrictions', () => {
   for (const status of [401,402,429]) assert.equal(recoverable(status), true);
-  for (const text of ['团队 今日额度不足', 'insufficient_quota', 'quota exhausted', '余额不足']) assert.equal(recoverable(403, text), true);
-  for (const status of [400,403,408,500,503]) assert.equal(recoverable(status, 'access denied'), false);
+  for (const text of ['', 'Forbidden: access denied', '<html>403 Forbidden</html>', '团队 今日额度不足', 'insufficient_quota', 'quota exhausted', '余额不足']) assert.equal(recoverable(403, text), true);
+  for (const text of ['{"error":{"code":"content_policy_violation","message":"denied"}}', '{"error":"content_policy_violation"}', 'refused for safety', 'unsupported_country_region_territory', 'organization policy denied access', '违反内容安全政策']) assert.equal(recoverable(403, text), false);
+  assert.equal(recoverable(403, '{"error":{"message":"Forbidden"},"input":"safety policy"}'), true);
+  for (const status of [400,408,500,503]) assert.equal(recoverable(status, 'access denied'), false);
+  assert.equal(rejectionStatus({ status: '403' }), 403);
+  assert.equal(rejectionStatus({ type: 'permission_error' }), 403);
+  assert.equal(rejectionStatus({ code: '__proto__' }), undefined);
+  assert.equal(rejectionStatus({ code: 'invalid_request_error' }), undefined);
 });
 test('error classification reads no more than 64 KiB and cancels remaining body', async () => {
   let cancelled = false;

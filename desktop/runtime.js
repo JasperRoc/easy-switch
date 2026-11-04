@@ -10,14 +10,28 @@ import { createProxy } from '../src/proxy.js';
 import { CodexSessions } from './codex-sessions.js';
 import { activateSession, restoreSession, syncSession } from './config.js';
 
-export function protectDirectory(root) {
+export function protectDirectory(root, { platform = process.platform, run = spawnSync } = {}) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') { fs.chmodSync(root, 0o700); return; }
-  const identity = spawnSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+  if (platform !== 'win32') { fs.chmodSync(root, 0o700); return; }
+  const identity = run('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
   const sid = identity.stdout?.match(/S-1-5-[\d-]+/)?.[0];
   if (!sid) throw new Error('Unable to determine the Windows account SID.');
-  const acl = spawnSync('icacls', [root, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F', '/T', '/Q'], { encoding: 'utf8', windowsHide: true });
-  if (acl.error || acl.status !== 0) throw new Error('Unable to protect the credentials directory with Windows ACLs.');
+  // Grant access before removing inheritance. Children inherit the protected root;
+  // do not repeatedly remove their own inheritance, including Electron profile files.
+  for (const args of [[root, '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F', '/Q'], [root, '/inheritance:r', '/Q']]) {
+    const acl = run('icacls', args, { encoding: 'utf8', windowsHide: true });
+    if (acl.error || acl.status !== 0) throw new Error('Unable to protect the credentials directory with Windows ACLs.');
+  }
+}
+export function repairPreferencesAccess(file, { platform = process.platform, run = spawnSync } = {}) {
+  if (platform !== 'win32') return 'not-windows';
+  try {
+    const script = fs.readFileSync(new URL('./preferences-access.ps1', import.meta.url), 'utf8');
+    const command = `& {${script}} -PreferenceFile ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(file).toString('base64')}')))`;
+    const result = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    const outcome = result.stdout?.trim();
+    return !result.error && result.status === 0 && ['repaired', 'already-granted', 'different-owner', 'explicit-deny', 'unsupported-file'].includes(outcome) ? outcome : 'failed';
+  } catch { return 'failed'; }
 }
 
 export class DesktopRuntime {

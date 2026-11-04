@@ -93,6 +93,22 @@ test('a later preference read failure keeps the current client and appearance un
   assert.equal(controller.snapshot().client, 'claude');
   assert.equal(controller.snapshot().preferencesError, 'EPERM');
 });
+test('desktop preferences retry once after a narrow access repair without changing file contents', t => {
+  const controller = setup(t);
+  controller.setPreferences({ language: 'zh-CN', theme: 'dark' });
+  const original = fs.readFileSync(controller.preferencesFile, 'utf8'), read = fs.readFileSync;
+  let blocked = true, attempts = 0;
+  t.mock.method(fs, 'readFileSync', function(file, ...args) {
+    if (file === controller.preferencesFile && blocked) throw Object.assign(new Error('Access denied'), { code: 'EPERM' });
+    return read.call(this, file, ...args);
+  });
+  controller.repairPreferences = file => { attempts++; assert.equal(file, controller.preferencesFile); blocked = false; return 'repaired'; };
+  assert.deepEqual(controller.preferences(), { language: 'zh-CN', theme: 'dark' });
+  assert.equal(attempts, 1); assert.equal(controller.preferencesError, null);
+  assert.equal(read(controller.preferencesFile, 'utf8'), original);
+  blocked = true; controller.preferences(); controller.preferences(); assert.equal(attempts, 1);
+  assert.equal(controller.preferencesError, 'EPERM');
+});
 test('desktop applies a model only to the explicitly selected observed session', t => {
   const controller = setup(t); controller.addAPI({ alias: 'api', key: 'fixture' });
   const thread = codexThread(controller.codexHome, 'session-a', 'Fix a bug');

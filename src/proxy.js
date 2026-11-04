@@ -5,7 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readState, accountAuth, activateFallback } from './store.js';
 import { createReauth, expired } from './auth.js';
-import { alternate, recoverable, rejectionText, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
+import { alternate, recoverable, rejectionText, rejectionStatus, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
 import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
@@ -161,13 +161,14 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         const provider = state.providers[alias];
         const headers = { 'content-type': image ? contentType : 'application/json', accept: image ? 'application/json' : 'text/event-stream' };
         let outgoing = { ...payload }; // Never carry an API's model override into the fallback.
-        let url;
+        let url, credentialsUnavailable = false;
         if (provider.type === 'account') {
           let auth;
-          try { auth = accountAuth(provider); } catch { return error(res, 401, await reauth.prompt(provider)); }
-          if (expired(auth)) return error(res, 401, await reauth.prompt(provider));
-          headers.authorization = `Bearer ${auth.tokens.access_token}`;
-          headers['ChatGPT-Account-ID'] = auth.tokens.account_id;
+          try { auth = accountAuth(provider); credentialsUnavailable = expired(auth); } catch { credentialsUnavailable = true; }
+          if (!credentialsUnavailable) {
+            headers.authorization = `Bearer ${auth.tokens.access_token}`;
+            headers['ChatGPT-Account-ID'] = auth.tokens.account_id;
+          }
           headers.originator = 'codex_cli_rs';
           headers['OpenAI-Beta'] = 'responses=experimental';
           url = 'https://chatgpt.com/backend-api/codex' + req.url.slice(3);
@@ -182,7 +183,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           if (rejectedModel) outgoing.model = rejectedModel;
         }
         session?.used(alias, outgoing);
-        const upstream = await fetchImpl(url, {
+        const upstream = credentialsUnavailable ? new Response('', { status: 401 }) : await fetchImpl(url, {
           method: 'POST', headers, body: image ? raw : JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
         });
         let stream, startup, message = '';
@@ -193,11 +194,13 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           startup = await inspectStartup(stream); stream = startup.stream;
         }
         const capacity = !upstream.ok ? atCapacity(message) : startup?.capacity;
+        const streamStatus = rejectionStatus(startup?.error);
+        const failureMessage = message || JSON.stringify(startup?.error);
         const imageDenied = image && imageUnavailable(upstream.ok && startup?.error ? 403 : upstream.status, message || JSON.stringify(startup?.error));
         const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
-        if (!upstream.ok || capacity || imageDenied || modelDenied) {
-          const status = capacity ? 503 : !upstream.ok ? upstream.status : imageDenied ? 403 : 400;
-          if (capacity || recoverable(status, message) || imageDenied || modelDenied) {
+        if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied) {
+          const status = capacity ? 503 : !upstream.ok ? upstream.status : streamStatus || (imageDenied ? 403 : 400);
+          if (capacity || recoverable(status, failureMessage) || imageDenied || modelDenied) {
             if (modelDenied) {
               modelRouting = true; rejectedModel ??= outgoing.model;
               modelCooldown.set(modelKey(alias), now() + 60000);
@@ -245,10 +248,11 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-switch-alias': alias });
             await pipeline(Readable.fromWeb(stream), res); return;
           }
-          if (upstream.status === 401 && provider.type === 'account') return error(res, 401, await reauth.prompt(provider));
+          if (status === 401 && provider.type === 'account') { await stream?.cancel(); return error(res, 401, await reauth.prompt(provider)); }
           if (imageDenied) return error(res, status, `图片上游 ${alias} 不具备当前图片模型的使用权限；请添加有图片权限的付费账号或图片 API。`);
           if (modelDenied) { await stream?.cancel(); return error(res, status, `备用服务商均无法使用模型 ${outgoing.model}；请添加有权限的服务商或选择其他模型。`); }
-          return error(res, upstream.status, `上游 ${alias} 返回 HTTP ${upstream.status}`);
+          await stream?.cancel();
+          return error(res, status, `上游 ${alias} 返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}${status === 403 ? recoverable(status, failureMessage) ? '；没有可用的备用服务商，请检查备用登录、额度或冷却状态' : '；上游明确拒绝此请求，未通过其他服务商重试' : ''}`);
         }
         if (image && !stream && !/^application\/json(?:;|$)/i.test(upstream.headers.get('content-type') || '')) {
           await upstream.body?.cancel(); return error(res, 502, '上游未返回图片 JSON 响应');

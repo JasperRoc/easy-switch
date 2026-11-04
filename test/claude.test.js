@@ -159,6 +159,22 @@ test('Claude startup SSE quota errors fail over, while concurrent queue edits ca
     assert.equal(readState(claude).active, removed ? 'a' : 'b');
   }
 });
+test('Claude provider-level forbidden errors try the next provider before output, while content policy remains final', async t => {
+  for (const style of ['http', 'sse', 'policy']) {
+    const root = fixture(t), claude = path.join(root, 'claude'), token = readState(claude).token;
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.test`, apiKey: alias }, claude);
+    const calls = [];
+    const url = await proxy(t, root, { fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (calls.length > 1) return new Response(sse, { headers: { 'content-type': 'text/event-stream' } });
+      const error = { type: 'permission_error', message: style === 'policy' ? 'content_policy_violation' : 'Forbidden' };
+      return style === 'sse' ? new Response(`event: error\ndata: ${JSON.stringify({ type: 'error', error })}\n\n`, { headers: { 'content-type': 'text/event-stream' } }) : Response.json({ error }, { status: 403 });
+    } });
+    const response = await request(url, token); await response.text();
+    assert.equal(response.status, style === 'policy' ? 403 : 200); assert.equal(calls.length, style === 'policy' ? 1 : 2);
+    if (calls.length === 2) assert.deepEqual(JSON.parse(calls[0].options.body), JSON.parse(calls[1].options.body));
+  }
+});
 
 test('Claude API settings and model choices stay separate from Codex in the desktop controller', async t => {
   const root = fixture(t), controller = new DesktopController({ root, codexHome: path.join(root, 'codex'), claudeHome: path.join(root, 'claude-home'), binary: 'unused', port: 0 });

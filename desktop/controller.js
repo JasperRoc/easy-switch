@@ -8,13 +8,13 @@ import { randomUUID } from 'node:crypto';
 import { imageEligible } from '../src/images.js';
 import { saveNetwork, networkEnvironment } from '../src/network.js';
 import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
-import { DesktopRuntime, protectDirectory } from './runtime.js';
+import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
 import { existingProvider } from './import.js';
 import { SubscriptionUsage } from './usage.js';
 import { codexResetCredits } from './reset-credits.js';
 
 export class DesktopController {
-  constructor({ root, codexHome, claudeHome = defaultClaudeHome(), binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits }) {
+  constructor({ root, codexHome, claudeHome = defaultClaudeHome(), binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits, repairPreferences = repairPreferencesAccess }) {
     Object.assign(this, { root, codexHome, binary });
     this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
     protectDirectory(root);
@@ -27,6 +27,7 @@ export class DesktopController {
       claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}) });
     this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
     this.preferencesFile = path.join(root, 'desktop.json');
+    this.repairPreferences = repairPreferences;
     this.resetRequest = resetRequest; this.resetPending = new Map();
   }
   get client() { return this.preferences().client || 'codex'; }
@@ -44,6 +45,10 @@ export class DesktopController {
     } catch (error) {
       if (error.code === 'ENOENT') { this.preferencesError = null; this.lastPreferences = {}; return {}; }
       if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+      if (!this.preferencesRecovery && ['EPERM', 'EACCES'].includes(error.code)) {
+        this.preferencesRecovery = this.repairPreferences(this.preferencesFile);
+        if (this.preferencesRecovery === 'repaired') return this.preferences();
+      }
       this.preferencesError = error.code;
       return this.lastPreferences || {};
     }
@@ -109,7 +114,7 @@ export class DesktopController {
     const login = this.currentLogin;
     return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: client === 'claude' && state.modelSelectionAlias && state.modelSelectionAlias !== state.active ? null : state.modelSelection || null,
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences, preferencesError: this.preferencesError || null };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.catalog = null; return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }
