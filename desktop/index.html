@@ -20,8 +20,8 @@
     <div id="tray-hint" class="notice" data-i18n="trayHidden" hidden></div>
     <div id="preferences-warning" class="notice" role="status" hidden></div>
     <div id="error" class="notice error" role="alert" hidden></div>
-    <section class="summary glass"><div><span class="eyebrow" data-i18n="currentProvider">CURRENT PROVIDER</span><strong id="current-provider">—</strong></div><div><span class="eyebrow" data-i18n="currentModel">MODEL & EFFORT</span><strong id="current-model">—</strong></div><div class="route-controls"><span id="status" class="badge" role="status">Starting…</span><button id="routing-toggle" class="secondary">Stop routing</button></div></section>
-    <nav aria-label="Settings"><button data-tab="providers" class="selected" data-i18n="providers">Providers</button><button data-tab="model" data-i18n="modelTab">Model & effort</button><button data-tab="network" data-i18n="networkTab">Network</button></nav>
+    <section class="summary glass"><div><span class="eyebrow" data-i18n="currentProvider">CURRENT PROVIDER</span><strong id="current-provider">—</strong></div><div class="route-controls"><span id="status" class="badge" role="status">Starting…</span><button id="routing-toggle" class="secondary">Stop routing</button></div></section>
+    <nav aria-label="Settings"><button data-tab="providers" class="selected" data-i18n="providers">Providers</button><button data-tab="network" data-i18n="networkTab">Network</button></nav>
     <section id="providers" class="panel glass">
       <div class="section-heading"><div><h2 data-i18n="yourProviders">Your providers</h2><p data-i18n="priorityHelp"></p></div><div class="provider-actions"><button id="add-subscription" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#plus"/></svg><span data-i18n="addSubscription">Add subscription</span></button><button id="add-api" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#plus"/></svg><span data-i18n="addAPI">Add API provider</span></button></div></div>
       <button id="import-existing" class="secondary import-action"><span class="import-icon"><svg aria-hidden="true"><use href="assets/ui.svg#download"/></svg></span><span class="import-copy"><strong data-i18n="importExisting">Import existing sign-in</strong><small data-i18n="importHint">Use the Codex account saved on this computer</small></span><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button>
@@ -29,30 +29,6 @@
       <p id="native-images" class="notice" data-i18n="nativeImagesHelp" hidden></p>
       <div id="empty" class="empty" hidden><img src="assets/icon.png" width="68" height="68" alt=""><p data-i18n="empty">Add your first account or API.</p></div>
       <div id="failover" class="notice" hidden></div>
-    </section>
-    <section id="model" class="panel glass" hidden>
-      <div class="section-heading"><div><h2 data-i18n="chooseModel">A little more room to think.</h2><p data-i18n="modelHelp">Applies to your next model request.</p></div><button id="refresh-models" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span id="refresh-models-label" data-i18n="refreshCatalog">Refresh catalog</span></button></div>
-      <div class="session-heading"><span class="field-label" data-i18n="chooseSession">Choose a session</span><button id="global-model" class="link" data-i18n="globalDefault">Global default</button></div>
-      <div id="session-list" class="session-list" role="group" data-i18n-aria="chooseSession"></div>
-      <p id="sessions-empty" class="help" data-i18n="sessionsEmpty"></p>
-      <p id="sessions-unavailable" class="help" data-i18n="sessionsUnavailable" hidden></p>
-      <p id="model-target" class="model-target" role="status"></p>
-      <p id="model-notice" class="notice" data-i18n="loadCatalog">Load the catalog to choose a model.</p>
-      <p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p>
-      <form id="model-form">
-        <div class="form-grid model-fields"><div><label for="model-picker" class="field-label" data-i18n="model">Model</label>
-        <div class="model-picker">
-          <button type="button" id="model-picker" class="secondary picker-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-menu"><span><strong id="model-picker-label"></strong><small id="model-picker-id"></small></span><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></button>
-          <div id="model-menu" class="picker-menu glass" hidden><input id="model-search" type="search" role="combobox" aria-expanded="true" aria-controls="model-options" aria-autocomplete="list" data-i18n-placeholder="searchModels" data-i18n-aria="searchModels"><div id="model-options" role="listbox" data-i18n-aria="model"></div><p id="model-empty" class="help" data-i18n="noMatchingModels" hidden></p></div>
-        </div>
-        <input id="model-select" type="hidden">
-        <details class="manual-model"><summary data-i18n="manualModel">Specify a model ID</summary><label><input id="manual-model" autocomplete="off" data-i18n-placeholder="manualModelHint"></label><p class="help" data-i18n="manualModelHelp"></p></details>
-        <p id="model-choice-help" class="help"></p>
-        </div><div><label id="effort-label" class="field-label" data-i18n="effort">Reasoning effort</label><div id="effort-options" class="effort-options" role="radiogroup" aria-labelledby="effort-label"></div><input id="effort-select" type="hidden"><p id="effort-help" class="help"></p></div></div>
-        <div class="actions"><button type="submit" id="apply-model" data-i18n="apply">Apply selection</button><button type="button" id="reset-model" class="secondary" data-i18n="followCodex">Follow Codex</button></div>
-        <p id="model-feedback" class="catalog-status" role="status" aria-live="polite" hidden></p>
-      </form>
-      <p class="help" data-i18n="modelLimits"></p>
     </section>
     <section id="network" class="panel glass" hidden>
       <h2 data-i18n="internet">Connection settings</h2><p class="help" data-i18n="internetHelp"></p>
@@ -63,7 +39,15 @@
     <div class="footnote" data-i18n="lifetime"></div>
   </main>
   <footer><label class="checkbox"><input type="checkbox" id="autostart"><span data-i18n="autoStart">Start at login</span></label><button id="star" class="icon-button" data-i18n-aria="star"><svg aria-hidden="true"><use href="assets/ui.svg#star"/></svg></button><button id="updates" class="link"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="updates">Check for updates</span><span id="update-dot" hidden></span></button><span id="version"></span></footer>
-  <dialog id="add-dialog"><form id="provider-form"><div class="section-heading"><h2 id="provider-dialog-title"></h2><button type="button" id="close-dialog" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div><label><span data-i18n="alias">Alias</span><input id="provider-alias" required maxlength="64" data-i18n-placeholder="aliasHint"></label><div id="api-fields" hidden><label><span data-i18n="baseURL">Base URL</span><input id="base-url" data-i18n-placeholder="baseHint"></label><label><span data-i18n="apiKey">API key</span><input id="api-key" type="password" autocomplete="off"></label><p id="edit-key-help" class="help" data-i18n="keepKey" hidden></p></div><p id="account-help" class="help"></p><div id="import-preview" class="notice" hidden></div><div id="login-status" class="notice login-status" hidden><strong id="login-alias"></strong><p id="login-message"></p><div class="login-code"><code id="login-code"></code><button type="button" id="open-login" data-i18n="openLogin">Open official sign-in</button></div><label id="claude-code-field" hidden><span data-i18n="authorizationCode">Authorization code</span><input id="authorization-code" autocomplete="off"></label></div><p id="dialog-error" class="notice error" role="alert" hidden></p><div class="actions"><button type="submit" id="save-provider"></button></div></form></dialog>
+  <dialog id="add-dialog"><form id="provider-form"><div class="section-heading"><h2 id="provider-dialog-title"></h2><button type="button" id="close-dialog" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div><label><span data-i18n="alias">Alias</span><input id="provider-alias" required maxlength="64" data-i18n-placeholder="aliasHint"></label><div id="api-fields" hidden><label><span data-i18n="baseURL">Base URL</span><input id="base-url" data-i18n-placeholder="baseHint"></label><label><span data-i18n="apiKey">API key</span><input id="api-key" type="password" autocomplete="off"></label><p id="edit-key-help" class="help" data-i18n="keepKey" hidden></p><details id="claude-mapping" hidden><summary data-i18n="claudeMapping">Claude model mapping</summary><label><span data-i18n="claudeMainModel">Main model ID</span><input id="claude-main-model" autocomplete="off" data-i18n-placeholder="mappingHint"></label><label><span data-i18n="claudeAgentModel">Subagent model ID</span><input id="claude-agent-model" autocomplete="off" data-i18n-placeholder="agentMappingHint"></label><p class="help" data-i18n="claudeMappingHelp"></p></details></div><p id="account-help" class="help"></p><div id="import-preview" class="notice" hidden></div><div id="login-status" class="notice login-status" hidden><strong id="login-alias"></strong><p id="login-message"></p><div class="login-code"><code id="login-code"></code><button type="button" id="open-login" data-i18n="openLogin">Open official sign-in</button></div><label id="claude-code-field" hidden><span data-i18n="authorizationCode">Authorization code</span><input id="authorization-code" autocomplete="off"></label></div><p id="dialog-error" class="notice error" role="alert" hidden></p><div class="actions"><button type="submit" id="save-provider"></button></div></form></dialog>
+  <dialog id="models-dialog" aria-labelledby="models-title">
+    <div class="section-heading"><div><span id="models-provider" class="eyebrow"></span><h2 id="models-title" data-i18n="availableModels">Available models</h2></div><button id="close-models" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <p id="models-status" class="catalog-status" role="status" aria-live="polite"></p>
+    <input id="models-search" type="search" data-i18n-placeholder="searchModels" data-i18n-aria="searchModels">
+    <div id="models-list" class="model-catalog" role="list"></div>
+    <p id="models-empty" class="help" hidden></p><p id="models-notice" class="help"></p>
+    <div class="actions"><button id="models-refresh" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="refreshCatalog">Refresh catalog</span></button></div>
+  </dialog>
   <dialog id="update-dialog" aria-labelledby="update-title">
     <div class="update-top"><span class="eyebrow" id="update-current"></span><button id="close-update" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
     <div class="update-hero"><span id="update-emblem" class="update-emblem"><svg aria-hidden="true"><use id="update-symbol" href="assets/ui.svg#refresh"/></svg></span><div><h2 id="update-title"></h2><p id="update-status" class="help" role="status" aria-live="polite"></p></div></div>

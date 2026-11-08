@@ -3,20 +3,21 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import { once } from 'node:events';
 import { DesktopController } from '../desktop/controller.js';
 import { readState, addProvider, atomic } from '../src/store.js';
-import { codexThread } from './fixtures/codex-metadata.js';
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-controller-'));
   t.after(() => fs.rmSync(directory, { recursive:true,force:true }));
   return new DesktopController({ root:path.join(directory,'switch'),codexHome:path.join(directory,'codex'),binary:'not-used',port:0 });
 }
-test('tray-only snapshots never query quota or open the session metadata database', t => {
+test('tray-only snapshots never query quota or retain removed session metadata tracking', t => {
   const controller = setup(t); controller.runtime.active = true;
   controller.usage.snapshot = () => assert.fail('quota read in tray-only snapshot');
-  controller.runtime.sessions.snapshot = () => assert.fail('metadata read in tray-only snapshot');
-  assert.deepEqual(controller.snapshot({ usage: false, sessions: false }).sessions, []);
+  assert.equal(controller.runtime.sessions, undefined);
+  assert.equal(controller.snapshot({ usage: false }).sessions, undefined);
 });
 test('desktop API setup defaults to official URL, persists order and exports no credentials', t => {
   const controller = setup(t);
@@ -32,16 +33,31 @@ test('desktop API setup defaults to official URL, persists order and exports no 
   assert.equal(JSON.stringify(snapshot).includes(readState(controller.root).token),false);
   assert.throws(()=>controller.addAPI({alias:'bad',key:''}),/API key/);
 });
-test('desktop model selection validates effort and rejects a stale provider catalog', t => {
-  const controller = setup(t);
-  controller.addAPI({alias:'first',key:'fixture-first'}); controller.addAPI({alias:'second',key:'fixture-second'});
-  controller.catalog={alias:'first',models:[{id:'fixture-model',efforts:['low','high']}]};
-  controller.model({model:'fixture-model',effort:'high'});
-  assert.deepEqual(controller.snapshot().model,{model:'fixture-model',effort:'high'});
-  assert.throws(()=>controller.model({model:'fixture-model',effort:'unsupported'}),/supported effort/);
-  controller.switchProvider('second');
-  assert.throws(()=>controller.model({model:'fixture-model',effort:'high'}),/Reload/);
-  controller.model(null); assert.equal(controller.snapshot().model,null);
+test('provider model lookup uses the requested inactive row and rejects results after an edit or removal', async t => {
+  const controller = setup(t), calls = []; let release, received;
+  const server = http.createServer(async (req, res) => {
+    calls.push({ url: req.url, authorization: req.headers.authorization });
+    if (received) { const ready = received; received = null; await new Promise(resolve => { release = resolve; ready(); }); }
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'relay-only' }] }));
+  }).listen(0, '127.0.0.1');
+  await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  controller.addAPI({ alias: 'active', key: 'active-secret' });
+  const url = `http://127.0.0.1:${server.address().port}/v1`;
+  controller.addAPI({ alias: 'inactive', url, key: 'inactive-secret' });
+  const result = await controller.models('inactive');
+  assert.equal(result.alias, 'inactive'); assert.equal(result.client, 'codex');
+  assert.deepEqual(result.models.map(model => model.id), ['relay-only']);
+  assert.equal(readState(controller.root).active, 'active');
+  assert.deepEqual(calls, [{ url: '/v1/models', authorization: 'Bearer inactive-secret' }]);
+  assert.equal(JSON.stringify(result).includes('inactive-secret'), false);
+  for (const mutation of ['edit', 'remove']) {
+    const ready = new Promise(resolve => { received = resolve; });
+    const pending = controller.models('inactive'); await ready;
+    if (mutation === 'edit') controller.edit({ original: 'inactive', alias: 'inactive', key: 'new-secret' });
+    else controller.remove('inactive');
+    release(); await assert.rejects(pending, /provider changed while loading/);
+  }
+  await assert.rejects(controller.models('inactive'), /Unknown provider/);
 });
 test('desktop appearance preferences persist and invalid choices never replace them', t => {
   const controller = setup(t);
@@ -108,19 +124,6 @@ test('desktop preferences retry once after a narrow access repair without changi
   assert.equal(read(controller.preferencesFile, 'utf8'), original);
   blocked = true; controller.preferences(); controller.preferences(); assert.equal(attempts, 1);
   assert.equal(controller.preferencesError, 'EPERM');
-});
-test('desktop applies a model only to the explicitly selected observed session', t => {
-  const controller = setup(t); controller.addAPI({ alias: 'api', key: 'fixture' });
-  const thread = codexThread(controller.codexHome, 'session-a', 'Fix a bug');
-  const request = controller.runtime.sessions.begin(thread.headers, { model: 'client', input: 'Internal prompt' });
-  controller.catalog = { alias: 'api', models: [{ id: 'fixture-model', efforts: ['high'] }] };
-  assert.throws(() => controller.model({ model: 'fixture-model', effort: 'high' }, 'unknown'), /Choose a session/);
-  controller.model({ model: 'fixture-model', effort: 'high' }, 'session-a');
-  assert.equal(controller.snapshot().model, null); assert.equal(controller.snapshot().sessions[0].selection.model, 'fixture-model');
-  controller.model(null, 'session-a'); assert.equal(controller.snapshot().sessions[0].selection, null);
-  request.finish(); assert.equal(controller.snapshot().sessions[0].activeRequests, 0);
-  thread.event('task_complete'); assert.deepEqual(controller.snapshot().sessions, []);
-  assert.throws(() => controller.model(null, 'session-a'), /Choose a session/);
 });
 test('deleting providers removes their secret and selects the next alias', t => {
  const controller=setup(t);

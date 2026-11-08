@@ -1,18 +1,16 @@
 import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 import { releaseNotes } from './release-notes.js';
 const $ = id => document.getElementById(id);
-let state, catalog = [], catalogAlias = null, activeTab = 'providers', renderedProviders = '', refreshing = null, modelDirty = false;
-let language = 'en', appliedLanguage, catalogNotice = 'loadCatalog', rawNotice = false, providerMode = 'account', dragging = null, renderedUpdate = '';
-let networkState = null;
-let catalogLoading = false, catalogFailed = false, catalogLoaded = null, effortSignature = '', importLoading = false;
-let modelTarget = null, renderedSessions = '', modelFeedback = null;
+let state, activeTab = 'providers', renderedProviders = '', refreshing = null;
+let language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
+let networkState = null, importLoading = false;
+let catalogProvider = null, catalogResult = null, catalogLoading = false, catalogError = '', catalogRequest = 0;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
 let renderedState = '';
 let editingProvider = null;
 const resetAttempts = new Map();
-const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'sessionsEmpty', 'modelLimits'].includes(key) ? 'claude_' + key : key, values)
+const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values)
   .replaceAll('Codex', state?.client === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
-const catalogKey = value => JSON.stringify([value.client || 'codex', value.active, value.providers?.find(provider => provider.active)?.revision || 0]);
 function appearance() {
   language = normalizeLanguage(state.language);
   document.documentElement.lang = language;
@@ -27,11 +25,10 @@ function appearance() {
   for (const element of document.querySelectorAll('[data-i18n-placeholder]')) element.placeholder = t(element.dataset.i18nPlaceholder);
   for (const element of document.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
   $('language-button').title = t('language'); $('theme-button').title = t('appearance');
-  renderModelPicker(); renderEfforts(); renderCatalogStatus();
+  renderProviderModels();
   for (const element of document.querySelectorAll('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
   providerType(); renderResetCards();
 }
-function notice(value, raw = false) { catalogNotice = value; rawNotice = raw; $('model-notice').textContent = raw ? localizeMessage(value, language) : t(value); }
 const call = (action, payload) => window.easySwitch.call(action, payload);
 function showError(error, target = 'error') {
   const text = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, '');
@@ -76,8 +73,20 @@ function quotaRing(data, tooltip) {
     group.addEventListener('blur', () => { tooltip.hidden = true; });
     svg.append(group);
   }
-  const center = document.createElementNS(svg.namespaceURI, 'rect');
-  for (const [key, value] of Object.entries({ x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)', class: 'quota-center' })) center.setAttribute(key, value);
+  const center = document.createElementNS(svg.namespaceURI, 'g');
+  const balance = data.unlimited ? '∞' : data.credits !== null ? new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits) : null;
+  const description = balance === null ? t('creditsNotProvided') : `${t('quotaCredits')}\n${balance}`;
+  center.setAttribute('class', 'quota-center'); center.setAttribute('tabindex', '0');
+  center.setAttribute('role', 'img'); center.setAttribute('aria-label', description);
+  const diamond = document.createElementNS(svg.namespaceURI, 'rect');
+  for (const [key, value] of Object.entries({ x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)' })) diamond.setAttribute(key, value);
+  const hit = document.createElementNS(svg.namespaceURI, 'circle');
+  for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 10, class: 'quota-center-hit' })) hit.setAttribute(key, value);
+  center.append(diamond, hit);
+  center.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
+  center.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  center.addEventListener('focus', () => { tooltip.textContent = description; tooltip.hidden = false; });
+  center.addEventListener('blur', () => { tooltip.hidden = true; });
   svg.append(center);
   return svg;
 }
@@ -90,11 +99,6 @@ function quotaDisplay(provider) {
   } else {
     const tooltip = node('span', null, 'quota-tooltip'); tooltip.hidden = true; tooltip.id = `quota-tip-${provider.alias}`; tooltip.setAttribute('role', 'tooltip');
     box.append(quotaRing(data, tooltip), tooltip);
-    if (data.unlimited || data.credits !== null) {
-      const credits = node('span', null, 'quota-credits');
-      credits.append(node('span', t('quotaCredits'), 'quota-caption'), node('strong', data.unlimited ? '∞' : new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits), 'quota-balance'));
-      box.append(credits);
-    }
   }
   let description = t('quotaAutoRefresh');
   if (usage?.fetchedAt) description += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
@@ -141,6 +145,8 @@ function renderProviders() {
     if (provider.active) { const tag = node('span', t('activeRoute'), 'tag'); tag.title = t('activeRouteHelp'); row.append(tag); }
     if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
     row.append(button(provider.active ? t('selected') : t('use'), () => run('switch', provider.alias), provider.active ? 'secondary' : ''));
+    const query = button('', () => openProviderModels(provider.alias), 'icon-button query-models');
+    query.append(icon('search')); query.title = t('queryModels'); query.setAttribute('aria-label', t('queryModels') + ' · ' + provider.alias); row.append(query);
     const edit = button('', () => openProvider('edit', provider.alias), 'icon-button edit-provider');
     edit.append(icon('edit')); edit.title = t('editProvider'); edit.setAttribute('aria-label', t('editProvider') + ' · ' + provider.alias); row.append(edit);
     const remove = button('', async () => { if (confirm(t('removeConfirm', {alias:provider.alias}))) await run('remove', provider.alias); }, 'icon-button delete-provider');
@@ -208,8 +214,6 @@ function refresh(nextState) {
     for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(item.dataset.client === (state.client || 'codex')));
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
-    const customized = state.sessions.filter(session => session.overridden).length;
-    $('current-model').textContent = customized ? t('sessionSummary', { count: customized }) : state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
     $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
     $('preferences-warning').hidden = !state.preferencesError;
@@ -221,142 +225,61 @@ function refresh(nextState) {
     renderProviders();
     $('failover').hidden = !state.lastFailover;
     if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
-    renderLogin(); renderNetwork(); renderSessions(); renderCatalogStatus();
-    if (catalogAlias && catalogAlias !== catalogKey(state) && activeTab === 'model') notice('catalogChanged');
-    else notice(catalogNotice, rawNotice);
-    if (catalogAlias === catalogKey(state) && !modelDirty) {
-      $('model-select').value = targetSelection()?.model || ''; efforts();
+    renderLogin(); renderNetwork();
+    if (catalogProvider && (catalogProvider.client !== state.client || !state.providers.some(provider => provider.alias === catalogProvider.alias))) {
+      $('models-dialog').close(); catalogProvider = null; catalogRequest++;
     }
   } catch (error) { showError(error); }
   })().finally(() => { refreshing = null; });
   return refreshing;
 }
-function efforts() {
-  const entry = catalog.find(model => model.id === $('model-select').value);
-  const selection = targetSelection();
-  $('effort-select').value = selection && selection.model === entry?.id ? selection.effort || '' : entry?.defaultEffort || '';
-  renderModelPicker(); renderEfforts();
-}
-function targetSelection() { return modelTarget === 'global' ? state.model : state.sessions.find(session => session.id === modelTarget)?.selection; }
-function selectSession(id) {
-  modelTarget = id; modelDirty = false; modelFeedback = null; closeModelPicker();
-  $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions(); renderCatalogStatus();
-}
-function renderSessions() {
-  const sessions = state.sessions || [];
-  if (modelTarget && modelTarget !== 'global' && !sessions.some(session => session.id === modelTarget)) {
-    modelTarget = null; modelDirty = false; modelFeedback = null; closeModelPicker();
-    $('model-select').value = ''; efforts();
+function renderProviderModels() {
+  if (!catalogProvider) return;
+  $('models-provider').textContent = `${catalogProvider.client === 'claude' ? 'Claude Code' : 'Codex'} · ${catalogProvider.alias}`;
+  $('models-refresh').disabled = catalogLoading;
+  $('models-refresh').classList.toggle('loading', catalogLoading);
+  $('models-status').classList.toggle('failed', !!catalogError);
+  $('models-status').textContent = catalogLoading ? t('catalogLoading') : catalogError ? localizeMessage(catalogError, language) : catalogResult
+    ? t('catalogRefreshed', { count: catalogResult.models.length, time: new Date(catalogResult.fetchedAt).toLocaleTimeString(language) }) : '';
+  const query = $('models-search').value.trim().toLowerCase();
+  $('models-list').replaceChildren();
+  const models = (catalogResult?.models || []).filter(entry => `${entry.id} ${entry.label}`.toLowerCase().includes(query));
+  for (const entry of models) {
+    const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem');
+    row.append(node('strong', entry.label || entry.id));
+    if (entry.label && entry.label !== entry.id) row.append(node('small', entry.id));
+    $('models-list').append(row);
   }
-  const signature = JSON.stringify([language, modelTarget, sessions]);
-  if (signature !== renderedSessions) {
-    renderedSessions = signature; $('session-list').replaceChildren();
-    for (const session of sessions) {
-      const option = button('', () => selectSession(session.id), 'secondary session-option');
-      option.dataset.session = session.id; option.setAttribute('aria-pressed', String(modelTarget === session.id));
-      const copy = node('span', null, 'session-copy');
-      const shortID = session.id.length > 18 ? `${session.id.slice(0, 8)}…${session.id.slice(-6)}` : session.id;
-      copy.append(node('strong', session.title || t('unnamedSession')),
-        node('small', `${shortID} · ${session.model || session.clientModel || '—'}${session.provider ? ' · ' + session.provider : ''}`));
-      option.title = session.id;
-      const status = node('span', t(session.activeRequests ? 'sessionRunning' : 'sessionWaiting'), `session-state${session.activeRequests ? ' running' : ''}`);
-      option.append(copy, status); if (session.overridden) copy.append(node('small', `${t('sessionOverride')} · ${session.selection ? session.selection.model + ' · ' + (session.selection.effort || t('providerDefault')) : t('followCodex')}`));
-      $('session-list').append(option);
-    }
-  }
-  $('sessions-empty').hidden = !!sessions.length;
-  $('sessions-unavailable').hidden = !state.sessionsUnavailable;
-  $('global-model').setAttribute('aria-pressed', String(modelTarget === 'global'));
-  const session = sessions.find(item => item.id === modelTarget);
-  $('model-target').textContent = modelTarget === 'global' ? t('globalTarget') : session ? t('sessionTarget', { title: session.title || session.id }) : t('chooseSessionHelp');
-  $('model-feedback').hidden = !modelFeedback;
-  if (modelFeedback) $('model-feedback').textContent = t(modelFeedback.global ? 'globalModelApplied' : 'modelApplied', modelFeedback);
+  $('models-empty').hidden = catalogLoading || !!catalogError || !catalogResult || !!models.length;
+  $('models-empty').textContent = t(query ? 'noMatchingModels' : 'noModelsReported');
+  $('models-notice').textContent = catalogResult ? localizeMessage(catalogResult.notice, language) : t('modelQueryHelp');
 }
-function renderModelPicker() {
-  const id = $('model-select').value, entry = catalog.find(model => model.id === id);
-  $('model-picker-label').textContent = id ? entry?.label || id : t('followCodex');
-  $('model-picker-id').textContent = entry && entry.label !== id ? id : '';
-  $('model-picker-id').hidden = !$('model-picker-id').textContent;
-  $('model-choice-help').textContent = t(id ? 'selectedModelHelp' : 'followCodexHelp');
-}
-function renderEfforts() {
-  const model = $('model-select').value, entry = catalog.find(item => item.id === model), selected = $('effort-select').value;
-  const signature = JSON.stringify([language, model, entry?.efforts, selected]); if (signature === effortSignature) return;
-  effortSignature = signature; $('effort-options').replaceChildren();
-  for (const value of ['', ...(entry?.efforts || [])]) {
-    const option = button(value ? (t('effort_' + value) === 'effort_' + value ? value : t('effort_' + value)) : t(model ? 'providerDefault' : 'followCodex'), () => {
-      $('effort-select').value = value; modelDirty = true; renderEfforts();
-      [...$('effort-options').children].find(item => item.dataset.effort === value)?.focus();
-    }, 'secondary effort-option');
-    option.type = 'button'; option.dataset.effort = value; option.setAttribute('role', 'radio');
-    option.setAttribute('aria-checked', String(value === selected)); option.disabled = !model;
-    option.tabIndex = value === selected ? 0 : -1;
-    option.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault(); const options = [...$('effort-options').children], index = options.indexOf(option);
-      options[event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + options.length) % options.length].click();
-    });
-    $('effort-options').append(option);
-  }
-  $('effort-help').textContent = t(!model ? 'followCodexHelp' : !entry?.efforts.length ? 'unknownEffortHelp' : 'effortHelp');
-}
-function closeModelPicker() { $('model-menu').hidden = true; $('model-picker').setAttribute('aria-expanded', 'false'); }
-function openModelPicker() {
-  const menu = $('model-menu'), viewport = document.querySelector('main').getBoundingClientRect();
-  menu.classList.remove('above'); menu.hidden = false;
-  $('model-picker').setAttribute('aria-expanded', 'true'); $('model-search').value = ''; renderModelOptions();
-  const trigger = $('model-picker').getBoundingClientRect();
-  menu.classList.toggle('above', menu.getBoundingClientRect().bottom > viewport.bottom && trigger.top - viewport.top > viewport.bottom - trigger.bottom);
-  $('model-search').focus();
-}
-function renderModelOptions() {
-  const query = $('model-search').value.trim().toLowerCase(); $('model-options').replaceChildren();
-  const options = [{ id: '', label: t('followCodex'), description: t('followCodexHelp') }, ...catalog]
-    .filter(entry => !entry.id || `${entry.id} ${entry.label}`.toLowerCase().includes(query));
-  for (const entry of options) {
-    const option = button('', () => {
-      $('model-select').value = entry.id; modelDirty = true; efforts(); closeModelPicker(); $('model-picker').focus();
-    }, 'model-option');
-    option.type = 'button'; option.dataset.model = entry.id; option.setAttribute('role', 'option');
-    option.setAttribute('aria-selected', String(entry.id === $('model-select').value));
-    const copy = node('span'); copy.append(node('strong', entry.label));
-    if (entry.description || entry.label !== entry.id) copy.append(node('small', entry.description || entry.id));
-    option.append(copy); if (entry.id === $('model-select').value) option.append(icon('check'));
-    $('model-options').append(option);
-  }
-  $('model-empty').hidden = options.length > 1 || !query;
-}
-function renderCatalogStatus() {
-  $('refresh-models-label').textContent = t(catalogLoading ? 'catalogLoading' : 'refreshCatalog');
-  $('refresh-models').classList.toggle('loading', catalogLoading);
-  const target = modelTarget === 'global' || state?.sessions.some(session => session.id === modelTarget);
-  $('model-picker').disabled = !target;
-  $('reset-model').disabled = !target;
-  $('apply-model').disabled = !target || catalogLoading || (!$('manual-model').value.trim() && (catalogAlias !== catalogKey(state) || catalogFailed));
-  $('catalog-status').classList.toggle('failed', catalogFailed);
-  const changed = catalogLoaded && catalogLoaded.alias !== catalogKey(state);
-  $('catalog-status').textContent = catalogLoading ? t('catalogLoading') : catalogFailed ? t('catalogFailed') : changed ? t('catalogChanged') : catalogLoaded
-    ? t('catalogRefreshed', { count: catalogLoaded.count, time: new Date(catalogLoaded.at).toLocaleTimeString(language) }) : '';
-}
-async function loadModels() {
-  if (catalogLoading) return;
-  catalogLoading = true; catalogFailed = false; $('refresh-models').disabled = true; renderCatalogStatus(); notice('catalogLoading');
+async function loadProviderModels() {
+  if (!catalogProvider) return;
+  const request = ++catalogRequest, provider = catalogProvider;
+  catalogLoading = true; catalogError = ''; catalogResult = null; renderProviderModels();
   try {
-    const alias = catalogKey(await call('state'));
-    const result = await call('models');
-    if (catalogKey(await call('state')) !== alias) throw new Error(t('catalogChanged'));
-    catalog = result.models; catalogAlias = alias; catalogLoaded = { alias, at: Date.now(), count: catalog.length };
-    $('model-select').value = targetSelection()?.model || ''; efforts(); notice(result.notice || '', true); modelDirty = false;
-  } catch (error) { catalogFailed = true; notice(error.message, true); }
-  finally { catalogLoading = false; $('refresh-models').disabled = false; renderCatalogStatus(); }
+    const result = await call('models', provider.alias);
+    if (request !== catalogRequest) return;
+    catalogResult = result;
+  } catch (error) { if (request === catalogRequest) catalogError = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); }
+  finally { if (request === catalogRequest) { catalogLoading = false; renderProviderModels(); } }
 }
+async function openProviderModels(alias) {
+  catalogProvider = { alias, client: state.client };
+  catalogResult = null; catalogError = ''; $('models-search').value = '';
+  $('models-dialog').showModal(); await loadProviderModels();
+}
+$('close-models').addEventListener('click', () => $('models-dialog').close());
+$('models-dialog').addEventListener('close', () => { catalogProvider = null; catalogRequest++; catalogLoading = false; });
+$('models-refresh').addEventListener('click', loadProviderModels);
+$('models-search').addEventListener('input', renderProviderModels);
 async function changeTab(tab) {
   if(tab==='updates') {await showUpdates();return;}
-  if (!['providers', 'model', 'network'].includes(tab)) return;
+  if (!['providers', 'network'].includes(tab)) return;
   activeTab = tab;
   for (const element of document.querySelectorAll('nav button')) element.classList.toggle('selected', element.dataset.tab === tab);
-  for (const id of ['providers', 'model', 'network']) $(id).hidden = id !== tab;
-  if (tab === 'model' && (!catalogAlias || catalogAlias !== catalogKey(state))) await loadModels();
+  for (const id of ['providers', 'network']) $(id).hidden = id !== tab;
   if (tab === 'network') {
     try {
       networkState = await call('network');
@@ -411,6 +334,9 @@ function openProvider(mode, alias = '') {
   const pending = state.login && ['starting', 'pending'].includes(state.login.phase);
   $('provider-alias').value = alias || (mode === 'account' && pending ? state.login.alias : '');
   $('base-url').value = editingProvider?.baseUrl || '';
+  $('claude-main-model').value = editingProvider?.claudeModels?.default || '';
+  $('claude-agent-model').value = editingProvider?.claudeModels?.subagent || '';
+  $('claude-mapping').open = !!editingProvider?.claudeModels;
   $('import-preview').hidden = true;
   providerType(); renderLogin(); $('add-dialog').showModal();
 }
@@ -430,6 +356,7 @@ $('close-dialog').addEventListener('click', () => $('add-dialog').close());
 function providerType() {
   const api = providerMode === 'api' || editingProvider?.type === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api || providerMode === 'edit';
   $('edit-key-help').hidden = providerMode !== 'edit';
+  $('claude-mapping').hidden = !api || state.client !== 'claude';
   $('account-help').textContent = t(imported ? 'importHelp' : 'subscriptionHelp');
   $('provider-dialog-title').textContent = t(providerMode === 'edit' ? 'editProvider' : api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
   $('save-provider').textContent = t(api ? 'addAPI' : imported ? 'importAction' : 'addSubscription');
@@ -439,9 +366,10 @@ $('provider-form').addEventListener('submit', async event => {
   try {
     if (dialogLogin()?.phase === 'complete') { $('add-dialog').close(); return; }
     const alias = $('provider-alias').value.trim();
-    if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
+    const mapping = state.client === 'claude' ? { claudeModels: { default: $('claude-main-model').value.trim(), subagent: $('claude-agent-model').value.trim() } } : {};
+    if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }
     else if (dialogLogin()?.codeRequired) { await call('login-code', $('authorization-code').value.trim()); $('authorization-code').value = ''; }
-    else if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value }); $('api-key').value = ''; $('add-dialog').close(); }
+    else if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }
     else if (providerMode === 'import') { await call('import-login',alias); $('add-dialog').close(); }
     else { await startLogin(alias); }
     await refresh();
@@ -452,7 +380,7 @@ $('provider-alias').addEventListener('input', renderLogin);
 for (const item of document.querySelectorAll('[data-client]')) item.addEventListener('click', async () => {
   if (item.dataset.client === state.client) return;
   $('add-dialog').close(); $('reset-dialog').close(); editingProvider = null; providerMode = 'account';
-  catalogAlias = null; catalog = []; catalogLoaded = null; modelDirty = false; modelTarget = null; networkState = null; $('manual-model').value = '';
+  $('models-dialog').close(); catalogProvider = null; catalogRequest++; networkState = null;
   try { await run('client', item.dataset.client); if (activeTab !== 'providers') await changeTab(activeTab); } catch {}
 });
 $('provider-list').addEventListener('dragover', event => {
@@ -472,30 +400,6 @@ $('provider-list').addEventListener('drop', async event => {
   if (!dragging) return; event.preventDefault(); $('provider-list').querySelector('.dragging')?.classList.remove('dragging'); const aliases=[...$('provider-list').children].map(item=>item.dataset.alias); dragging=null;
   try { await run('order',aliases); } catch {} finally { renderedProviders=''; renderProviders(); }
 });
-$('model-picker').addEventListener('click', () => { if (!$('model-menu').hidden) closeModelPicker(); else openModelPicker(); });
-$('model-search').addEventListener('input', renderModelOptions);
-$('model-search').addEventListener('keydown', event => { if (event.key === 'ArrowDown') { event.preventDefault(); $('model-options').firstElementChild?.focus(); } });
-$('model-options').addEventListener('keydown', event => {
-  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-  event.preventDefault(); const options = [...$('model-options').children], index = options.indexOf(document.activeElement);
-  options[event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus();
-});
-$('refresh-models').addEventListener('click', loadModels);
-$('global-model').addEventListener('click', () => selectSession('global'));
-async function saveModel(selection) {
-  const target = modelTarget, session = state.sessions.find(item => item.id === target);
-  if (target !== 'global' && !session) return;
-  await run(target === 'global' ? 'model' : 'session-model', target === 'global' ? selection : { sessionId: target, selection });
-  if (modelTarget !== target) return;
-  modelDirty = false; modelFeedback = { global: target === 'global', title: session?.title || target };
-  $('model-select').value = targetSelection()?.model || ''; efforts(); renderSessions();
-}
-$('model-form').addEventListener('submit', async event => {
-  event.preventDefault(); const manual = $('manual-model').value.trim(), model = manual || $('model-select').value;
-  try { await saveModel(model ? { model, effort: manual ? null : $('effort-select').value || null, ...(manual ? { manual: true } : {}) } : null); } catch {}
-});
-$('manual-model').addEventListener('input', () => { modelDirty = true; renderCatalogStatus(); });
-$('reset-model').addEventListener('click', async () => { try { await saveModel(null); } catch {} });
 $('network-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (state.activeRequests && !confirm(t('restartConfirm'))) return;
@@ -508,8 +412,8 @@ $('network-form').addEventListener('submit', async event => {
 function closeMenus() { for(const id of ['language','theme']) { $(id+'-menu').hidden=true; $(id+'-button').setAttribute('aria-expanded','false'); } }
 for(const id of ['language','theme']) $(id+'-button').addEventListener('click',()=>{const open=$(id+'-menu').hidden;closeMenus();$(id+'-menu').hidden=!open;$(id+'-button').setAttribute('aria-expanded',String(open));if(open)$(id+'-menu').querySelector('button').focus();});
 for(const item of document.querySelectorAll('[data-language],button[data-theme]')) item.addEventListener('click',async()=>{closeMenus();try{await run('preferences',item.dataset.language?{language:item.dataset.language}:{theme:item.dataset.theme});}catch{}});
-document.addEventListener('click',event=>{if(!event.target.closest('.icon-control'))closeMenus();if(!event.target.closest('.model-picker'))closeModelPicker();});
-document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeMenus();if(!$('model-menu').hidden){event.preventDefault();closeModelPicker();$('model-picker').focus();}}});
+document.addEventListener('click', event => { if (!event.target.closest('.icon-control')) closeMenus(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
 $('autostart').addEventListener('change', async event => { try { await run('autostart', event.target.checked); } catch {} });
 $('routing-toggle').addEventListener('click', async () => {
   if (state.running && state.activeRequests && !confirm(t('stopConfirm'))) return;

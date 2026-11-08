@@ -5,7 +5,7 @@ import { init, readState, providerOrder, activateFallback } from './store.js';
 import { claudeToken } from './claude-auth.js';
 import { rejectionText, rejectionStatus, recoverable, atCapacity } from './failover.js';
 import { inspectStartup } from './sse.js';
-import { selectedModel } from './sessions.js';
+import { mappedClaudeModel } from './claude-models.js';
 
 export function claudeHeaders(provider, token, incoming = {}) {
   const headers = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
@@ -13,18 +13,17 @@ export function claudeHeaders(provider, token, incoming = {}) {
   if (provider.type === 'account') {
     headers.authorization = `Bearer ${token}`;
     headers['anthropic-beta'] = [...new Set((headers['anthropic-beta'] || '').split(',').filter(Boolean).concat('oauth-2025-04-20'))].join(',');
-  } else headers['x-api-key'] = provider.apiKey;
+  } else { headers['x-api-key'] = provider.apiKey; headers.authorization = `Bearer ${provider.apiKey}`; }
   return headers;
 }
 export const claudeEndpoint = provider => (provider.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
-export function createClaudeHandler({ root, fetchImpl, sessions, reauth = () => {}, now = () => Date.now() }) {
+export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = () => Date.now() }) {
   init(root);
   const cooldown = new Map(); let manual;
   return async (req, res) => {
     const abort = new AbortController();
     res.once('close', () => { if (!res.writableFinished) abort.abort(); });
     const fail = (status, message) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message } })); };
-    let session;
     try {
       let state = readState(root);
       const actual = Buffer.from(req.headers.authorization || (req.headers['x-api-key'] ? `Bearer ${req.headers['x-api-key']}` : ''));
@@ -41,15 +40,8 @@ export function createClaudeHandler({ root, fetchImpl, sessions, reauth = () => 
         payload = JSON.parse(Buffer.concat(chunks).toString());
         if (!payload || !Array.isArray(payload.messages)) return fail(400, 'A complete Messages history is required.');
       }
-      const id = req.headers['x-claude-code-session-id'];
-      if (!models && target === '/v1/messages') {
-        session = sessions?.begin({ 'session-id': id }, { model: payload.model, reasoning: { effort: payload.output_config?.effort } });
-        if (session) res.once('close', session.finish);
-      }
       if (manual !== (state.manualGeneration || 0)) { cooldown.clear(); manual = state.manualGeneration || 0; }
       const attempted = new Set(); let alias = state.active;
-      const selection = selectedModel(state, session?.id);
-      const selectionAlias = session && Object.hasOwn(state.sessionModels || {}, session.id) ? state.active : state.modelSelectionAlias || state.active;
       while (alias && !abort.signal.aborted) {
         attempted.add(alias);
         const provider = state.providers[alias];
@@ -61,13 +53,7 @@ export function createClaudeHandler({ root, fetchImpl, sessions, reauth = () => 
           upstream = new Response('', { status: 401 });
         } else {
           const outgoing = payload && { ...payload };
-          // A provider-specific override must not send a DeepSeek model to a Claude subscription fallback.
-          if (outgoing && selection && alias === selectionAlias) {
-            outgoing.model = selection.model;
-            if (selection.effort !== null) outgoing.output_config = { ...outgoing.output_config, effort: selection.effort };
-            else if (outgoing.output_config) { outgoing.output_config = { ...outgoing.output_config }; delete outgoing.output_config.effort; }
-          }
-          session?.used(alias, { model: outgoing.model, reasoning: { effort: outgoing.output_config?.effort } });
+          if (outgoing) outgoing.model = mappedClaudeModel(provider, outgoing.model, req.headers);
           upstream = await fetchImpl(claudeEndpoint(provider) + target + new URL(req.url, 'http://localhost').search, {
             method: models ? 'GET' : 'POST', headers: claudeHeaders(provider, token, req.headers),
             ...(models ? {} : { body: JSON.stringify(outgoing) }), redirect: 'error', signal: abort.signal,
@@ -108,9 +94,6 @@ export function createClaudeHandler({ root, fetchImpl, sessions, reauth = () => 
     } catch (error) {
       if (res.destroyed) return;
       if (res.headersSent) res.destroy(); else fail(error instanceof SyntaxError ? 400 : 502, 'Claude routing failed. Check the provider configuration and connection.');
-    } finally {
-      session?.finish();
-      if (session && sessions.entries.get(session.id)?.activeRequests === 0) sessions.entries.delete(session.id);
     }
   };
 }

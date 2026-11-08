@@ -6,14 +6,32 @@ import { atomic } from './store.js';
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 const managed = (port, token) => ({ ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude`, ANTHROPIC_AUTH_TOKEN: token,
   ANTHROPIC_API_KEY: '', CLAUDE_CODE_OAUTH_TOKEN: '' });
-export function activateClaude(root, directory, port, token) {
+export function activateClaude(root, directory, port, token, modelEnv = {}) {
   const recordFile = path.join(root, 'claude-session.json');
-  if (fs.existsSync(recordFile)) return;
+  if (fs.existsSync(recordFile)) {
+    const record = JSON.parse(read(recordFile)), current = read(record.file);
+    const settings = current ? JSON.parse(current) : {}, before = record.original ? JSON.parse(record.original) : {};
+    const next = { ...record.env };
+    for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME']) {
+      if (Object.hasOwn(record.env, key) && settings.env?.[key] !== record.env[key]) continue;
+      if (!Object.hasOwn(modelEnv, key) && !Object.hasOwn(record.env, key)) continue;
+      settings.env ??= {};
+      next[key] = modelEnv[key] ?? before.env?.[key] ?? '';
+      settings.env[key] = next[key];
+    }
+    if (read(record.file) !== current) throw new Error('Claude Code settings changed during startup. Retry.');
+    if (isDeepStrictEqual(next, record.env) && isDeepStrictEqual(settings, current ? JSON.parse(current) : {})) return;
+    // Recovery recognizes either side of a model-menu update interrupted by a crash.
+    atomic(recordFile, { ...record, pendingEnv: next });
+    atomic(record.file, settings);
+    atomic(recordFile, { ...record, env: next });
+    return;
+  }
   const file = path.join(directory, 'settings.json'), original = read(file);
   const settings = original ? JSON.parse(original) : {};
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid Claude Code settings.');
   if (settings.env && (typeof settings.env !== 'object' || Array.isArray(settings.env))) throw new Error('Invalid Claude Code env settings.');
-  const env = managed(port, token);
+  const env = { ...managed(port, token), ...modelEnv };
   atomic(recordFile, { file, exists: fs.existsSync(file), original, env });
   if (read(file) !== original) { fs.rmSync(recordFile); throw new Error('Claude Code settings changed during startup. Retry.'); }
   atomic(file, { ...settings, env: { ...settings.env, ...env } });
@@ -23,8 +41,8 @@ export function restoreClaude(recordFile) {
   const record = JSON.parse(read(recordFile)), current = read(record.file);
   const settings = current ? JSON.parse(current) : {}, before = record.original ? JSON.parse(record.original) : {};
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid Claude Code settings; the recovery record was retained.');
-  for (const [key, value] of Object.entries(record.env)) {
-    if (settings.env?.[key] !== value) continue; // Preserve the user's concurrent edits.
+  for (const key of new Set([...Object.keys(record.env), ...Object.keys(record.pendingEnv || {})])) {
+    if (settings.env?.[key] !== record.env[key] && (!Object.hasOwn(record.pendingEnv || {}, key) || settings.env?.[key] !== record.pendingEnv[key])) continue; // Preserve the user's concurrent edits.
     if (Object.hasOwn(before.env || {}, key)) settings.env[key] = before.env[key]; else delete settings.env[key];
   }
   if (!before.env && !Object.keys(settings.env || {}).length) delete settings.env;

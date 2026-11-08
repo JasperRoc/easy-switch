@@ -20,7 +20,7 @@ With Codex installed:
 SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.js
 ```
 
-This starts a real app-server with a temporary `CODEX_HOME`, reads the installed provider configuration, and completes turns in the same thread/process through local mock upstreams. It verifies manual switching, an HTTP 403 quota rejection followed by transparent fallback with identical conversation input, and model/effort switching within one active turn. The latter emits a real shell tool call, changes the selection while its response is streaming, and checks that Codex executes the tool and continues on the new model without a second user turn. The default test command skips this opt-in test.
+This starts a real app-server with a temporary `CODEX_HOME` and completes turns in the same thread/process through local mock upstreams. It verifies manual switching, quota and model-access fallback with the original model/history, parallel tasks, a real shell-tool continuation, capacity recovery, cancellation and native image routing. Legacy easy-switch model overrides are tested separately to confirm they no longer alter client requests. The default command skips real-client integration tests.
 
 The shell installer targets Linux systemd. The desktop build targets Windows and macOS. Run the checks above locally before submitting changes.
 
@@ -30,7 +30,7 @@ The shell installer targets Linux systemd. The desktop build targets Windows and
 SWITCH_TEST_CLAUDE="$(command -v claude)" node --test test/claude.integration.test.js
 ```
 
-Runs the official client with an isolated `CLAUDE_CONFIG_DIR` against local mock upstreams. The test keeps one process and conversation open, switches APIs, and checks that the next message uses the new key with the original history. It makes no paid model calls. Subscription OAuth, refresh, header isolation, failover and settings restoration also have mock tests; live subscription inference requires a separately authorized account.
+Runs the official client with an isolated `CLAUDE_CONFIG_DIR` against local mock upstreams. The test keeps one process and conversation open, switches APIs, and checks that the next message uses the new key with the original history. A second test makes the official client invoke its Agent tool and verifies a separate subagent model plus the parent tool-result continuation. It makes no paid model calls. Subscription OAuth, refresh, header isolation, failover and settings restoration also have mock tests; live subscription inference requires a separately authorized account.
 
 Claude support uses `src/claude-auth.js` for official sign-in and token refresh, `src/claude-config.js` for recoverable user settings, and `src/claude-proxy.js` for Messages routing. State lives in `SWITCH_HOME/claude`; the existing proxy listener dispatches `/claude/*` to this independent route. The desktop controller and CLI use the same store and protocol implementation.
 
@@ -70,7 +70,7 @@ The preparation script downloads the matching pinned official Codex platform pac
 After building, verify the actual DMGs before publishing:
 
 ```bash
-node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.3.1-mac-arm64.dmg dist/easy-switch-0.3.1-mac-x64.dmg
+node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.5.4-mac-arm64.dmg dist/easy-switch-0.5.4-mac-x64.dmg
 ```
 
 This checks image checksums, mounts each image read-only without opening Finder, verifies the contained application/nested code, and detaches it. A successful `codesign` result does not mean `spctl` will trust an unnotarized ad hoc application.
@@ -86,9 +86,9 @@ npm run desktop:prepare
 SWITCH_TEST_DESKTOP=1 node --test test/desktop.integration.test.js
 ```
 
-On Windows PowerShell, set `$env:SWITCH_TEST_DESKTOP='1'` before the Node command. To test a packaged application, also set `SWITCH_TEST_DESKTOP_EXE` to its executable path. Tests isolate configuration/credentials with temporary `SWITCH_HOME` and `CODEX_HOME`, do not change login items, and do not make paid model requests. They verify the bundled native model catalog, API setup, model/effort selection, tray lifetime, restoration on exit and independent recovery after a forced main-process crash. Test screenshots are written to ignored `.desktop-test/`.
+On Windows PowerShell, set `$env:SWITCH_TEST_DESKTOP='1'` before the Node command. To test a packaged application, also set `SWITCH_TEST_DESKTOP_EXE` to its executable path. Tests isolate configuration/credentials with temporary `SWITCH_HOME` and `CODEX_HOME`, do not change login items, and do not make paid model requests. They verify provider-specific model lookup, API editing and Claude model mappings, quota-diamond tooltips, idle/background activity, tray lifetime, restoration on exit and independent recovery after a forced main-process crash. Test screenshots are written to ignored `.desktop-test/`.
 
-`desktop/main.cjs` owns Electron's tray/window and a narrow IPC interface; `preload.cjs` exposes only approved actions. `controller.js` connects those actions to the shared provider/model/auth core. `runtime.js` manages proxy lifetime and the independent recovery helper, while `config.js` records and restores configuration without discarding unrelated edits. The static renderer has no Node.js access. See [desktop.md](desktop.md) for runtime limits and recovery instructions.
+`desktop/main.cjs` owns Electron's tray/window and a narrow IPC interface; `preload.cjs` exposes only approved actions. `controller.js` connects those actions to the shared provider/auth/catalog core. `runtime.js` manages proxy lifetime and the independent recovery helper, while `config.js` records and restores configuration without discarding unrelated edits. The static renderer has no Node.js access. See [desktop.md](desktop.md) for runtime limits and recovery instructions.
 
 ## Desktop UI and updater checks
 

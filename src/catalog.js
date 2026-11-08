@@ -91,11 +91,9 @@ export async function discoverModels(provider, root, { catalogImpl = codexModels
     if (!response.ok) { await response.body?.cancel(); throw Error(); }
     const result = await response.json();
     if (!Array.isArray(result.data)) throw Error();
-    const metadata = await Promise.resolve().then(() => catalogImpl()).catch(() => []);
-    const native = new Map(metadata.map(model => [model.id, model]));
     const ids = [...new Set(result.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim()))];
-    return { models: ids.map(id => native.get(id) || { id, label: id, efforts: [], defaultEffort: null }),
-      notice: ids.length ? '目录来自服务商 /models；未识别的模型仅提供默认推理强度，请确认其支持 Responses 和 Codex 工具调用。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
+    return { models: ids.map(id => ({ id, label: id, efforts: [], defaultEffort: null })),
+      notice: ids.length ? '目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
     throw new Error('无法读取服务商 /models；不会使用 Codex 内置目录冒充该服务商的可用模型。请检查 Base URL、密钥和模型查询权限后重试。');
   } finally { await client?.close(); }
@@ -106,11 +104,20 @@ export async function discoverClaudeModels(provider, root, { fetchImpl } = {}) {
   fetchImpl ??= client.fetch;
   try {
     const token = provider.type === 'account' ? await claudeToken(provider, fetchImpl) : null;
-    const headers = claudeHeaders(provider, token), models = [], seen = new Set();
+    const headers = claudeHeaders(provider, token), models = [], seen = new Set(), cursors = new Set();
+    const base = claudeEndpoint(provider);
+    const endpoints = [...new Set([base + '/v1/models', ...(provider.type === 'api' ? [base + '/models', base.replace(/\/anthropic$/, '') + '/models'] : [])])];
+    let endpoint = endpoints[0];
     let cursor;
     do {
-      const url = claudeEndpoint(provider) + '/v1/models' + (cursor ? '?after_id=' + encodeURIComponent(cursor) : '');
-      const response = await fetchImpl(url, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+      let response;
+      for (let index = endpoints.indexOf(endpoint); index < endpoints.length; index++) {
+        endpoint = endpoints[index];
+        const url = endpoint + (cursor ? '?after_id=' + encodeURIComponent(cursor) : '');
+        response = await fetchImpl(url, { headers, redirect: 'error', signal: AbortSignal.timeout(8000) });
+        if (cursor || ![404, 405].includes(response.status) || index === endpoints.length - 1) break;
+        await response.body?.cancel();
+      }
       if (!response.ok) { await response.body?.cancel(); throw Error(); }
       const data = await response.json();
       if (!Array.isArray(data.data)) throw Error();
@@ -119,7 +126,8 @@ export async function discoverClaudeModels(provider, root, { fetchImpl } = {}) {
           efforts: (item.capabilities?.effort?.supported_efforts || []).filter(effort => ['low', 'medium', 'high', 'max'].includes(effort)), defaultEffort: null });
       }
       const next = data.has_more ? data.last_id : null;
-      if (next && (typeof next !== 'string' || next === cursor || models.length >= 1000)) throw Error();
+      if (next && (typeof next !== 'string' || cursors.has(next) || models.length >= 1000)) throw Error();
+      if (next) cursors.add(next);
       cursor = next;
     } while (cursor);
     return { models, notice: 'Claude models come from this provider’s /v1/models endpoint. Listing a model does not guarantee Messages or tool compatibility.' };

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { init, addProvider, activate, readState, atomic, aliasName, baseURL, setModel } from '../src/store.js';
+import { init, addProvider, activate, readState, atomic, aliasName, baseURL, update } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 
 async function listen(t, server) {
@@ -20,8 +20,8 @@ function fixture(t) {
   return { root, token: init(root).token };
 }
 const payload = { model: 'test', input: [{ role: 'user', content: 'hello' }] };
-function send(url, token, data = payload) {
-  return fetch(url + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(data) });
+function send(url, token, data = payload, headers = {}) {
+  return fetch(url + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers }, body: JSON.stringify(data) });
 }
 
 test('switch routes next request; old stream remains on old upstream; history and tool outputs survive', async t => {
@@ -61,7 +61,7 @@ test('switch routes next request; old stream remains on old upstream; history an
   assert.equal(received[0].headers.authorization, 'Bearer key-a');
   assert.equal(received[1].headers.authorization, 'Bearer key-b');
   assert.deepEqual(received[1].body.input, history);
-  assert.equal(received[1].body.model, 'model-b');
+  assert.equal(received[1].body.model, payload.model);
   assert.equal(received[1].body.store, false);
 });
 
@@ -408,7 +408,7 @@ test('disconnect cancels an upstream SSE body accepted without Content-Type', as
 });
 
 
-test('model/effort changes apply to new requests while existing SSE and tool history survive', async t => {
+test('legacy overrides are ignored while client models, effort, streams and tool history survive', async t => {
   const { root, token } = fixture(t);
   addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
   const requests = []; let finish;
@@ -421,33 +421,32 @@ test('model/effort changes apply to new requests while existing SSE and tool his
     return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } }));
   const first = await send(proxy, token, { ...payload, reasoning: { effort: 'low', summary: 'auto' } });
-  setModel({ model: 'model-next', effort: 'high' }, root);
+  update(state => { state.modelSelection = { model: 'ignored', effort: 'high' }; state.sessionModels = { fixture: { model: 'ignored-session', effort: 'low' } }; state.providers.api.model = 'legacy-ignored'; }, root);
   const input = [...payload.input, { type: 'function_call', name: 'shell', call_id: 'c1', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: 'done' }];
-  await (await send(proxy, token, { ...payload, input, reasoning: { effort: 'low', summary: 'auto' } })).text();
+  await (await send(proxy, token, { ...payload, model: 'client-next', input, reasoning: { effort: 'high', summary: 'auto' } }, { 'session-id': 'fixture' })).text();
   finish(); assert.match(await first.text(), /first/);
   assert.equal(requests[0].model, 'test'); assert.equal(requests[0].reasoning.effort, 'low');
-  assert.equal(requests[1].model, 'model-next'); assert.deepEqual(requests[1].reasoning, { effort: 'high', summary: 'auto' });
+  assert.equal(requests[1].model, 'client-next'); assert.deepEqual(requests[1].reasoning, { effort: 'high', summary: 'auto' });
   assert.deepEqual(requests[1].input, input);
-  setModel(null, root);
   await (await send(proxy, token, { ...payload, reasoning: { effort: 'medium' } })).text();
   assert.equal(requests[2].model, 'test'); assert.equal(requests[2].reasoning.effort, 'medium');
 });
 
-test('failover keeps one model selection snapshot, including when settings change during rejection', async t => {
+test('failover preserves the client model even with legacy overrides and concurrent state writes', async t => {
   const { root, token } = fixture(t);
   for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias, model: 'legacy-model' }, root);
-  setModel({ model: 'chosen-model', effort: 'high' }, root);
+  update(state => { state.modelSelection = { model: 'ignored', effort: 'high' }; }, root);
   const requests = [];
   const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
     requests.push(JSON.parse(options.body));
-    if (requests.length === 1) { setModel({ model: 'later-model', effort: 'low' }, root); return new Response('quota', { status: 429 }); }
+    if (requests.length === 1) { update(state => { state.modelSelection = { model: 'still-ignored', effort: 'low' }; }, root); return new Response('quota', { status: 429 }); }
     return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } }));
   await (await send(proxy, token)).text();
   assert.equal(requests.length, 2);
-  for (const request of requests) { assert.equal(request.model, 'chosen-model'); assert.equal(request.reasoning.effort, 'high'); }
+  for (const request of requests) { assert.equal(request.model, payload.model); assert.equal(request.reasoning, undefined); }
   await (await send(proxy, token)).text();
-  assert.equal(requests[2].model, 'later-model');
+  assert.equal(requests[2].model, payload.model);
 });
 
 test('native image generation and edits borrow subscriptions in priority order without changing text routing or model settings', async t => {
@@ -458,7 +457,6 @@ test('native image generation and edits borrow subscriptions in priority order w
     atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
     addProvider(alias, { type: 'account', accountHome }, root);
   }
-  setModel({ model: 'selected-text', effort: 'high' }, root);
   const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
     calls.push({ url, ...options });
     if (options.headers.authorization === 'Bearer sub-a') return new Response('quota exhausted', { status: 429 });
@@ -481,7 +479,7 @@ test('native image generation and edits borrow subscriptions in priority order w
   assert.deepEqual(calls.at(-1).body, multipart); assert.equal(calls.at(-1).headers['content-type'], 'multipart/form-data; boundary=fixture');
   await (await send(proxy, token)).text();
   assert.equal(calls.at(-1).url, 'https://api.example/v1/responses');
-  assert.equal(JSON.parse(calls.at(-1).body).model, 'selected-text');
+  assert.equal(JSON.parse(calls.at(-1).body).model, payload.model);
 });
 
 test('images use an API when no subscription exists and do not retry policy or validation errors', async t => {
@@ -633,7 +631,6 @@ test('capacity before any output falls back transparently for HTTP and split sta
 test('capacity retries are bounded, honor Retry-After, and retain the selected model', async t => {
   const { root, token } = fixture(t), waits = [], requests = []; let recover = true;
   addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
-  setModel({ model: 'selected', effort: 'high' }, root);
   const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (_url, options) => {
     requests.push(JSON.parse(options.body));
     if (recover && requests.length === 2) return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
@@ -641,7 +638,7 @@ test('capacity retries are bounded, honor Retry-After, and retain the selected m
   } }));
   assert.equal((await send(proxy, token)).status, 200);
   assert.deepEqual(waits, [3000]); assert.equal(requests.length, 2);
-  assert.deepEqual(requests[0], requests[1]); assert.equal(requests[1].model, 'selected');
+  assert.deepEqual(requests[0], requests[1]); assert.equal(requests[1].model, payload.model);
   recover = false; requests.length = 0; waits.length = 0;
   const exhausted = await send(proxy, token); assert.match(await exhausted.text(), /server_overloaded/);
   assert.equal(requests.length, 3); assert.deepEqual(waits, [3000, 3000]);

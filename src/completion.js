@@ -10,10 +10,9 @@ export function candidates(words, root) {
   const prefix = words.at(-1) || '';
   const before = words.slice(0, -1);
   let options = [];
-  if (!before.length) options = ['add', 'edit', 'list', 'current', 'order', 'model', 'claude', 'update', 'service', 'help', ...aliases];
+  if (!before.length) options = ['add', 'edit', 'list', 'current', 'order', 'claude', 'update', 'service', 'help', ...aliases];
   else if (before.length === 1 && before[0] === 'add') options = ['api', 'account'];
   else if (before.length === 1 && before[0] === 'service') options = ['status', 'restart', 'uninstall'];
-  else if (before.length === 1 && before[0] === 'model') options = ['current', 'reset'];
   else if (before.length === 1 && before[0] === 'edit') options = aliases;
   else if (before[0] === 'order') options = aliases.filter(alias => !before.slice(1).includes(alias));
   return options.filter(option => option.startsWith(prefix));

@@ -7,9 +7,7 @@ import { readState, accountAuth, activateFallback } from './store.js';
 import { createReauth, expired } from './auth.js';
 import { alternate, recoverable, rejectionText, rejectionStatus, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
-import { applyModel } from './model.js';
 import { createUpstreamFetch } from './network.js';
-import { SessionTracker, selectedModel } from './sessions.js';
 import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
 import { imageEligible, imageUnavailable } from './images.js';
@@ -83,16 +81,15 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), sessions = new SessionTracker(), claudeSessions = new SessionTracker(), claudeReauth, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
-  const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, sessions: claudeSessions, reauth: claudeReauth });
+  const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
     if (req.url.startsWith('/claude/')) return claude(req, res);
     const abort = new AbortController();
-    let session;
     res.on('close', () => { if (!res.writableFinished) abort.abort(); });
     try {
       let state = readState(root);
@@ -113,8 +110,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (Array.isArray(payload.input) && payload.input.some(i => i.type === 'compaction' || i.type === 'item_reference')) return error(res, 400, '上下文含不可跨上游重放的压缩/引用项；请新建会话或使用可重放的本地摘要');
       }
       if (!state.providers[state.active]) return error(res, 409, '请先添加并选择账号/API');
-      session = image ? null : sessions.begin(req.headers, payload);
-      if (session) res.once('close', session.finish);
       if (manualGeneration !== (state.manualGeneration || 0)) {
         cooldown.clear(); imageCooldown.clear(); modelCooldown.clear(); manualGeneration = state.manualGeneration || 0;
       }
@@ -124,8 +119,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         payload.store = false;
         payload.stream = true;
       }
-      const modelSelection = selectedModel(state, session?.id);
-      const requestedModel = modelSelection?.model || payload?.model;
+      const requestedModel = payload?.model;
       const modelKey = alias => JSON.stringify([requestedModel, alias]);
       for (const [key, until] of modelCooldown) if (until <= now()) modelCooldown.delete(key);
       let alias = state.active;
@@ -160,7 +154,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         attempted.add(alias);
         const provider = state.providers[alias];
         const headers = { 'content-type': image ? contentType : 'application/json', accept: image ? 'application/json' : 'text/event-stream' };
-        let outgoing = { ...payload }; // Never carry an API's model override into the fallback.
+        const outgoing = { ...payload };
         let url, credentialsUnavailable = false;
         if (provider.type === 'account') {
           let auth;
@@ -178,11 +172,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           url = provider.baseUrl + req.url.slice(3);
         }
         if (!image) {
-          if (provider.model) outgoing.model = provider.model;
-          outgoing = applyModel(outgoing, modelSelection);
           if (rejectedModel) outgoing.model = rejectedModel;
         }
-        session?.used(alias, outgoing);
         const upstream = credentialsUnavailable ? new Response('', { status: 401 }) : await fetchImpl(url, {
           method: 'POST', headers, body: image ? raw : JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
         });
@@ -267,7 +258,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (res.destroyed) return;
       if (res.headersSent) res.destroy();
       else error(res, e instanceof SyntaxError ? 400 : 502, e instanceof SyntaxError ? '无效 JSON' : '代理请求失败；检查配置、账号登录或上游连接');
-    } finally { session?.finish(); }
+    }
   });
   server.on('close', () => {
     reauth.close();

@@ -1,5 +1,5 @@
 // UI polling is useful only while the window can be seen. Keep a lightweight
-// background pass for tray routing changes and session-cache cleanup.
+// background pass for tray routing changes.
 function desktopActivity({ window, powerMonitor, refresh, foreground, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer, sleeping = false, locked = false, stopped = false;
   const paused = () => sleeping || locked;

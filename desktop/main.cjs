@@ -29,25 +29,24 @@ function report(error) {
   window?.webContents.send('easy-switch:changed');
   dialog.showErrorBox(`easy-switch ${app.getVersion()}`, startupError);
 }
-function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details, sessions: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
+function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
 function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
   uiClient = state.client || 'codex';
-  const signature = JSON.stringify([state.client, state.running, state.active, state.providers.map(({ alias, type, active, needsLogin }) => ({ alias, type, active, needsLogin })), state.model, state.loginItem, state.lastFailover, uiLanguage]);
+  const signature = JSON.stringify([state.client, state.running, state.active, state.providers.map(({ alias, type, active, needsLogin, revision }) => ({ alias, type, active, needsLogin, revision })), state.loginItem, state.lastFailover, uiLanguage]);
   if (signature === trayState) return;
   trayState = signature;
-  const model = state.model ? `${state.model.model} · ${state.model.effort || t('providerDefault')}` : t('followCodex');
-  tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude Code' : 'Codex'} · ${state.active || t('addProvider')} · ${model}`);
+  controller.runtime.syncClaude();
+  tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude Code' : 'Codex'} · ${state.active || t('addProvider')}`);
   trayMenu = Menu.buildFromTemplate([
     ...['codex', 'claude'].map(client => ({ label: client === 'codex' ? 'Codex' : 'Claude Code', type: 'radio', checked: state.client === client,
       click: () => { controller.clientSelection(client); updateTray(); window?.webContents.send('easy-switch:changed'); } })),
     { type: 'separator' },
     { label: state.running ? t('trayActive', { alias: state.active || t('noProvider') }) : t('trayStopped'), enabled: false },
-    { label: model, enabled: false }, { type: 'separator' },
+    { type: 'separator' },
     ...state.providers.map(provider => ({ label: `${provider.alias} · ${t(provider.type === 'account' ? 'account' : 'api')}${provider.needsLogin ? ' · ' + t('loginNeeded') : ''}`, type: 'radio', checked: provider.active,
       click: () => { try { controller.switchProvider(provider.alias); updateTray(); window?.webContents.send('easy-switch:changed'); } catch (error) { report(error); } } })),
     { type: 'separator' },
-    { label: t('trayModel'), click: () => showWindow('model') },
     { label: t('traySettings'), click: () => showWindow('providers') },
     { label: t('autoStart'), type: 'checkbox', checked: state.loginItem, click: item => { try { setAutoStart(item.checked); } catch (error) { report(error); } } },
     { label: t('updates'), click: () => showWindow('updates') },
@@ -62,7 +61,6 @@ function updateTray(state = snapshot(false)) {
 function refreshDesktop(visible = activity?.visible() ?? false) {
   if (!controller || !tray) return;
   const state = snapshot(visible);
-  if (!visible) controller.runtime.sessions.snapshot({});
   updateTray(state);
   if (!visible) { uiState = ''; return; }
   const signature = JSON.stringify(state);
@@ -120,14 +118,9 @@ async function boot() {
         case 'login-code': result = controller.submitLogin(payload); break;
         case 'existing-login': return controller.existingLogin();
         case 'import-login': result = await controller.importLogin(payload); break;
-        case 'models': return await controller.models();
+        case 'models': return await controller.models(payload);
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
-        case 'model': result = controller.model(payload); break;
-        case 'session-model': {
-          if (typeof payload?.sessionId !== 'string') throw new Error('Choose a session observed by this app first.');
-          result = controller.model(payload.selection, payload.sessionId); break;
-        }
         case 'network': return controller.network();
         case 'save-network': result = await controller.saveNetwork(payload); break;
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
@@ -179,7 +172,7 @@ async function boot() {
   const nativeMenu = () => { if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'easy-switch', submenu: [{ role: 'about' }, { label: t('updates'), click: () => showWindow('updates') }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' }, { label: t('quit'), accelerator: 'Command+Q', click: () => app.quit() }] }, { role: 'editMenu' }, { role: 'windowMenu' }])); };
   nativeMenu();
   const hidden = process.argv.includes('--hidden') || loginItem.wasOpenedAtLogin;
-  if (!hidden || !controller.snapshot({ usage: false, sessions: false }).providers.length || startupError || controller.preferencesError) showWindow();
+  if (!hidden || !controller.snapshot({ usage: false }).providers.length || startupError || controller.preferencesError) showWindow();
 }
 
 if (!ownsLock) app.quit();

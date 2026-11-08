@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { addProvider, readState, setModel } from '../src/store.js';
+import { addProvider, readState, init } from '../src/store.js';
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
 test('CLI switches persistent selection; list hides credentials; unknown names preserve selection', t => {
@@ -54,19 +54,15 @@ test('order persists a complete permutation, preserves active selection, and app
 });
 
 
-test('model status and reset work without a TTY; interactive selection requires a terminal', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-model-cli-'));
+test('removed model commands reject calls without changing either client configuration', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-no-model-cli-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  init(root); init(path.join(root, 'claude'));
+  const before = fs.readFileSync(path.join(root, 'state.json'), 'utf8');
+  const claudeBefore = fs.readFileSync(path.join(root, 'claude', 'state.json'), 'utf8');
   const run = args => spawnSync(process.execPath, [cli, ...args], { env: { ...process.env, SWITCH_HOME: root }, encoding: 'utf8' });
-  assert.match(run(['model', 'current']).stdout, /跟随 Codex/);
-  setModel({ model: 'model-a', effort: 'high' }, root);
-  assert.match(run(['model', 'current']).stdout, /model-a.*high/);
-  assert.equal(run(['model']).status, 1);
-  assert.equal(run(['model', 'invalid model']).status, 1);
-  assert.equal(readState(root).modelSelection.model, 'model-a');
-  assert.equal(run(['model', 'reset']).status, 0);
-  assert.equal(readState(root).modelSelection, undefined);
-  assert.equal(run(['model', 'provider-model', 'high']).status, 0);
-  assert.deepEqual(readState(root).modelSelection, { model: 'provider-model', effort: 'high' });
-  assert.equal(run(['model', 'reset', 'extra']).status, 1);
+  assert.doesNotMatch(run(['help']).stdout, /switch model/);
+  for (const args of [['model'], ['model', 'reset'], ['model', 'some-model'], ['claude', 'model']]) assert.equal(run(args).status, 1);
+  assert.equal(fs.readFileSync(path.join(root, 'state.json'), 'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(root, 'claude', 'state.json'), 'utf8'), claudeBefore);
 });

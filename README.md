@@ -9,7 +9,7 @@
 
 easy-switch is a desktop and command-line routing tool for **Codex and Claude Code**. Manage ChatGPT and Claude subscriptions, official APIs, and compatible third-party APIs with independent provider lists and fallback priorities for each client. Switch at model request boundaries while keeping the client process and conversation; eligible quota or authentication rejections try alternatives in priority order.
 
-🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🌊 **Ocean glass UI · EN / 中文 · Light / dark** · 🧠 **Model and effort selection** · ⚙️ **Automatic failover**
+🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🌊 **Ocean glass UI · EN / 中文 · Light / dark** · 🔍 **Provider model lookup** · ⚙️ **Automatic failover**
 
 [Quick start](#quick-start) · [Why easy-switch?](#why-easy-switch) · [FAQ](#faq) · [Disclaimer](#disclaimer) · [Contributing](#contributing) · [License](#license)
 
@@ -30,7 +30,7 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
 2. Select **Codex** or **Claude Code**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude Code. Claude subscription sign-in uses your separately installed official Claude Code CLI and browser; macOS may request Keychain access.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
-4. Restart the selected client or reload its editor window once to read the local route. Click the tray/menu bar icon to reopen the window; right-click to select a client and switch providers. Drag provider priorities, edit an alias/address/key with the pencil button, or delete a provider. A blank key in the edit dialog preserves the saved key. In **Model & effort**, choose a task or **Global default**, then select a provider-listed model; use **Specify a model ID** if discovery is unavailable. Codex tasks use their sidebar names; Claude requests appear while streaming.
+4. Restart the selected client or reload its editor window once to read the local route. Click the tray/menu bar icon to reopen the window; right-click to select a client and switch providers. Drag provider priorities, edit an alias/address/key with the pencil button, or delete a provider. A blank key in the edit dialog preserves the saved key. Click a provider’s magnifying glass to query its own model catalog without changing the active route. Select models and reasoning effort in the conversation client; Claude API entries also support optional main/subagent model mappings.
 
 Installing alone leaves client configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings for both clients. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Conversation clients are installed separately. See the [Claude Code guide](docs/claude-code.md) for authentication and protocol details.
 
@@ -64,14 +64,10 @@ The installer registers `switch`, starts the systemd background service, enables
 | `switch edit <alias>` | Edit alias, Base URL or key; a blank key preserves it |
 | `switch <alias>` | Select the provider for subsequent requests |
 | `switch list` | Show fallback priority and the active provider (`*`) |
-| `switch model` | Choose model and effort for subsequent requests |
-| `switch model current` | Show the current model override |
-| `switch model reset` | Clear model and effort overrides |
-| `switch model <id> [effort]` | Explicitly specify a model when discovery is unavailable |
 | `switch claude add api <alias>` | Add an Anthropic Messages API for Claude Code |
 | `switch claude add account <alias>` | Add or renew a Claude subscription through official sign-in |
 | `switch claude <alias>` | Switch Claude Code without changing Codex |
-| `switch claude list / order / model` | Manage Claude’s independent providers, priorities and model |
+| `switch claude list / order` | Manage Claude’s independent providers and priorities |
 | `switch order` | Adjust priority with the keyboard |
 | `switch update` | Update from the official main branch and restart the service |
 | `switch current` | Show the active alias |
@@ -84,9 +80,9 @@ When adding an API, **leave Base URL blank to use the official OpenAI API** (`ht
 
 In `switch order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
 
-Run `switch model` to select a model and then one of its supported efforts. Use **↑/↓** to select, **Enter** to confirm, and **Esc/Ctrl+C** to cancel. Choose “Follow Codex” or run `switch model reset` to clear overrides. The setting applies to subsequent requests across all sessions using the service; existing response streams finish normally. API catalogs come from the provider’s `/models` endpoint, including custom model IDs. Codex metadata supplies known reasoning efforts; unrecognized models use the provider default. Subscription catalogs are read with the selected account in an isolated Codex process. Actual access and Responses/tool compatibility depend on the upstream. This overrides request parameters; it does not synchronize Codex's native model label or client capabilities. See [model and effort switching](docs/usage.md#model-and-effort-switching).
+Model and reasoning-effort selection stays in Codex or Claude Code. The desktop magnifying glass queries the selected row’s provider, including inactive providers, and shows a searchable catalog with refresh status. A listed model does not prove inference or tool permissions. See [provider model lookup](docs/usage.md#provider-model-lookup) and [Claude model mappings](docs/claude-code.md).
 
-After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration unless overridden with `switch model`.
+After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration for text requests.
 
 Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`. If version 0.1.1 or earlier blocks an update after changing model settings, use the same source-install steps once.
 
@@ -106,7 +102,7 @@ easy-switch targets personal Codex and Claude Code workflows on desktops and Lin
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | Subscription gateway with account management and sharing; its documented stack includes PostgreSQL and Redis | Run a personal switching service with local files and Node.js, without deploying a database, cache, or web administration panel. |
 | [New API](https://github.com/QuantumNous/new-api) | Unified model aggregation, distribution, and protocol conversion | Connect existing Responses-compatible providers directly to a Codex workflow, without configuring a broader distribution platform. |
 
-easy-switch brings account configuration, routing selection, model selection, and fallback ordering into a tray application or command-line interface, reducing configuration and maintenance steps for individual users. Its distinction lies primarily in deployment and interaction design; request-level hot switching is not unique to this project.
+easy-switch brings account configuration, routing selection and fallback ordering into a tray application or command-line interface, reducing configuration and maintenance steps for individual users. Its distinction lies primarily in deployment and interaction design; request-level hot switching is not unique to this project.
 
 <a id="faq"></a>
 
@@ -118,7 +114,7 @@ Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code 
 
 ### Why does Codex list a model my API cannot use?
 
-Codex’s native model menu describes its own catalog and sign-in, not the API selected inside easy-switch. easy-switch queries the selected provider’s model endpoint and no longer substitutes the Codex catalog when that query fails. The native menu is not rewritten. A listed model still needs inference/tool permissions; use easy-switch’s catalog or an explicit provider model ID. HTTP 503 alone cannot distinguish a capacity problem from another upstream failure.
+Codex’s native model menu describes its own catalog and sign-in, not the API selected inside easy-switch. easy-switch queries the selected provider’s model endpoint and no longer substitutes the Codex catalog when that query fails. The native menu is not rewritten. A listed model still needs inference/tool permissions; query that provider’s row, then choose a supported model in the client. HTTP 503 alone cannot distinguish a capacity problem from another upstream failure.
 
 If a Codex upstream explicitly rejects a model as missing, unsupported or inaccessible, easy-switch tries the same model through alternatives before accepting output. That fallback keeps the preferred route selected: a Free account can remain preferred for models it supports while an API handles another model. Rejections are cached for that provider/model for 60 seconds; manual provider selection clears the cache. If every provider rejects it, choose another model or add access. Requests blocked inside the client before reaching the proxy cannot be rerouted.
 
@@ -128,7 +124,7 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop Codex account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Purchased credits are a separate balance and stay visible alongside the ring, including before weekly quota is exhausted. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
+Desktop Codex account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Hover or focus the center diamond to see purchased credits, independently of time-window limits; the separate balance block is removed. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
 
 ### Can I use an earned quota-reset card?
 

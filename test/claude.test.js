@@ -5,13 +5,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { once, EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { init, atomic, addProvider, editProvider, removeProvider, readState, activate, setModel } from '../src/store.js';
+import { init, atomic, addProvider, editProvider, removeProvider, readState, activate } from '../src/store.js';
 import { activateClaude, restoreClaude } from '../src/claude-config.js';
 import { existingClaudeAuth, claudeToken, startClaudeLogin } from '../src/claude-auth.js';
 import { discoverClaudeModels } from '../src/catalog.js';
 import { createProxy } from '../src/proxy.js';
-import { SessionTracker } from '../src/sessions.js';
 import { DesktopController } from '../desktop/controller.js';
+import { claudeModelEnvironment } from '../src/claude-models.js';
 
 const oauth = { accessToken: 'subscription-secret', refreshToken: 'refresh-secret', expiresAt: Date.now() + 3600000, scopes: ['user:inference'] };
 const sse = 'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"done"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
@@ -106,11 +106,11 @@ test('Claude model discovery paginates actual provider IDs and never borrows the
 test('one proxy isolates Codex and Claude credentials; quota failover preserves Messages tools and original fallback model', async t => {
   const root = fixture(t), claude = path.join(root, 'claude'), token = readState(claude).token;
   addProvider('codex', { type: 'api', baseUrl: 'https://codex.test/v1', apiKey: 'CODEX_SECRET' }, root);
-  addProvider('relay', { type: 'api', baseUrl: 'https://relay.test/anthropic', apiKey: 'CLAUDE_API_SECRET' }, claude);
+  addProvider('relay', { type: 'api', baseUrl: 'https://relay.test/anthropic', apiKey: 'CLAUDE_API_SECRET', claudeModels: { default: 'deepseek-flash' } }, claude);
   const accountHome = path.join(claude, 'accounts', 'sub'); atomic(path.join(accountHome, 'oauth.json'), oauth);
-  addProvider('sub', { type: 'account', accountHome }, claude); setModel({ model: 'deepseek-flash', effort: null }, claude);
-  const calls = [], sessions = new SessionTracker();
-  const url = await proxy(t, root, { claudeSessions: sessions, fetchImpl: async (url, options) => {
+  addProvider('sub', { type: 'account', accountHome }, claude);
+  const calls = [];
+  const url = await proxy(t, root, { fetchImpl: async (url, options) => {
     calls.push({ url, ...options });
     if (calls.length === 1) return new Response('quota exhausted', { status: 429 });
     return new Response(sse, { headers: { 'content-type': 'text/event-stream', 'anthropic-ratelimit-requests-remaining': '2' } });
@@ -125,7 +125,6 @@ test('one proxy isolates Codex and Claude credentials; quota failover preserves 
   assert.ok(!JSON.stringify(calls).includes('CODEX_SECRET')); assert.ok(!JSON.stringify(calls).includes('NATIVE_SECRET'));
   assert.equal(JSON.parse(calls[0].body).model, 'deepseek-flash'); assert.equal(JSON.parse(calls[1].body).model, 'claude-client');
   assert.deepEqual(JSON.parse(calls[1].body).messages, messages); assert.equal(readState(root).active, 'codex'); assert.equal(readState(claude).active, 'sub');
-  await new Promise(resolve => setImmediate(resolve)); assert.equal(sessions.entries.size, 0);
 });
 
 test('manual Claude switching applies to the next request while accepted output is never replayed', async t => {
@@ -176,14 +175,82 @@ test('Claude provider-level forbidden errors try the next provider before output
   }
 });
 
-test('Claude API settings and model choices stay separate from Codex in the desktop controller', async t => {
+test('Claude API settings and model mappings stay separate from Codex in the desktop controller', async t => {
   const root = fixture(t), controller = new DesktopController({ root, codexHome: path.join(root, 'codex'), claudeHome: path.join(root, 'claude-home'), binary: 'unused', port: 0 });
   controller.addAPI({ alias: 'same', key: 'codex-secret' }); controller.clientSelection('claude');
-  controller.addAPI({ alias: 'same', key: 'claude-secret' });
+  controller.addAPI({ alias: 'same', key: 'claude-secret', claudeModels: { default: 'deepseek-flash' } });
   assert.equal(controller.snapshot().providers[0].baseUrl, 'https://api.anthropic.com');
-  controller.model({ model: 'deepseek-flash', effort: null, manual: true });
-  assert.equal(controller.snapshot().model.model, 'deepseek-flash'); assert.ok(!JSON.stringify(controller.snapshot()).includes('secret'));
+  assert.equal(controller.snapshot().providers[0].claudeModels.default, 'deepseek-flash'); assert.ok(!JSON.stringify(controller.snapshot()).includes('secret'));
   await controller.start(); assert.ok(fs.existsSync(path.join(root, 'claude-home', 'settings.json')));
-  controller.clientSelection('codex'); assert.equal(controller.snapshot().model, null); assert.equal(controller.snapshot().providers[0].baseUrl, 'https://api.openai.com/v1');
+  controller.clientSelection('codex'); assert.equal(controller.snapshot().providers[0].claudeModels, undefined); assert.equal(controller.snapshot().providers[0].baseUrl, 'https://api.openai.com/v1');
   await controller.stop(); assert.equal(fs.existsSync(path.join(root, 'claude-home', 'settings.json')), false);
+});
+
+test('provider mappings cover main, agent, Haiku and count-token requests without changing tools or explicit main IDs', async t => {
+  const root = fixture(t), claude = path.join(root, 'claude'), token = readState(claude).token;
+  addProvider('relay', { type: 'api', baseUrl: 'https://relay.test', apiKey: 'relay-key', claudeModels: { default: 'deepseek-main', subagent: 'deepseek-agent' } }, claude);
+  const calls = [];
+  const url = await proxy(t, root, { fetchImpl: async (url, options) => {
+    calls.push({ url, headers: options.headers, payload: JSON.parse(options.body) });
+    return Response.json({ id: 'msg_test', content: [] });
+  } });
+  const tools = [{ name: 'Agent', description: 'Delegate a task', input_schema: { type: 'object', properties: { prompt: { type: 'string' } } } }];
+  const messages = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'agent-call', name: 'Agent', input: { prompt: 'Inspect files' } }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'agent-call', content: 'Found files' }] }];
+  for (const [model, agent, expected] of [['claude-sonnet-test', false, 'deepseek-main'], ['claude-opus-test', true, 'deepseek-agent'], ['claude-haiku-test', false, 'deepseek-agent'], ['another-explicit-model', false, 'another-explicit-model']]) {
+    const response = await request(url, token, { model, tools, messages }, agent ? { 'x-claude-code-agent-id': 'worker-1' } : {});
+    assert.equal(response.status, 200); await response.text();
+    assert.equal(calls.at(-1).payload.model, expected);
+    assert.deepEqual(calls.at(-1).payload.tools, tools); assert.deepEqual(calls.at(-1).payload.messages, messages);
+  }
+  assert.equal(calls[1].headers['x-claude-code-agent-id'], 'worker-1');
+  assert.equal(calls[0].headers.authorization, 'Bearer relay-key'); assert.equal(calls[0].headers['x-api-key'], 'relay-key');
+  const count = await fetch(url + '/claude/v1/messages/count_tokens', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'claude-sonnet-test', messages: [] }) });
+  assert.equal(count.status, 200); await count.text(); assert.equal(calls.at(-1).payload.model, 'deepseek-main');
+  editProvider('relay', { claudeModels: null }, claude);
+  await (await request(url, token, { model: 'claude-sonnet-test' })).text(); assert.equal(calls.at(-1).payload.model, 'claude-sonnet-test');
+});
+
+test('custom Claude menu settings restore exactly after mapping switches and interrupted updates', t => {
+  for (const interrupted of [false, true]) {
+    const root = fixture(t), directory = path.join(root, 'settings'), file = path.join(directory, 'settings.json');
+    fs.mkdirSync(directory); const original = '{"env":{"ANTHROPIC_CUSTOM_MODEL_OPTION":"user-model","CUSTOM":"yes"}}\n'; fs.writeFileSync(file, original);
+    const provider = id => ({ type: 'api', claudeModels: { default: id } });
+    activateClaude(root, directory, 12345, 'local-token', claudeModelEnvironment(provider('deepseek-a')));
+    assert.equal(JSON.parse(fs.readFileSync(file)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'deepseek-a');
+    const recordFile = path.join(root, 'claude-session.json');
+    if (interrupted) {
+      const record = JSON.parse(fs.readFileSync(recordFile));
+      atomic(recordFile, { ...record, pendingEnv: { ...record.env, ANTHROPIC_CUSTOM_MODEL_OPTION: 'deepseek-b' } });
+      const settings = JSON.parse(fs.readFileSync(file)); settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION = 'deepseek-b'; atomic(file, settings);
+    } else {
+      activateClaude(root, directory, 12345, 'local-token', claudeModelEnvironment(provider('deepseek-b')));
+      assert.equal(JSON.parse(fs.readFileSync(file)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'deepseek-b');
+      const before = fs.readFileSync(file, 'utf8'); activateClaude(root, directory, 12345, 'local-token', claudeModelEnvironment(provider('deepseek-b')));
+      assert.equal(fs.readFileSync(file, 'utf8'), before);
+      activateClaude(root, directory, 12345, 'local-token', {});
+      assert.equal(JSON.parse(fs.readFileSync(file)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'user-model');
+    }
+    restoreClaude(recordFile); assert.equal(fs.readFileSync(file, 'utf8'), original);
+  }
+});
+
+test('desktop mappings reject invalid values atomically, preserve secrets and remain provider-specific', t => {
+  const root = fixture(t), controller = new DesktopController({ root, codexHome: path.join(root, 'codex'), binary: 'unused' });
+  controller.clientSelection('claude'); controller.addAPI({ alias: 'relay', key: 'private-key' });
+  for (const claudeModels of [{ default: 'invalid id' }, { subagent: [] }, { unknown: 'model' }]) assert.throws(() => controller.edit({ original: 'relay', alias: 'relay', claudeModels }), /Invalid Claude model mapping/);
+  assert.equal(readState(path.join(root, 'claude')).providers.relay.claudeModels, undefined);
+  controller.edit({ original: 'relay', alias: 'renamed', claudeModels: { default: 'deepseek-main' } });
+  assert.equal(controller.snapshot().providers[0].claudeModels.default, 'deepseek-main');
+  assert.ok(!JSON.stringify(controller.snapshot()).includes('private-key'));
+  controller.edit({ original: 'renamed', alias: 'renamed', claudeModels: {} }); assert.equal(controller.snapshot().providers[0].claudeModels, null);
+});
+
+test('Claude discovery can use a same-host OpenAI model listing without sending a generation request', async t => {
+  const root = fixture(t), urls = [];
+  const result = await discoverClaudeModels({ type: 'api', baseUrl: 'https://relay.test/anthropic', apiKey: 'key' }, root, { fetchImpl: async (url, options) => {
+    urls.push(url); assert.equal(options.headers.authorization, 'Bearer key'); assert.equal(options.redirect, 'error');
+    return url === 'https://relay.test/models' ? Response.json({ data: [{ id: 'deepseek-main' }] }) : new Response('', { status: 404 });
+  } });
+  assert.deepEqual(result.models.map(model => model.id), ['deepseek-main']);
+  assert.deepEqual(urls, ['https://relay.test/anthropic/v1/models', 'https://relay.test/anthropic/models', 'https://relay.test/models']);
 });

@@ -8,13 +8,12 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { init, addProvider, removeProvider, activate, readState, setModel, atomic } from '../src/store.js';
+import { init, addProvider, removeProvider, activate, readState, atomic } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
-import { CodexSessions } from '../desktop/codex-sessions.js';
 import { activateSession } from '../desktop/config.js';
 
-for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-server (${nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free' ? 'Free login bridged to paid image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and per-session model changes preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-server (${nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free' ? 'Free login bridged to paid image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and client models preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -66,7 +65,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     }
     if (toolTurn && !toolIssued) {
       toolIssued = true;
-      const call = { type: 'function_call', id: 'fc_model_switch', call_id: 'call_model_switch', name: 'exec_command', arguments: JSON.stringify({ cmd: 'sleep 1; printf switch-model-tool-ok', login: false }), status: 'completed' };
+      const call = { type: 'function_call', id: 'fc_continuation', call_id: 'call_continuation', name: 'exec_command', arguments: JSON.stringify({ cmd: 'sleep 1; printf switch-tool-ok', login: false }), status: 'completed' };
       event({ type: 'response.output_item.added', output_index: 0, item: { ...call, arguments: '', status: 'in_progress' } });
       event({ type: 'response.function_call_arguments.delta', item_id: call.id, output_index: 0, delta: call.arguments });
       event({ type: 'response.function_call_arguments.done', item_id: call.id, output_index: 0, arguments: call.arguments });
@@ -88,8 +87,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   });
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
-  const sessions = new CodexSessions(codexHome);
-  const proxy = await serve(createProxy({ root, sessions, wait: async () => {}, fetchImpl: async (url, options) => {
+  const proxy = await serve(createProxy({ root, wait: async () => {}, fetchImpl: async (url, options) => {
     if (url.endsWith('/images/generations')) {
       imageCalls++;
       assert.equal(options.headers.authorization, 'Bearer fixture-subscription');
@@ -180,43 +178,30 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   assert.equal(readState(root).active, 'b');
   assert.equal(readState(root).reason, 'failover');
   assert.equal(child.exitCode, null);
-  // Switch model while the same user turn is streaming a tool call; Codex must
-  // execute the tool and continue automatically, without another turn/start.
+  // A client tool continuation preserves the native model within the same turn.
   toolTurn = true;
-  setModel({ model: 'gpt-5.1-codex', effort: 'low' }, root);
   const toolCompleted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   const started = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Tool turn: run the tool and continue.', text_elements: [] }] });
   await toolReady;
-  assert.equal(sessions.snapshot(readState(root))[0].id, thread.id);
-  assert.equal(sessions.snapshot(readState(root))[0].title, 'Named task in Codex');
-  assert.equal(sessions.snapshot(readState(root))[0].activeRequests, 1);
-  setModel({ model: 'gpt-6.1-sol', effort: 'high' }, root, undefined, thread.id);
   const originalTool = requests.at(-1);
   const other = (await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' })).thread;
   const otherCompleted = new Promise(resolve => { finishTurns.set(other.id, resolve); });
   await call('turn/start', { threadId: other.id, input: [{ type: 'text', text: 'An independent parallel task', text_elements: [] }] });
   assert.equal((await otherCompleted).status, 'completed');
-  assert.equal(requests.at(-1).body.model, 'gpt-5.1-codex');
-  assert.equal(requests.at(-1).body.reasoning.effort, 'low');
-  assert.equal(sessions.snapshot(readState(root)).length, 1, 'the completed parallel task is absent');
-  assert.equal(originalTool.body.model, 'gpt-5.1-codex');
+  assert.equal(requests.at(-1).body.model, requests[0].body.model);
+  assert.equal(requests.at(-1).body.reasoning.effort, requests[0].body.reasoning.effort);
+  assert.equal(originalTool.body.model, requests[0].body.model);
   finishToolResponse();
-  for (let attempt = 0; attempt < 100 && sessions.entries.get(thread.id)?.activeRequests; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(sessions.snapshot(readState(root))[0].id, thread.id, 'tool execution keeps the real task visible without an open model request');
-  assert.equal(sessions.snapshot(readState(root))[0].activeRequests, 0);
   const finished = await toolCompleted;
   assert.equal(finished.id, started.turn.id);
   assert.equal(finished.status, 'completed', JSON.stringify(finished) + stderr);
-  assert.equal(requests.at(-2).body.model, 'gpt-5.1-codex');
-  assert.equal(requests.at(-2).body.reasoning.effort, 'low');
-  assert.equal(requests.at(-1).body.model, 'gpt-6.1-sol');
-  assert.equal(requests.at(-1).body.reasoning.effort, 'high');
-  const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_model_switch');
-  assert.match(output.output, /switch-model-tool-ok/);
+  assert.equal(requests.at(-2).body.model, requests[0].body.model);
+  assert.equal(requests.at(-2).body.reasoning.effort, requests[0].body.reasoning.effort);
+  assert.equal(requests.at(-1).body.model, requests[0].body.model);
+  assert.equal(requests.at(-1).body.reasoning.effort, requests[0].body.reasoning.effort);
+  const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_continuation');
+  assert.match(output.output, /switch-tool-ok/);
   assert.equal(child.exitCode, null);
-  // The rollout writer flushes asynchronously after the completion notification.
-  for (let attempt = 0; attempt < 100 && sessions.snapshot(readState(root)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
-  assert.deepEqual(sessions.snapshot(readState(root)), []);
   capacityNext = true;
   const capacityCompleted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Continue through a capacity rejection', text_elements: [] }] });
@@ -245,11 +230,9 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   pauseNext = true;
   const interrupted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   const last = await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'This turn will be cancelled', text_elements: [] }] });
-  await paused; assert.equal(sessions.snapshot(readState(root))[0].title, 'Named task in Codex');
+  await paused;
   await call('turn/interrupt', { threadId: thread.id, turnId: last.turn.id });
   assert.equal((await interrupted).status, 'interrupted');
-  for (let attempt = 0; attempt < 100 && sessions.snapshot(readState(root)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
-  assert.deepEqual(sessions.snapshot(readState(root)), [], 'cancelled native Codex turns are removed');
 });
 
 test('real Codex with a Free login continues its same turn and model through an API after an explicit model-access rejection', { skip: !process.env.SWITCH_TEST_CODEX, timeout: 30000 }, async t => {

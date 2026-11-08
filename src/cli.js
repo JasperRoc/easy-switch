@@ -5,11 +5,10 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
-import { home, init, aliasName, addProvider, editProvider, activate, baseURL, accountAuth, providerOrder, setOrder, setModel } from './store.js';
+import { home, init, aliasName, addProvider, editProvider, activate, baseURL, accountAuth, providerOrder, setOrder } from './store.js';
 import { claudeHome, startClaudeLogin } from './claude-auth.js';
 import { activateClaude } from './claude-config.js';
-import { discoverClaudeModels } from './catalog.js';
-import { chooseModel } from './model.js';
+import { claudeModelEnvironment } from './claude-models.js';
 import { editOrder } from './order.js';
 import { candidates } from './completion.js';
 import { updateTool } from './update.js';
@@ -20,9 +19,7 @@ const help = `easy-switch
   switch add account [alias]   通过 Codex 设备认证添加订阅账号
   switch edit <alias>          修改别名、Base URL 或密钥（密钥留空保留）
   switch <alias>               下一次模型请求切到该上游
-  switch model [current|reset]  选择模型与 effort，下一次模型请求生效
-  switch model <id> [effort]   手动指定准确模型 ID（不会验证服务商权限）
-  switch claude <command>     管理 Claude Code 的 API / 订阅、模型和队列
+  switch claude <command>     管理 Claude Code 的 API / 订阅和队列
   switch order [alias ...]    键盘调整自动切换优先级（从高到低）
   switch list | current       查看配置（不显示密钥）
   switch update               更新至官方仓库最新版本
@@ -33,7 +30,7 @@ const args = process.argv.slice(2);
 const appRoot = home(), isClaude = args[0] === 'claude';
 if (isClaude) args.shift();
 const root = isClaude ? path.join(appRoot, 'claude') : appRoot;
-const connectClaude = () => activateClaude(appRoot, claudeHome(), Number(process.env.SWITCH_PORT || 18345), init(root).token);
+const connectClaude = () => { const state = init(root); activateClaude(appRoot, claudeHome(), Number(process.env.SWITCH_PORT || 18345), state.token, claudeModelEnvironment(state.providers[state.active])); };
 async function ask(label, secret = false) {
   if (!process.stdin.isTTY) throw new Error('添加配置需要交互终端；请勿把密钥作为命令行参数');
   const output = secret ? new Writable({ write(_chunk, _encoding, done) { done(); } }) : process.stdout;
@@ -64,21 +61,6 @@ async function main() {
     if (args.length !== 1) throw new Error('用法：switch update');
     return updateTool(appRoot);
   }
-  if (command === 'model') {
-    if (args.length > 3 || (['current', 'reset'].includes(type) && args.length !== 2)) throw new Error('用法：switch [claude] model [current|reset|<id> [effort]]');
-    if (type === 'current') {
-      const state = init(root), selection = isClaude && state.modelSelectionAlias && state.modelSelectionAlias !== state.active ? null : state.modelSelection;
-      return console.log(selection ? `${selection.model} · effort: ${selection.effort ?? '服务商默认'}` : `跟随 ${isClaude ? 'Claude Code' : 'Codex'}`);
-    }
-    if (type === 'reset') { setModel(null, root); return console.log('已取消模型与 effort 覆盖；下一次模型请求生效'); }
-    if (type) { setModel({ model: type, effort: name || null }, root); return console.log(`已指定 ${type}；实际可用性由服务商决定，下一次请求生效`); }
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('请在交互终端执行 switch model；查看设置请用 switch model current');
-    const result = await chooseModel(root, isClaude ? { client: 'Claude Code', discoverImpl: provider => discoverClaudeModels(provider, appRoot) } : {});
-    if (result.cancelled) return console.log('已取消，模型设置未修改');
-    if (result.notice) console.log(result.notice);
-    console.log(result.selection ? `已选择 ${result.selection.model} · effort: ${result.selection.effort ?? '服务商默认'}` : '已取消模型与 effort 覆盖，跟随 Codex');
-    return console.log('当前服务下所有会话的下一次模型请求生效；进行中的响应继续完成');
-  }
   if (command === 'service') return service(type, appRoot);
   if (command === 'edit') {
     if (args.length !== 2) throw new Error('用法：switch [claude] edit <alias>');
@@ -89,8 +71,10 @@ async function main() {
       const url = baseURL(await ask(`Base URL [${provider.baseUrl}]：`) || provider.baseUrl);
       if (url !== provider.baseUrl) patch.baseUrl = url;
       const apiKey = await ask('新 API Key（隐藏输入，留空保留）：', true); if (apiKey) patch.apiKey = apiKey;
+      if (isClaude) patch.claudeModels = await askClaudeMapping(provider.claudeModels);
     }
     editProvider(type, patch, root);
+    if (isClaude) connectClaude();
     return console.log(`已保存 ${alias}；下一次请求生效`);
   }
   if (command === 'order') {
@@ -116,7 +100,7 @@ async function main() {
       const baseUrl = baseURL(await ask(isClaude ? 'Anthropic Messages Base URL（留空使用 Anthropic 官方 API）：' : 'Base URL（留空使用 OpenAI 官方 API；第三方例如 https://example.com/v1）：') || (isClaude ? 'https://api.anthropic.com' : ''));
       const apiKey = await ask('API Key（隐藏输入）：', true);
       if (!apiKey) throw new Error('API Key 不能为空');
-      provider = { type, baseUrl, apiKey };
+      provider = { type, baseUrl, apiKey, ...(isClaude ? { claudeModels: await askClaudeMapping() } : {}) };
     } else {
       const accountHome = existing?.accountHome || path.join(root, 'accounts', randomUUID());
       if (isClaude) {
@@ -148,5 +132,11 @@ async function main() {
   activate(aliasName(command), root);
   if (isClaude) connectClaude();
   console.log(`已切换至 ${command}；新模型请求生效，进行中的请求不受影响`);
+}
+async function askClaudeMapping(previous = {}) {
+  const model = await ask(`Claude 主模型映射 [${previous?.default || '不映射'}]（- 清除）：`);
+  const subagent = await ask(`Claude 子代理模型映射 [${previous?.subagent || '沿用主映射'}]（- 清除）：`);
+  const { claudeModelMapping } = await import('./claude-models.js');
+  return claudeModelMapping({ default: model === '-' ? '' : model || previous?.default, subagent: subagent === '-' ? '' : subagent || previous?.subagent });
 }
 main().catch(e => { console.error(`错误：${e.code === 'ENOENT' ? '配置或 Codex 不存在，请先添加配置并安装 Codex CLI' : e.message}`); process.exitCode = 1; });

@@ -7,7 +7,6 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'smol-toml';
-import { codexThread } from './fixtures/codex-metadata.js';
 import { addProvider, init } from '../src/store.js';
 
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
@@ -74,15 +73,26 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.click('#add-api'); await page.fill('#provider-alias','personal');
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
-  await page.click('[data-tab="model"]');await page.click('#global-model');
-  await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
-  await page.click('#model-picker'); await page.fill('#model-search','relay-only');
-  await page.locator('[data-model="relay-only-model"]').click();
-  assert.equal(await page.locator('#effort-options button').count(), 1);
-  await page.click('#model-picker'); await page.fill('#model-search','gpt-6.1-sol');
-  await page.locator('[data-model="gpt-6.1-sol"]').click(); await page.click('[data-effort="high"]');
-  await page.click('#model-form button[type="submit"]');
-  await page.locator('#current-model').filter({hasText:'gpt-6.1-sol · high'}).waitFor();
+  assert.equal(await page.locator('[data-tab="model"], #model, #current-model').count(), 0);
+  await page.locator('.query-models').click();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  await page.fill('#models-search', 'relay-only'); assert.equal(await page.locator('.catalog-model').count(), 1);
+  assert.equal(await page.locator('.catalog-model').innerText(), 'relay-only-model');
+  await page.click('#close-models');
+  await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'inactive', url, key: 'fixture-inactive' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  await page.locator('.provider[data-alias="inactive"] .query-models').click();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  assert.equal((await page.evaluate(() => window.easySwitch.call('state'))).active, 'personal');
+  assert.match(await page.locator('#models-provider').innerText(), /inactive/);
+  await page.click('#close-models');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.locator('.provider[data-alias="inactive"] .query-models').click();
+  await page.locator('#models-status').filter({ hasText: '目录已刷新 · 2 个模型' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-models-dark-zh.png') });
+  await page.click('#close-models');
+  await page.click('#language-button'); await page.click('[data-language="en"]');
+  await page.click('#theme-button'); await page.click('[data-theme="light"]');
   const state = await page.evaluate(() => window.easySwitch.call('state'));
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
   await page.click('[data-tab="network"]');
@@ -111,7 +121,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,undefined);
   assert.deepEqual(uiErrors,[]);
 });
-test('provider editing, separate Claude settings and manual model selection work in the desktop UI', { skip: !enabled, timeout: 30000 }, async t => {
+test('provider editing and separate Claude model mappings work in the desktop UI', { skip: !enabled, timeout: 30000 }, async t => {
   const upstream = http.createServer((_req, res) => { res.writeHead(404); res.end(); }).listen(0, '127.0.0.1');
   await once(upstream, 'listening'); t.after(() => upstream.close());
   const { app, page, root, options } = await launch(t);
@@ -126,14 +136,17 @@ test('provider editing, separate Claude settings and manual model selection work
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
-  await page.click('[data-tab="model"]'); await page.click('#global-model');
-  await page.locator('#catalog-status.failed').waitFor();
-  await page.locator('.manual-model summary').click(); await page.fill('#manual-model', 'deepseek-flash'); await page.click('#apply-model');
-  await page.locator('#current-model').filter({ hasText: 'deepseek-flash' }).waitFor();
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).modelSelection.model, 'deepseek-flash');
+  await page.locator('.query-models').click(); await page.locator('#models-status.failed').waitFor();
+  await page.click('#close-models'); await page.locator('.edit-provider').click();
+  await page.locator('#claude-mapping summary').click();
+  await page.fill('#claude-main-model', 'deepseek-main'); await page.fill('#claude-agent-model', 'deepseek-agent'); await page.click('#save-provider');
+  await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.renamed.claudeModels, { default: 'deepseek-main', subagent: 'deepseek-agent' });
   const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
   assert.match(JSON.parse(fs.readFileSync(claudeFile)).env.ANTHROPIC_BASE_URL, /\/claude$/);
-  await page.click('[data-client="codex"]'); await page.locator('#current-model').filter({ hasText: 'Follow Codex' }).waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(claudeFile)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'deepseek-main');
+  await page.locator('.edit-provider').click(); await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-mapping.png') }); await page.click('#close-dialog');
+  await page.click('[data-client="codex"]'); await page.locator('.provider[data-alias="renamed"]').waitFor();
   await page.evaluate(() => window.easySwitch.call('stop')); assert.equal(fs.existsSync(claudeFile), false);
   assert.deepEqual(errors, []);
 });
@@ -197,7 +210,7 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   const account = (alias, plan, weekly) => ({ alias, type: 'account', active: false, usage: { status: 'ready', fetchedAt: Date.now(),
     data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
   const uiState = { running: true, imageTools: true, active: 'api', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0), { alias: 'api', type: 'api', active: true, baseUrl: 'https://api.example.com/v1' }],
-    sessions: [], version: '0.4.8', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
+    version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
   await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, state) => {
     powerMonitor.emit('lock-screen'); // Keep periodic real snapshots from replacing this fixture.
     globalThis.easySwitchQuotaState = state; globalThis.easySwitchQuotaRefreshes = 0;
@@ -236,17 +249,22 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   assert.equal(await plus.locator('.quota-tooltip').isVisible(), false);
   assert.equal(await plus.locator('.quota-segment.weekly .quota-progress').getAttribute('stroke-dashoffset'), '33');
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /67% remaining/);
-  for (const row of [plus, pro, credits]) assert.equal(await row.locator('.quota-balance').innerText(), '36.445', 'purchased credits remain visible alongside every time-window ring');
+  assert.equal(await page.locator('.quota-credits, .quota-balance').count(), 0);
+  for (const row of [plus, pro, credits]) {
+    await row.locator('.quota-center').focus(); await row.locator('.quota-tooltip').filter({ hasText: '36.445' }).waitFor();
+    await row.locator('.quota-center').evaluate(element => element.blur());
+  }
   assert.equal(await credits.locator('.quota-segment').count(), 1);
   assert.equal(await plus.locator('.quota-center').count(), 1);
-  await page.locator('#native-images').filter({ hasText: 'Text route: api (Official / third-party API)' }).waitFor(); await plus.locator('.quota').click();
+  await page.locator('#native-images').filter({ hasText: 'Text route: api (Official / third-party API)' }).waitFor(); await page.mouse.move(100, 100);
   assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 0);
   assert.equal(await plus.locator('.quota-tooltip').isVisible(), false, 'clicking the quota does not expand all details');
   await plus.locator('.quota-segment.weekly').focus();
   await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
   await plus.locator('.quota-segment.weekly').evaluate(element => element.blur());
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
-  await credits.locator('.quota-caption').filter({ hasText: '剩余购买额度' }).waitFor();
+  await credits.locator('.quota-center').focus(); await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
+  await credits.locator('.quota-center').evaluate(element => element.blur());
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.screenshot({ path: path.join(folder, 'quota-light.png') });
@@ -294,7 +312,7 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   const attempts = await app.evaluate(() => globalThis.easySwitchResetAttempts);
   assert.equal(attempts.length, 2); assert.deepEqual(attempts[0], attempts[1]); assert.equal(attempts[0].creditId, 'later');
   assert.equal(await page.locator('#reset-confirm').isDisabled(), true);
-  assert.equal(await plus.locator('.quota-balance').innerText(), '36.445');
+  assert.match(await plus.locator('.quota-center').getAttribute('aria-label'), /36.445/);
   assert.equal(await page.locator('#current-provider').innerText(), 'api');
   await page.click('#close-reset');
   await app.evaluate(({ BrowserWindow }) => {
@@ -371,9 +389,11 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  });
  assert.ok(Math.abs(animation.atStart - animation.before) < 1, 'the displaced provider starts at its previous visual position');
  assert.ok(animation.atMiddle > animation.atStart && animation.atMiddle < animation.atEnd, 'the provider slides through intermediate positions');
- await page.locator('.drag-handle').nth(2).dragTo(page.locator('.provider').first(),{targetPosition:{x:100,y:3}});
- await page.waitForFunction(async()=>JSON.stringify((await window.easySwitch.call('state')).providers.map(p=>p.alias))===JSON.stringify(['gamma','alpha','beta']));
+ await page.evaluate(() => Promise.all([...document.querySelectorAll('.provider')].flatMap(row => row.getAnimations().map(animation => animation.finished))));
+ await page.evaluate(() => { const main = document.querySelector('main'); main.scrollTop = main.scrollHeight; });
+ await page.locator('.provider[data-alias="gamma"] .drag-handle').dragTo(page.locator('.provider[data-alias="alpha"]'), { targetPosition: { x: 100, y: 4 } });
  await page.waitForFunction(()=>document.querySelector('.provider')?.dataset.alias==='gamma');
+ assert.deepEqual((await page.evaluate(() => window.easySwitch.call('state'))).providers.map(provider => provider.alias), ['gamma','alpha','beta']);
  page.once('dialog',dialog=>dialog.accept());await page.locator('.provider[data-alias="gamma"] .delete-provider').click();
  await page.waitForFunction(async()=>(await window.easySwitch.call('state')).providers.length===2);
  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
@@ -427,15 +447,13 @@ test('API configuration import previews its type, close icons center, network fi
   assert.equal(await page.locator('#provider-alias').inputValue(),'relay');await centered('close-dialog');
   assert.equal((await page.locator('#import-preview').innerText()).includes('fixture-import-secret'),false);
   await page.click('#save-provider');await page.locator('.provider strong').filter({hasText:'relay'}).waitFor();
-  await page.click('[data-tab="model"]');await page.click('#global-model');await page.locator('#catalog-status').filter({hasText:'Catalog refreshed · 2 models'}).waitFor();
-  await page.click('#refresh-models');await page.locator('#refresh-models:not([disabled])').waitFor();
-  assert.match(await page.locator('#catalog-status').innerText(),/2 models/);
-  await page.click('#model-picker');await page.fill('#model-search','relay-model');await page.press('#model-search','ArrowDown');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
-  assert.equal(await page.locator('#model-select').inputValue(),'relay-model');assert.match(await page.locator('#effort-help').innerText(),/No effort metadata/);
-  await page.click('#model-picker');
-  const menu=await page.locator('#model-menu').boundingBox(),viewport=await page.locator('main').boundingBox();
-  assert.ok(menu.y>=viewport.y && menu.y+menu.height<=viewport.y+viewport.height, 'Model menu must remain inside the scroll viewport');
-  const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'model-picker.png')});
+  await page.locator('.query-models').click(); await centered('close-models');
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  await page.click('#models-refresh'); await page.locator('#models-refresh:not([disabled])').waitFor();
+  assert.match(await page.locator('#models-status').innerText(), /2 models/);
+  await page.fill('#models-search', 'relay-model'); assert.equal(await page.locator('.catalog-model').count(), 1);
+  const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'provider-models.png') });
+  await page.click('#close-models');
   await page.click('[data-tab="network"]');assert.equal(await page.locator('#proxy-url').getAttribute('type'),'url');
   assert.equal(await page.locator('#no-proxy').isVisible(),false);await page.locator('#network-advanced summary').click();
   assert.match(await page.locator('[data-i18n="bypassHelp"]').innerText(),/connect directly/);
@@ -443,52 +461,9 @@ test('API configuration import previews its type, close icons center, network fi
   await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
 });
 
-test('desktop targets a running session, aligns effort controls and localizes structured update notes', { skip: !enabled, timeout: 60000 }, async t => {
-  const received = [], streams = [];
-  const upstream = http.createServer(async (req, res) => {
-    if (req.method === 'GET') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-6.1-sol' }, { id: 'gpt-5.1-codex' }] })); return; }
-    let body = ''; for await (const chunk of req) body += chunk; received.push(JSON.parse(body));
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('data: {"part":1}\n\n'); streams.push(res);
-  }).listen(0, '127.0.0.1'); await once(upstream, 'listening');
-  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
-  const { app, page, root, home } = await launch(t);
-  await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'demo', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
-  await page.locator('.provider strong').filter({ hasText: 'demo' }).waitFor();
-  const endpoint = (await page.evaluate(() => window.easySwitch.call('network'))).localProxy.url;
-  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
-  const responses = [];
-  const tasks = [];
-  for (const [id, text] of [['task-a', 'Repair the search feature'], ['task-b', 'Review the database migration']]) {
-    const thread = codexThread(home, id, text); tasks.push(thread);
-    responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, ...thread.headers }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: 'Internal request, not a task title' }) }));
-  }
-  responses.push(await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'thread-id': 'ephemeral-helper' }, body: JSON.stringify({ model: 'gpt-5.1-codex', input: 'Generate a title' }) }));
-  await page.click('[data-tab="model"]'); await page.locator('[data-session="task-a"]').waitFor();
-  assert.equal(await page.locator('[data-session]').count(), 2);
-  assert.equal(await page.locator('[data-session="task-a"] strong').innerText(), 'Repair the search feature');
-  assert.equal(await page.locator('#apply-model').isDisabled(), true);
-  await page.click('[data-session="task-a"]');
-  await page.locator('#catalog-status').filter({ hasText: 'Catalog refreshed' }).waitFor();
-  await page.click('#model-picker'); await page.locator('[data-model="gpt-6.1-sol"]').click();
-  const picker = await page.locator('#model-picker').boundingBox(), effort = await page.locator('[data-effort=""]').boundingBox();
-  assert.ok(Math.abs(picker.y + picker.height / 2 - effort.y - effort.height / 2) < 1, 'Effort and model controls must share a centerline');
-  await page.click('[data-effort="high"]'); await page.click('#apply-model');
-  await page.locator('#model-feedback').filter({ hasText: 'Saved for Repair the search feature' }).waitFor();
-  const modelState = JSON.parse(fs.readFileSync(path.join(root, 'state.json')));
-  assert.equal(modelState.modelSelection, undefined); assert.equal(modelState.sessionModels['task-a'].model, 'gpt-6.1-sol'); assert.equal(modelState.sessionModels['task-b'], undefined);
-  const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'session-model.png') });
-  for (const stream of streams) stream.end('data: [DONE]\n\n');
-  await Promise.all(responses.map(response => response.text())); assert.ok(received.every(body => body.model === 'gpt-5.1-codex'));
-  tasks[1].event('task_complete');
-  await page.waitForFunction(() => document.querySelectorAll('[data-session]').length === 1);
-  assert.equal(await page.locator('[data-session="task-a"] .session-state').innerText(), 'Task continuing');
-  tasks[0].event('task_complete');
-  await page.locator('#sessions-empty').waitFor();
-  assert.equal(await page.locator('[data-session]').count(), 0);
-  assert.equal(await page.locator('#apply-model').isDisabled(), true);
-  assert.equal(await page.locator('#model-feedback').isVisible(), false);
-  await page.screenshot({ path: path.join(folder, 'sessions-finished.png') });
-
+test('desktop localizes structured update notes', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page } = await launch(t);
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   // Replace only this isolated test app's update IPC response; no real release or install is changed.
   await app.evaluate(({ ipcMain }) => {
     const notes = '<!-- easy-switch:notes:en -->\n## Improvements\n- Switch a single **session**.\n<!-- easy-switch:notes:zh-CN -->\n## 功能改进\n- 为单条**会话**切换模型。\n';
@@ -500,7 +475,7 @@ test('desktop targets a running session, aligns effort controls and localizes st
     });
     globalThis.easySwitchTestNotes = notes;
   });
-  const uiState = { running: true, providers: [], sessions: [], active: 'demo', version: '0.4.3', language: 'en', dark: false, theme: 'light', platform: process.platform,
+  const uiState = { running: true, providers: [], active: 'demo', version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform,
     update: { phase: 'available', version: '0.4.4', date: '2026-10-31T00:00:00Z', size: 1024 ** 2 } };
   await app.evaluate((_electron, state) => { globalThis.easySwitchTestState = { ...state, update: { ...state.update, notes: globalThis.easySwitchTestNotes } }; }, uiState);
   await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();

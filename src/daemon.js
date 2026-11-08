@@ -5,6 +5,7 @@ import { networkEnvironment } from './network.js';
 import path from 'node:path';
 import { activateClaude, restoreClaude } from './claude-config.js';
 import { claudeHome } from './claude-auth.js';
+import { claudeModelEnvironment } from './claude-models.js';
 
 try {
   const root = home();
@@ -19,7 +20,7 @@ try {
   server.once('listening', () => {
     try {
       const state = init(path.join(root, 'claude'));
-      if (Object.keys(state.providers).length) activateClaude(root, claudeHome(), port, state.token);
+      if (Object.keys(state.providers).length) activateClaude(root, claudeHome(), port, state.token, claudeModelEnvironment(state.providers[state.active]));
     } catch { console.error('Unable to configure Claude Code routing. Check its user settings.'); server.close(); process.exitCode = 1; }
   });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {

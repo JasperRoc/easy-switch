@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { init, aliasName, addProvider, editProvider, removeProvider, activate, readState, providerOrder, setOrder, setModel, baseURL, accountAuth, atomic } from '../src/store.js';
+import { init, aliasName, addProvider, editProvider, removeProvider, activate, readState, providerOrder, setOrder, baseURL, accountAuth, atomic } from '../src/store.js';
 import { createReauth, expired } from '../src/auth.js';
 import { codexModels, discoverModels, discoverClaudeModels } from '../src/catalog.js';
+import { claudeModelMapping } from '../src/claude-models.js';
 import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin } from '../src/claude-auth.js';
 import { randomUUID } from 'node:crypto';
 import { imageEligible } from '../src/images.js';
@@ -18,7 +19,7 @@ export class DesktopController {
     Object.assign(this, { root, codexHome, binary });
     this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
     protectDirectory(root);
-    this.login = null; this.catalog = null;
+    this.login = null;
     this.reauth = createReauth();
     const prompt = this.reauth.prompt;
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
@@ -35,7 +36,7 @@ export class DesktopController {
   get currentLogin() { return this.client === 'claude' ? this.claudeLogin : this.login; }
   clientSelection(client) {
     if (!['codex', 'claude'].includes(client)) throw new Error('Choose Codex or Claude Code.');
-    this.setPreferences({ client }); this.catalog = null; return this.snapshot();
+    this.setPreferences({ client }); return this.snapshot();
   }
   preferences() {
     try {
@@ -95,7 +96,7 @@ export class DesktopController {
     } finally { this.resetPending.delete(alias); }
   }
   async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
-  snapshot({ usage: includeUsage = true, sessions: includeSessions = true } = {}) {
+  snapshot({ usage: includeUsage = true } = {}) {
     const preferences = this.preferences();
     const client = this.client, state = init(this.providerRoot);
     const usage = client === 'codex' && this.runtime.active && includeUsage ? this.usage.snapshot(state) : {};
@@ -107,26 +108,26 @@ export class DesktopController {
         try { const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider); needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth); if (client === 'codex' && !imageEligible(auth)) freeImages = true; }
         catch { needsLogin = true; }
       }
-      return { alias, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null };
+      return { alias, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null,
+        ...(client === 'claude' && provider.type === 'api' ? { claudeModels: provider.claudeModels || null } : {}) };
     });
-    const sessions = includeSessions ? client === 'codex' ? this.runtime.sessions.snapshot(state)
-      : this.runtime.claudeSessions.snapshot(state).filter(session => session.activeRequests > 0).map(session => ({ ...session, title: 'Claude Code · ' + session.id.slice(0, 8) })) : [];
     const login = this.currentLogin;
-    return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active, model: client === 'claude' && state.modelSelectionAlias && state.modelSelectionAlias !== state.active ? null : state.modelSelection || null,
+    return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active,
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, sessions, sessionsUnavailable: client === 'codex' && this.runtime.sessions.unavailable, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
   }
-  switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.catalog = null; return this.snapshot(); }
+  switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.runtime.syncClaude(); return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }
-  edit({ original, alias, url, key }) {
+  edit({ original, alias, url, key, claudeModels }) {
     const provider = readState(this.providerRoot).providers[original];
     if (!provider) throw new Error('Unknown provider.');
     const patch = { alias };
     if (provider.type === 'api') {
       if (url !== undefined && this.apiURL(url) !== provider.baseUrl) patch.baseUrl = this.apiURL(url);
       if (key?.trim()) patch.apiKey = key;
+      if (this.client === 'claude' && claudeModels !== undefined) patch.claudeModels = claudeModels;
     }
-    editProvider(original, patch, this.providerRoot); this.catalog = null;
+    editProvider(original, patch, this.providerRoot); this.runtime.syncClaude();
     const login = this.currentLogin; if (login?.alias === original) login.alias = alias;
     return this.snapshot();
   }
@@ -137,8 +138,8 @@ export class DesktopController {
       if (this.claudeLogin?.alias === alias) this.claudeLogin.cancel?.();
       await removeClaudeLogin(provider.accountHome);
     }
-    removeProvider(alias, root); this.catalog = null;
-    this.runtime.syncTools();
+    removeProvider(alias, root);
+    this.runtime.syncTools(); this.runtime.syncClaude();
     if (provider.type === 'account') {
       if (client === 'codex') { this.reauth.cancel(provider); if (this.login?.alias === alias) this.login = null; }
       else if (this.claudeLogin?.alias === alias) { this.claudeLogin.cancel?.(); this.claudeLogin = null; }
@@ -150,10 +151,11 @@ export class DesktopController {
     return this.snapshot();
   }
   apiURL(url = '') { return baseURL(url.trim() || (this.client === 'claude' ? 'https://api.anthropic.com' : '')); }
-  addAPI({ alias, url = '', key }) {
+  addAPI({ alias, url = '', key, claudeModels }) {
     aliasName(alias);
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) throw new Error('Enter a valid API key.');
-    addProvider(alias, { type: 'api', baseUrl: this.apiURL(url), apiKey: key.trim() }, this.providerRoot);
+    const mapping = this.client === 'claude' ? claudeModelMapping(claudeModels) : null;
+    addProvider(alias, { type: 'api', baseUrl: this.apiURL(url), apiKey: key.trim(), ...(mapping ? { claudeModels: mapping } : {}) }, this.providerRoot);
     this.runtime.syncClaude();
     return this.snapshot();
   }
@@ -176,7 +178,6 @@ export class DesktopController {
         if (!existing) addProvider(alias, { type: 'account', accountHome }, this.root);
         login.phase = 'complete';
         login.message = 'Signed in successfully.';
-        this.catalog = null;
         this.runtime.syncTools();
       } catch { login.phase = 'failed'; login.message = 'Sign-in completed, but that alias was added elsewhere. Use a different alias.'; }
     });
@@ -199,7 +200,7 @@ export class DesktopController {
       if (!success) return;
       try {
         if (!existing) addProvider(login.alias, { type: 'account', accountHome }, root);
-        this.catalog = null; this.runtime.syncClaude();
+        this.runtime.syncClaude();
       } catch { login.phase = 'failed'; login.message = 'That alias already exists.'; }
     });
     await login.ready; return this.snapshot();
@@ -264,22 +265,14 @@ export class DesktopController {
     }
     this.runtime.syncClaude(); return this.snapshot();
   }
-  async models() {
-    const root = this.providerRoot, state = readState(root), provider = state.providers[state.active];
-    if (!provider) throw new Error('Add a provider first.');
-    const result = this.client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root, { catalogImpl: account => codexModels({ binary: this.binary, provider: account }) });
-    if (this.providerRoot !== root || readState(root).generation !== state.generation) throw new Error('The provider changed while loading models. Refresh the catalog again.');
-    this.catalog = { alias: state.active, ...result };
-    return result;
-  }
-  model(selection, sessionId) {
-    const root = this.providerRoot;
-    if (sessionId !== undefined && !this.snapshot({ usage: false }).sessions.some(session => session.id === sessionId)) throw new Error('Choose a session observed by this app first.');
-    if (!selection) { setModel(null, root, undefined, sessionId); return this.snapshot(); }
-    const entry = this.catalog?.models.find(model => model.id === selection.model);
-    if (!(selection.manual === true && selection.effort === null) && (!entry || (selection.effort !== null && !entry.efforts.includes(selection.effort)))) throw new Error('Reload the model catalog and choose a supported effort.');
-    setModel(selection, root, selection.manual ? readState(root).active : this.catalog.alias, sessionId);
-    return this.snapshot();
+  async models(alias) {
+    const client = this.client, root = this.providerRoot;
+    const state = readState(root), name = aliasName(alias), provider = state.providers[name];
+    if (!provider) throw new Error('Unknown provider.');
+    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root, { catalogImpl: account => codexModels({ binary: this.binary, provider: account }) });
+    const current = readState(root).providers[name];
+    if (this.providerRoot !== root || !current || JSON.stringify(current) !== JSON.stringify(provider)) throw new Error('The provider changed while loading models. Refresh the catalog again.');
+    return { alias: name, client, ...result, fetchedAt: Date.now() };
   }
   async configureNetwork() {
     this.detectedProxy = await this.detectProxy();
