@@ -34,6 +34,8 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 
 Installing alone leaves client configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings for both clients. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Conversation clients are installed separately. See the [Claude Code guide](docs/claude-code.md) for authentication and protocol details.
 
+Claude integration currently configures **Claude Code CLI**. Claude Desktop has a separate gateway setup; its chat model menu and Code access do not follow CLI settings. Outbound connections are configured automatically at startup from your environment or system HTTP/HTTPS proxy settings; existing saved overrides are retained.
+
 Windows packages have no publisher signature. macOS packages use ad hoc signing with verified bundle integrity, but have no Developer ID and are not notarized. Your OS may require explicit first-launch approval; see the [macOS preview instructions](docs/desktop.md#macos-preview-and-the-damaged-app-alert). The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
 
 ### 🐧 Linux server CLI
@@ -111,6 +113,10 @@ easy-switch brings account configuration, routing selection and fallback orderin
 ### Will other AI providers be supported?
 
 Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code supports Anthropic Messages-compatible APIs and Claude subscriptions. [DeepSeek documents Codex integration](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) and [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/). Configure each protocol endpoint separately and select a model the provider actually offers; a generic third-party key alone does not establish protocol compatibility. Gemini subscription login is not implemented.
+
+### Why does Claude Desktop still show Claude models or ask me to get Claude Code?
+
+easy-switch currently writes Claude Code CLI settings. [Claude Desktop reads a separate third-party inference configuration](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app), so adding a DeepSeek API here does not connect Desktop’s chat or Code tab. With a normal Claude account, the Code tab requires an eligible paid plan; adding a third-party key does not change that account’s access. Model mappings apply to routed CLI requests, and the CLI’s custom `/model` entry is loaded at startup. See the [Claude Code guide](docs/claude-code.md) for the supported workflow and Desktop setup limits.
 
 ### Why does Codex list a model my API cannot use?
 

@@ -34,6 +34,8 @@ easy-switch 是面向 **Codex 与 Claude Code** 的桌面及命令行路由工�
 
 仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复两个客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude Code 指南](claude-code.md)。
 
+Claude 目前自动配置的是 **Claude Code CLI**。Claude 桌面端需要独立的网关配置，聊天模型菜单及 Code 权限不会跟随 CLI 设置变化。外网连接在启动时自动采用环境变量或系统 HTTP/HTTPS 代理；已有的手动配置会保留。
+
 Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应用完整性，但尚无 Developer ID 及 Apple 公证，首次打开仍可能需要系统手动允许。详见[macOS 预览版安装说明](desktop.md#macos-preview-and-the-damaged-app-alert)。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
 
 ### 🐧 Linux 服务器命令行
@@ -111,6 +113,10 @@ easy-switch 将账号配置、路由选择与备用排序集中在托盘应用�
 ### 是否考虑引入其他 AI 服务商？
 
 Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthropic Messages 兼容 API 与 Claude 订阅。DeepSeek 已提供 [Codex 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)和 [Claude Code 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。请分别填写对应协议的地址，并选择服务商实际提供的模型；第三方 API Key 本身不代表同时支持两种协议。Gemini 订阅登录尚未实现。
+
+### 为什么 Claude 桌面端仍显示 Claude 模型，或提示“获取 Claude Code”？
+
+easy-switch 目前写入 Claude Code CLI 的配置。[Claude 桌面端使用独立的第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)，因此在这里添加 DeepSeek API 不会自动接通桌面聊天或 Code 页面。普通 Claude 账号方式下，Code 页面需要符合要求的付费计划；添加第三方密钥不会改变此账号的访问权限。模型映射作用于已进入代理的 CLI 请求，自定义 `/model` 选项在 CLI 启动时读取。支持的使用方式及桌面端配置边界见 [Claude Code 指南](claude-code.md)。
 
 ### 为什么 Codex 列出了我的 API 不支持的模型？
 

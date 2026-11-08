@@ -70,7 +70,7 @@ The preparation script downloads the matching pinned official Codex platform pac
 After building, verify the actual DMGs before publishing:
 
 ```bash
-node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.5.4-mac-arm64.dmg dist/easy-switch-0.5.4-mac-x64.dmg
+node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.5.5-mac-arm64.dmg dist/easy-switch-0.5.5-mac-x64.dmg
 ```
 
 This checks image checksums, mounts each image read-only without opening Finder, verifies the contained application/nested code, and detaches it. A successful `codesign` result does not mean `spctl` will trust an unnotarized ad hoc application.

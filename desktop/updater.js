@@ -16,8 +16,8 @@ const versionPattern = /^(?:v)?(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?$/;
 function updateError(error, action) {
   if (error instanceof TypeError || ['AbortError', 'TimeoutError'].includes(error.name) ||
       error.cause?.code || /net::ERR_|fetch failed|terminated/i.test(error.message)) {
-    return action === 'check' ? 'Unable to reach GitHub. Check Connection settings and retry.'
-      : 'Unable to download from GitHub release assets. Check Connection settings and retry the download.';
+    return action === 'check' ? 'Unable to reach GitHub. Check your connection or system proxy and retry.'
+      : 'Unable to download from GitHub release assets. Check your connection or system proxy and retry the download.';
   }
   return error.message;
 }

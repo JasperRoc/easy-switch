@@ -19,13 +19,13 @@ async function setup(t, original = '# original\nmodel_provider="openai"\nmodel="
   t.after(async () => { await runtime.stop(); fs.rmSync(directory, { recursive: true, force: true }); });
   return { directory, root, codexHome, runtime, file: path.join(codexHome, 'config.toml'), original };
 }
-test('desktop routing exists only while the app runs; restart does not replace the original backup', async t => {
+test('desktop routing exists only while the app runs; repeated start does not replace the original backup', async t => {
   const { runtime, file, original } = await setup(t);
   assert.equal(fs.readFileSync(file, 'utf8'), original);
   await runtime.start();
   assert.equal(parse(fs.readFileSync(file, 'utf8')).model_provider, 'easy_switch');
   const record = fs.readFileSync(runtime.recordFile, 'utf8');
-  await runtime.restartNetwork();
+  await runtime.start();
   assert.equal(fs.readFileSync(runtime.recordFile, 'utf8'), record);
   await runtime.stop();
   assert.equal(fs.readFileSync(file, 'utf8'), original);
@@ -176,7 +176,7 @@ test('independent guard restores configuration if the desktop process crashes', 
 });
 test('rapid start and stop requests cannot leave configuration pointing to a stopped proxy', async t => {
   const { runtime, file, original } = await setup(t);
-  await Promise.all([runtime.start(), runtime.stop(), runtime.start(), runtime.restartNetwork(), runtime.stop()]);
+  await Promise.all([runtime.start(), runtime.stop(), runtime.start(), runtime.stop()]);
   assert.equal(runtime.server, null);
   assert.equal(fs.readFileSync(file, 'utf8'), original);
 });

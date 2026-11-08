@@ -95,10 +95,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.click('#theme-button'); await page.click('[data-theme="light"]');
   const state = await page.evaluate(() => window.easySwitch.call('state'));
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
-  await page.click('[data-tab="network"]');
-  assert.match(await page.locator('#local-proxy').innerText(), /^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-  assert.equal(await page.locator('#detected-proxy').innerText(), 'No proxy detected');
-  await page.screenshot({path:path.join(project,'.desktop-test','connection.png')});
+  assert.equal(await page.locator('nav, #network, #network-form').count(), 0);
   await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing stopped'}).waitFor();
   assert.equal(fs.readFileSync(file,'utf8'),original);
   await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing active'}).waitFor();
@@ -133,6 +130,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
+  assert.match(await page.locator('[data-i18n="clientHelp"]').innerText(), /Claude Code CLI/);
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
@@ -171,7 +169,7 @@ process.stdin.once('data',()=>{fs.writeFileSync(path.join(process.env.CLAUDE_CON
 test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foreground work while routing remains usable', { skip: !enabled, timeout: 30000 }, async t => {
   const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }).listen(0, '127.0.0.1');
   await once(upstream, 'listening'); t.after(() => upstream.close());
-  const { app, page, root } = await launch(t);
+  const { app, page, root, home } = await launch(t);
   await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'idle-test', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
   await page.locator('.provider strong').filter({ hasText: 'idle-test' }).waitFor();
   await app.evaluate(({ app, BrowserWindow }) => {
@@ -190,7 +188,7 @@ test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foregro
   assert.equal(await app.evaluate(() => globalThis.energyLoginReads), 0, 'idle polling does not call OS login-item services');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
   const sent = await app.evaluate(() => globalThis.energySends);
-  const endpoint = (await page.evaluate(() => window.easySwitch.call('network'))).localProxy.url;
+  const endpoint = parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).model_providers.easy_switch.base_url;
   const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
   const response = await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'fixture', input: 'Keep routing while hidden' }) });
   assert.equal(response.status, 200); await response.text();
@@ -265,6 +263,10 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await credits.locator('.quota-center').focus(); await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
   await credits.locator('.quota-center').evaluate(element => element.blur());
+  await credits.locator('.quota-center').hover();
+  assert.equal(await credits.locator('.quota-center-hit').evaluate(element => getComputedStyle(element).cursor), 'default');
+  await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
+  await page.mouse.move(100, 100);
   assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.screenshot({ path: path.join(folder, 'quota-light.png') });
@@ -438,7 +440,7 @@ clearInterval(timer); process.exit(0); }, 50);
   await page.locator('.provider strong').filter({ hasText: 'subscription' }).waitFor();
 });
 
-test('API configuration import previews its type, close icons center, network fields explain bypass, and model refresh confirms success', {skip:!enabled,timeout:60000}, async t => {
+test('API import previews its type, close icons center, and model refresh confirms success without network controls', {skip:!enabled,timeout:60000}, async t => {
   const upstream = http.createServer((_req,res) => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({data:[{id:'gpt-6.1-sol'},{id:'relay-model'}]})); }).listen(0,'127.0.0.1'); await once(upstream,'listening');t.after(()=>upstream.close());
   const original=`model_provider="relay"\n[model_providers.relay]\nbase_url="http://127.0.0.1:${upstream.address().port}/v1"\nexperimental_bearer_token="fixture-import-secret"\n`;
   const {page}=await launch(t,{},original);
@@ -454,10 +456,7 @@ test('API configuration import previews its type, close icons center, network fi
   await page.fill('#models-search', 'relay-model'); assert.equal(await page.locator('.catalog-model').count(), 1);
   const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'provider-models.png') });
   await page.click('#close-models');
-  await page.click('[data-tab="network"]');assert.equal(await page.locator('#proxy-url').getAttribute('type'),'url');
-  assert.equal(await page.locator('#no-proxy').isVisible(),false);await page.locator('#network-advanced summary').click();
-  assert.match(await page.locator('[data-i18n="bypassHelp"]').innerText(),/connect directly/);
-  await page.screenshot({path:path.join(folder,'connection-explained.png')});
+  assert.equal(await page.locator('[data-tab="network"], #proxy-url, #no-proxy').count(), 0);
   await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
 });
 

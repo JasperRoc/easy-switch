@@ -45,7 +45,7 @@ test('automatic updates use the system network transport and a failed download c
   return new Response('abc');
  }});
  await updater.check(); assert.equal(updater.snapshot().phase,'available');
- await assert.rejects(updater.download(),/Connection settings/);
+ await assert.rejects(updater.download(),/connection or system proxy/);
  assert.equal(updater.snapshot().retryDownload,true); assert.equal(updater.snapshot().error.includes('secret'),false);
  assert.equal(fs.existsSync(path.join(root,'updates','easy-switch-0.5.0-win-x64.exe.part')),false);
  await updater.download();assert.equal(updater.snapshot().phase,'ready');assert.equal(updater.snapshot().retryDownload,false);

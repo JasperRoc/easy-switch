@@ -1,15 +1,15 @@
 import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 import { releaseNotes } from './release-notes.js';
 const $ = id => document.getElementById(id);
-let state, activeTab = 'providers', renderedProviders = '', refreshing = null;
+let state, renderedProviders = '', refreshing = null;
 let language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
-let networkState = null, importLoading = false;
+let importLoading = false;
 let catalogProvider = null, catalogResult = null, catalogLoading = false, catalogError = '', catalogRequest = 0;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
 let renderedState = '';
 let editingProvider = null;
 const resetAttempts = new Map();
-const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values)
+const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'clientHelp'].includes(key) ? 'claude_' + key : key, values)
   .replaceAll('Codex', state?.client === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -225,7 +225,7 @@ function refresh(nextState) {
     renderProviders();
     $('failover').hidden = !state.lastFailover;
     if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
-    renderLogin(); renderNetwork();
+    renderLogin();
     if (catalogProvider && (catalogProvider.client !== state.client || !state.providers.some(provider => provider.alias === catalogProvider.alias))) {
       $('models-dialog').close(); catalogProvider = null; catalogRequest++;
     }
@@ -274,43 +274,11 @@ $('close-models').addEventListener('click', () => $('models-dialog').close());
 $('models-dialog').addEventListener('close', () => { catalogProvider = null; catalogRequest++; catalogLoading = false; });
 $('models-refresh').addEventListener('click', loadProviderModels);
 $('models-search').addEventListener('input', renderProviderModels);
-async function changeTab(tab) {
-  if(tab==='updates') {await showUpdates();return;}
-  if (!['providers', 'network'].includes(tab)) return;
-  activeTab = tab;
-  for (const element of document.querySelectorAll('nav button')) element.classList.toggle('selected', element.dataset.tab === tab);
-  for (const id of ['providers', 'network']) $(id).hidden = id !== tab;
-  if (tab === 'network') {
-    try {
-      networkState = await call('network');
-      const proxy = networkState.httpsProxy || networkState.httpProxy || '';
-      const address = proxy ? new URL(proxy) : null;
-      $('proxy-username').value = address ? decodeCredential(address.username) : '';
-      $('proxy-password').value = address ? decodeCredential(address.password) : '';
-      if (address) { address.username = ''; address.password = ''; }
-      $('proxy-url').value = address?.href || '';
-      $('no-proxy').value = networkState.noProxy;
-      renderNetwork();
-    }
-    catch (error) { showError(error); }
-  }
-}
 async function startLogin(alias) {
   if (!$('add-dialog').open) openProvider('account', alias);
   const result = await run('login', alias);
   if (result?.login?.url && !(state.client === 'claude' && state.platform === 'win32')) await call('open-login');
   return result;
-}
-function decodeCredential(value) { try { return decodeURIComponent(value); } catch { return value; } }
-function renderNetwork() {
-  if (!networkState) return;
-  $('local-proxy').textContent = networkState.localProxy.url;
-  $('local-proxy-status').textContent = t(state.running ? 'localProxyActive' : 'localProxyStopped');
-  $('detected-proxy').textContent = networkState.detected.url || t('noneDetected');
-  const source = networkState.detected.source === 'environment' ? t('proxyEnvironment') : networkState.detected.source;
-  $('detected-proxy-source').textContent = networkState.source === 'saved' ? t('proxySaved')
-    : networkState.detected.url ? t('proxyDetectedFrom', { source }) : t('proxyDetectedNone');
-  $('proxy-warning').hidden = !networkState.unsupported;
 }
 function dialogLogin() { return providerMode === 'account' && state.login?.alias === $('provider-alias').value.trim() ? state.login : null; }
 function renderLogin() {
@@ -327,7 +295,6 @@ function renderLogin() {
   $('login-alias').textContent = `${login.alias} · ${t('phase' + login.phase[0].toUpperCase() + login.phase.slice(1))}`;
   $('login-message').textContent = pending && login.code ? t('loginInstructions') : localizeMessage(login.message, language);
 }
-for (const element of document.querySelectorAll('nav button')) element.addEventListener('click', () => changeTab(element.dataset.tab));
 function openProvider(mode, alias = '') {
   providerMode = mode; $('dialog-error').hidden = true; $('provider-form').reset();
   editingProvider = mode === 'edit' ? state.providers.find(provider => provider.alias === alias) : null;
@@ -380,8 +347,8 @@ $('provider-alias').addEventListener('input', renderLogin);
 for (const item of document.querySelectorAll('[data-client]')) item.addEventListener('click', async () => {
   if (item.dataset.client === state.client) return;
   $('add-dialog').close(); $('reset-dialog').close(); editingProvider = null; providerMode = 'account';
-  $('models-dialog').close(); catalogProvider = null; catalogRequest++; networkState = null;
-  try { await run('client', item.dataset.client); if (activeTab !== 'providers') await changeTab(activeTab); } catch {}
+  $('models-dialog').close(); catalogProvider = null; catalogRequest++;
+  try { await run('client', item.dataset.client); } catch {}
 });
 $('provider-list').addEventListener('dragover', event => {
   if (!dragging) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move';
@@ -399,15 +366,6 @@ $('provider-list').addEventListener('dragover', event => {
 $('provider-list').addEventListener('drop', async event => {
   if (!dragging) return; event.preventDefault(); $('provider-list').querySelector('.dragging')?.classList.remove('dragging'); const aliases=[...$('provider-list').children].map(item=>item.dataset.alias); dragging=null;
   try { await run('order',aliases); } catch {} finally { renderedProviders=''; renderProviders(); }
-});
-$('network-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  if (state.activeRequests && !confirm(t('restartConfirm'))) return;
-  try {
-    let proxy = $('proxy-url').value.trim();
-    if (proxy) { const url = new URL(proxy); url.username = $('proxy-username').value; url.password = $('proxy-password').value; proxy = url.href; }
-    await run('save-network', { proxy, noProxy: $('no-proxy').value.trim() }); await changeTab('network');
-  } catch (error) { showError(error); }
 });
 function closeMenus() { for(const id of ['language','theme']) { $(id+'-menu').hidden=true; $(id+'-button').setAttribute('aria-expanded','false'); } }
 for(const id of ['language','theme']) $(id+'-button').addEventListener('click',()=>{const open=$(id+'-menu').hidden;closeMenus();$(id+'-menu').hidden=!open;$(id+'-button').setAttribute('aria-expanded',String(open));if(open)$(id+'-menu').querySelector('button').focus();});
@@ -475,5 +433,5 @@ $('update-action').addEventListener('click',async()=>{try{await call(state.updat
 $('star').addEventListener('click',()=>call('star').catch(showError));
 window.easySwitch.onChange(nextState => { if (!document.hidden) refresh(nextState); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-window.easySwitch.onTab(changeTab);
+window.easySwitch.onTab(tab => { if (tab === 'updates') showUpdates(); });
 refresh();

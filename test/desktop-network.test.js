@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectSystemProxy, desktopNetworkSettings, publicProxyURL } from '../desktop/network.js';
+import { detectSystemProxy, desktopNetworkSettings } from '../desktop/network.js';
 import { saveNetwork } from '../src/network.js';
 
 test('macOS HTTP/HTTPS system proxies, bypass rules and unsupported PAC are detected', async () => {
@@ -30,7 +30,7 @@ test('Windows settings support shared and per-protocol proxies without executing
   const unavailable = await detectSystemProxy({ platform: 'darwin', execFileImpl: async () => { throw Error('unavailable'); } });
   assert.equal(unavailable.httpProxy, '');
 });
-test('desktop saved settings override environment and system; detection masks proxy credentials', t => {
+test('desktop saved settings override environment and system detection', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-network-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const system = { httpProxy: 'http://127.0.0.1:7890', httpsProxy: 'http://127.0.0.1:7890', source: 'macOS' };
@@ -42,5 +42,4 @@ test('desktop saved settings override environment and system; detection masks pr
   assert.equal(settings.httpsProxy, ''); assert.equal(settings.source, 'saved');
   assert.equal(settings.detected.httpsProxy, environment.HTTPS_PROXY);
   assert.equal(desktopNetworkSettings(root, { ALL_PROXY: 'socks5://localhost:1080' }, system).httpsProxy, '');
-  assert.equal(publicProxyURL('http://user:secret@127.0.0.1:7890'), 'http://127.0.0.1:7890/');
 });

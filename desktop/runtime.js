@@ -47,7 +47,6 @@ export class DesktopRuntime {
   }
   start() { return this.transition(() => this.startRouting()); }
   stop() { return this.transition(() => this.stopRouting()); }
-  restartNetwork() { return this.transition(() => this.restartRouting()); }
   syncTools() { if (this.active) this.imageTools = syncSession(this.root, this.codexHome); }
   syncClaude() {
     if (!this.active || !this.claudeHome) return;
@@ -112,11 +111,5 @@ export class DesktopRuntime {
       const closed = once(server, 'close');
       server.close(); server.closeAllConnections(); await closed;
     }
-  }
-  async restartRouting() {
-    if (!this.server) return;
-    const server = this.server; this.server = null;
-    const closed = once(server, 'close'); server.close(); server.closeAllConnections(); await closed;
-    try { await this.listen(); } catch (error) { await this.stopRouting(); throw error; }
   }
 }

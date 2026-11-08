@@ -7,8 +7,8 @@ import { claudeModelMapping } from '../src/claude-models.js';
 import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin } from '../src/claude-auth.js';
 import { randomUUID } from 'node:crypto';
 import { imageEligible } from '../src/images.js';
-import { saveNetwork, networkEnvironment } from '../src/network.js';
-import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment, publicProxyURL } from './network.js';
+import { networkEnvironment } from '../src/network.js';
+import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment } from './network.js';
 import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
 import { existingProvider } from './import.js';
 import { SubscriptionUsage } from './usage.js';
@@ -280,17 +280,6 @@ export class DesktopController {
     Object.assign(process.env, networkEnvironment(this.root, { ...this.originalEnv, ...proxyEnvironment(this.networkInfo) }));
   }
   network() {
-    const settings = this.networkInfo || desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
-    return { ...settings, detected: { url: publicProxyURL(settings.detected.httpsProxy || settings.detected.httpProxy), source: settings.detected.source },
-      localProxy: { url: `http://127.0.0.1:${this.runtime.port}${this.client === 'claude' ? '/claude' : '/v1'}`, running: !!this.runtime.server && this.runtime.active } };
-  }
-  async saveNetwork({ proxy = '', noProxy = '' }) {
-    if (typeof proxy !== 'string' || typeof noProxy !== 'string') throw new Error('Invalid network settings.');
-    const env = { HTTP_PROXY: proxy.trim(), HTTPS_PROXY: proxy.trim(), ALL_PROXY: '', NO_PROXY: noProxy,
-      http_proxy: proxy.trim(), https_proxy: proxy.trim(), all_proxy: '', no_proxy: noProxy };
-    saveNetwork(this.root, env);
-    await this.configureNetwork();
-    await this.runtime.restartNetwork();
-    return this.snapshot();
+    return this.networkInfo || desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
   }
 }

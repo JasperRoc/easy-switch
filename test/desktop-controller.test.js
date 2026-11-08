@@ -166,16 +166,18 @@ test('failed authentication clears the verification code and permits retry', asy
   assert.equal(controller.snapshot().login.phase, 'failed'); assert.equal(controller.snapshot().login.code, undefined);
   await controller.startLogin('subscription'); assert.equal(controller.snapshot().login.phase, 'pending');
 });
-test('desktop network reports the actual routing port separately and applies detected settings', async t => {
+test('desktop automatically applies detected system proxies and honors an explicit direct environment', async t => {
   const controller = setup(t);
   controller.originalEnv = {};
   controller.detectProxy = async () => ({ httpsProxy: 'http://127.0.0.1:7890', source: 'macOS' });
   const before = { ...process.env };
   t.after(() => { for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key]; Object.assign(process.env, before); });
-  await controller.configureNetwork(); controller.runtime.port = 23456;
+  await controller.configureNetwork();
   assert.equal(controller.network().httpsProxy, 'http://127.0.0.1:7890');
   assert.equal(process.env.HTTPS_PROXY, 'http://127.0.0.1:7890');
-  assert.equal(controller.network().localProxy.url, 'http://127.0.0.1:23456/v1');
-  await controller.saveNetwork({ proxy: '' });
+  assert.equal(controller.network().source, 'macOS');
+  assert.equal(fs.existsSync(path.join(controller.root, 'network.json')), false);
+  controller.originalEnv = { HTTP_PROXY: '', HTTPS_PROXY: '' };
+  await controller.configureNetwork();
   assert.equal(controller.network().httpsProxy, ''); assert.equal(process.env.HTTPS_PROXY, '');
 });

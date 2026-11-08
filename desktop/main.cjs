@@ -121,8 +121,6 @@ async function boot() {
         case 'models': return await controller.models(payload);
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
-        case 'network': return controller.network();
-        case 'save-network': result = await controller.saveNetwork(payload); break;
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
         case 'stop': await controller.stop(); result = snapshot(); break;
         case 'preferences':

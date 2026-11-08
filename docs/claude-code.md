@@ -6,6 +6,10 @@
 
 Select **Claude Code** at the top of the desktop window. Its providers, active route and fallback order are independent of Codex. Both clients can use the same running easy-switch application at once; changing this selector only chooses which configuration you are editing.
 
+**Client scope:** automatic configuration currently targets **Claude Code CLI** (`claude` in a terminal). Claude Desktop’s normal chat page is a different client; its model menu is not the CLI’s `/model` menu. The Desktop Code tab also does not adopt `ANTHROPIC_BASE_URL` from `settings.json`: it needs [Desktop’s separate third-party inference setup](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app). The official entry is **Help → Troubleshooting → Enable Developer Mode**, then **Developer → Configure Third-Party Inference**. That setup uses its own gateway requirements; easy-switch does not yet implement or configure that Desktop gateway contract. Pointing it at the current Messages proxy alone is not a supported integration. With an ordinary Claude account, a Free plan’s “Get Claude Code” page is an access prompt, not a model-mapping error; see [Desktop quick start](https://code.claude.com/docs/en/desktop-quickstart). Third-party API credentials do not grant that account a paid plan.
+
+To use DeepSeek with the supported CLI workflow, query the provider’s catalog, edit its **Claude model mapping** with the exact main model ID (and optional subagent ID), then open a new `claude` session. Use `/status` to confirm the local base URL and `/model` for the custom entry. The provider must support Anthropic Messages, streaming and tool calls; a model-name mapping cannot supply missing protocol capabilities.
+
 **API:** choose **Add API provider**. An empty Base URL means `https://api.anthropic.com`. Other providers must implement Anthropic Messages and accept Bearer or `x-api-key` authentication; an OpenAI-compatible address alone is insufficient. Enter the provider’s base address without `/v1/messages`; an existing `/v1` suffix is accepted.
 
 **Subscription:** install the [official Claude Code CLI](https://code.claude.com/docs/en/setup), then choose **Add subscription**. easy-switch runs `claude auth login --claudeai` with an isolated `CLAUDE_CONFIG_DIR`. Open the official browser sign-in and paste its authorization code into the dialog when prompted. On macOS, allow the official client to save its isolated login and easy-switch to read it from Keychain. On Linux/Windows the official client uses its credential file. The app copies OAuth credentials into its protected account directory, refreshes expiring access tokens, and starts a new official sign-in when required. It does not replace the normal client’s saved subscription login. Use **Import existing sign-in** to copy an existing API configuration or subscription instead.
@@ -44,6 +48,10 @@ Official references: [authentication](https://code.claude.com/docs/en/authentica
 ## 简体中文
 
 在桌面顶部选择 **Claude Code**，即可管理它独立的服务商、当前路由和备用顺序。两个客户端可以同时使用同一个 easy-switch；顶部选择器只决定正在编辑哪一套配置。
+
+**客户端范围：**目前自动配置的是终端中的 **Claude Code CLI**（`claude`）。Claude 桌面普通聊天属于另一个客户端，其模型菜单不是 CLI 的 `/model` 菜单。桌面 Code 页面同样不会采用 `settings.json` 中的 `ANTHROPIC_BASE_URL`，需要[桌面端独立的第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)。官方入口是 **Help → Troubleshooting → Enable Developer Mode**，随后进入 **Developer → Configure Third-Party Inference**；该方式有独立的网关要求，easy-switch 尚未实现或自动配置这套桌面网关协议，不能只把现有 Messages 代理地址填进去就认为完成接入。普通 Claude 账号为 Free 时出现“获取 Claude Code”，属于入口权限提示，不是模型映射错误，见[桌面版快速开始](https://code.claude.com/docs/en/desktop-quickstart)。第三方 API 凭据不会使此账号获得付费计划。
+
+使用已支持的 DeepSeek CLI 方式：查询服务商目录，在条目的 **Claude 模型映射** 中填写准确的主模型 ID，可选填子代理 ID，然后新开 `claude` 会话。用 `/status` 确认本地代理地址，`/model` 查看自定义模型选项。上游需支持 Anthropic Messages、流式响应和工具调用，模型名称映射无法补全缺失的协议能力。
 
 **API：**点击**添加 API 服务商**。Base URL 留空使用 `https://api.anthropic.com`。第三方必须支持 Anthropic Messages 协议及 Bearer 或 `x-api-key` 认证，仅支持 OpenAI 协议的地址不能直接使用。填写地址时不附加 `/v1/messages`；已有 `/v1` 后缀也可识别。
 

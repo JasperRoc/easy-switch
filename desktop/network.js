@@ -10,11 +10,6 @@ export function proxyEnvironment(settings) {
     HTTPS_PROXY: settings.httpsProxy || '', https_proxy: settings.httpsProxy || '',
     ALL_PROXY: '', all_proxy: '', NO_PROXY: settings.noProxy || '', no_proxy: settings.noProxy || '' };
 }
-export function publicProxyURL(value) {
-  if (!value) return '';
-  try { const url = new URL(value); url.username = ''; url.password = ''; return url.href; }
-  catch { return ''; }
-}
 export async function detectSystemProxy({ platform = process.platform, execFileImpl = execute } = {}) {
   try {
     const options = { encoding: 'utf8', timeout: 3000, maxBuffer: 65536, windowsHide: true };
