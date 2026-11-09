@@ -116,7 +116,7 @@ Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthro
 
 ### Claude Desktop 如何使用第三方模型？
 
-先打开 Claude Desktop 一次以初始化配置，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。easy-switch 会独立写入[桌面端第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)。接入 DeepSeek 时，在 **Claude 模型映射** 中填写服务商的准确主模型和子代理 ID。Desktop 使用固定的 `easy-switch` Sonnet／Opus／Subagent 路由入口，网关再映射到当前上游，切换时无需重新加载各服务商菜单。这些角色名称不代表已获得 Claude 模型权限。上游需支持 Anthropic Messages、流式响应及工具调用，仅兼容 OpenAI Chat 不足以接入。配置路径、恢复机制和验证范围见 [Claude 指南](claude-code.md)。
+先打开 Claude Desktop 一次以初始化配置，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。easy-switch 会独立写入[桌面端第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)。Desktop 读取所选服务商目录并显示真实模型名称；非 Claude 模型使用内部路由 ID，由网关转换后发送。默认路由采用已配置的主模型，未配置则使用目录中的首个模型；切换服务商对后续请求生效。点击放大镜可选择两个客户端共用的主模型、子代理模型映射，目录不可读时也可填写准确 ID。从 0.5.6 升级后，请完全退出并重新打开 Desktop 一次，以移除旧版固定菜单。上游需支持 Anthropic Messages、流式响应及工具调用，仅兼容 OpenAI Chat 不足以接入。配置路径、恢复机制和验证范围见 [Claude 指南](claude-code.md)。
 
 ### 为什么 Codex 列出了我的 API 不支持的模型？
 

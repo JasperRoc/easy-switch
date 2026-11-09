@@ -147,6 +147,9 @@ button.select-provider[aria-pressed="true"]:hover {transform:none;box-shadow:non
 .catalog-model {padding:12px 14px;border:1px solid var(--line);border-radius:13px;background:var(--field);overflow-wrap:anywhere;}
 .catalog-model strong {font-size:12px;font-weight:550;}
 .catalog-model small {display:block;font-size:10px;color:var(--muted);margin-top:5px;}
+.catalog-mapping {display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+.catalog-mapping button {font-size:10px;padding:6px 10px;display:inline-flex;align-items:center;gap:5px;}
+.catalog-mapping svg {width:12px;height:12px;}
 #models-notice,#models-empty {margin-top:16px;}
 #models-dialog .actions {justify-content:flex-end;margin-bottom:0;}
 #claude-mapping {margin:18px 0;}

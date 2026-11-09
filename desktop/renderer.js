@@ -246,10 +246,35 @@ function renderProviderModels() {
   const query = $('models-search').value.trim().toLowerCase();
   $('models-list').replaceChildren();
   const models = (catalogResult?.models || []).filter(entry => `${entry.id} ${entry.label}`.toLowerCase().includes(query));
+  const provider = state.client === 'claude' && state.providers.find(item => item.alias === catalogProvider.alias && item.type === 'api');
   for (const entry of models) {
     const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem');
     row.append(node('strong', entry.label || entry.id));
     if (entry.label && entry.label !== entry.id) row.append(node('small', entry.id));
+    if (provider) {
+      const actions = node('div', null, 'catalog-mapping');
+      for (const role of ['default', 'subagent']) {
+        const selected = provider.claudeModels?.[role] === entry.id;
+        const control = button(t(role === 'default' ? 'mapMainModel' : 'mapAgentModel'), async () => {
+          control.disabled = true;
+          try {
+            const current = state.providers.find(item => item.alias === catalogProvider?.alias);
+            if (!current) return;
+            await run('edit', { original: current.alias, alias: current.alias, claudeModels: { ...current.claudeModels, [role]: entry.id } });
+            if (editingProvider?.alias === current.alias) {
+              editingProvider = state.providers.find(item => item.alias === current.alias);
+              $('claude-main-model').value = editingProvider.claudeModels?.default || '';
+              $('claude-agent-model').value = editingProvider.claudeModels?.subagent || '';
+            }
+            renderProviderModels();
+          } catch (error) { control.disabled = false; catalogError = error.message; renderProviderModels(); }
+        });
+        control.disabled = selected; control.setAttribute('aria-pressed', String(selected));
+        if (selected) control.prepend(icon('check'));
+        actions.append(control);
+      }
+      row.append(actions);
+    }
     $('models-list').append(row);
   }
   $('models-empty').hidden = catalogLoading || !!catalogError || !catalogResult || !!models.length;
@@ -305,7 +330,7 @@ function openProvider(mode, alias = '') {
   $('base-url').value = editingProvider?.baseUrl || '';
   $('claude-main-model').value = editingProvider?.claudeModels?.default || '';
   $('claude-agent-model').value = editingProvider?.claudeModels?.subagent || '';
-  $('claude-mapping').open = !!editingProvider?.claudeModels;
+  $('claude-mapping').open = state.client === 'claude';
   $('import-preview').hidden = true;
   providerType(); renderLogin(); $('add-dialog').showModal();
 }
@@ -322,10 +347,12 @@ $('import-existing').addEventListener('click', async () => {
   finally { importLoading = false; renderLogin(); }
 });
 $('close-dialog').addEventListener('click', () => $('add-dialog').close());
+$('claude-choose-model').addEventListener('click', () => openProviderModels(editingProvider.alias));
 function providerType() {
   const api = providerMode === 'api' || editingProvider?.type === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api || providerMode === 'edit';
   $('edit-key-help').hidden = providerMode !== 'edit';
   $('claude-mapping').hidden = !api || state.client !== 'claude';
+  $('claude-choose-model').hidden = !editingProvider || editingProvider.type !== 'api';
   $('account-help').textContent = t(imported ? 'importHelp' : 'subscriptionHelp');
   $('provider-dialog-title').textContent = t(providerMode === 'edit' ? 'editProvider' : api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
   $('save-provider').textContent = t(api ? 'addAPI' : imported ? 'importAction' : 'addSubscription');

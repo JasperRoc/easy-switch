@@ -5,8 +5,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createUpstreamFetch } from './network.js';
 import { accountAuth, atomic } from './store.js';
-import { claudeToken } from './claude-auth.js';
-import { claudeHeaders, claudeEndpoint } from './claude-proxy.js';
+import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
 
 // Read model metadata in an isolated app-server without creating a thread.
 export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000, signal } = {}) {
@@ -99,7 +98,7 @@ export async function discoverModels(provider, root, { catalogImpl = codexModels
   } finally { await client?.close(); }
 }
 
-export async function discoverClaudeModels(provider, root, { fetchImpl } = {}) {
+export async function discoverClaudeModels(provider, root, { fetchImpl, signal } = {}) {
   const client = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= client.fetch;
   try {
@@ -114,7 +113,7 @@ export async function discoverClaudeModels(provider, root, { fetchImpl } = {}) {
       for (let index = endpoints.indexOf(endpoint); index < endpoints.length; index++) {
         endpoint = endpoints[index];
         const url = endpoint + (cursor ? '?after_id=' + encodeURIComponent(cursor) : '');
-        response = await fetchImpl(url, { headers, redirect: 'error', signal: AbortSignal.timeout(8000) });
+        response = await fetchImpl(url, { headers, redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000) });
         if (cursor || ![404, 405].includes(response.status) || index === endpoints.length - 1) break;
         await response.body?.cancel();
       }

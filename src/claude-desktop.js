@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 import { atomic } from './store.js';
 
 const profileId = 'a71322d6-7f51-44d8-93b5-ea515c001001';
@@ -26,19 +27,39 @@ export function claudeDesktopPaths({ platform = process.platform, home = os.home
   return { normal: directory(false), thirdParty: directory(true) };
 }
 
-// Stable client roles keep provider switches independent of Desktop's startup-only profile.
-// These IDs identify routes, not a claim that every upstream offers the named Claude model.
-export const desktopRoles = [
-  { id: 'claude-sonnet-5', label: 'easy-switch · Sonnet', role: 'default' },
-  { id: 'claude-opus-5', label: 'easy-switch · Opus', role: 'default' },
-  { id: 'claude-haiku-4-5', label: 'easy-switch · Subagent', role: 'subagent' },
-];
-export function claudeDesktopModels(provider, alias) {
-  const data = desktopRoles.map(({ id, label, role }) => {
-    const model = provider.type === 'api' && (provider.claudeModels?.[role] || provider.claudeModels?.default) || id;
+// Keep one default route across providers; other IDs identify actual catalog entries.
+const defaultRoute = 'claude-sonnet-5';
+export function claudeDesktopRoutes(provider, models = []) {
+  const configured = provider.type === 'api' ? provider.claudeModels : null;
+  const entries = [...models];
+  for (const id of [configured?.default, configured?.subagent].filter(Boolean)) if (!entries.some(item => item.id === id)) entries.push({ id, label: id });
+  if (configured?.default) entries.sort((a, b) => Number(b.id === configured.default) - Number(a.id === configured.default));
+  const nativeDefault = entries.some(item => item.id === defaultRoute);
+  return entries.map(({ id, label }, index) => {
+    const route = /^claude-(?:sonnet|opus|haiku|fable)-/.test(id) ? id
+      : index === 0 && !nativeDefault ? defaultRoute : `claude-sonnet-5-es-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`;
+    return { id: route, model: id, label: label || id };
+  });
+}
+export function claudeDesktopModels(provider, alias, models) {
+  const data = claudeDesktopRoutes(provider, models).map(({ id, model, label }) => {
     return { id, type: 'model', display_name: label, created_at: '2024-01-01T00:00:00Z', description: `${alias} · ${model}`.slice(0, 100) };
   });
-  return { data, has_more: false, first_id: data[0].id, last_id: data.at(-1).id };
+  return { data, has_more: false, first_id: data[0]?.id || null, last_id: data.at(-1)?.id || null };
+}
+
+export function mappedDesktopModel(provider, model, models, headers = {}) {
+  const routes = claudeDesktopRoutes(provider, models);
+  if (headers['x-claude-code-agent-id'] && provider.type === 'api' && provider.claudeModels) return provider.claudeModels.subagent || provider.claudeModels.default || model;
+  const exact = routes.find(route => route.id === model);
+  if (exact) return exact.model;
+  if (/-es-[a-f0-9]{16}$/.test(model || '')) return provider.claudeModels?.default || routes[0]?.model || model;
+  if (!/^claude-|^(?:sonnet|opus|haiku)$/.test(model || '')) return model;
+  const tier = /haiku/i.test(model) ? 'subagent' : 'default';
+  const configured = provider.type === 'api' && (provider.claudeModels?.[tier] || provider.claudeModels?.default);
+  if (configured) return configured;
+  const family = /haiku|sonnet|opus|fable/i.exec(model)?.[0];
+  return routes.find(route => family && new RegExp(`^claude-${family}-`, 'i').test(route.model))?.model || routes[0]?.model || model;
 }
 
 export function activateClaudeDesktop(root, directories, port, token) {
@@ -49,7 +70,7 @@ export function activateClaudeDesktop(root, directories, port, token) {
     inferenceProvider: 'gateway', inferenceGatewayBaseUrl: `http://127.0.0.1:${port}/claude-desktop`,
     inferenceGatewayAuthScheme: 'bearer', inferenceGatewayApiKey: token,
     disableDeploymentModeChooser: true,
-    inferenceModels: desktopRoles.map(({ id, label }) => ({ name: id, labelOverride: label })), modelDiscoveryEnabled: true,
+    modelDiscoveryEnabled: true,
   };
   const files = [
     { file: path.join(directories.normal, configName), managed: { deploymentMode: '3p' } },

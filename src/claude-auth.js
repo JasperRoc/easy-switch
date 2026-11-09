@@ -7,6 +7,16 @@ import { promisify } from 'node:util';
 import { atomic } from './store.js';
 
 const execute = promisify(execFile);
+export function claudeHeaders(provider, token, incoming = {}) {
+  const headers = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
+  for (const [key, value] of Object.entries(incoming)) if (/^(anthropic-|x-stainless-|x-claude-code-)/.test(key) || ['user-agent', 'x-app', 'accept'].includes(key)) headers[key] = value;
+  if (provider.type === 'account') {
+    headers.authorization = `Bearer ${token}`;
+    headers['anthropic-beta'] = [...new Set((headers['anthropic-beta'] || '').split(',').filter(Boolean).concat('oauth-2025-04-20'))].join(',');
+  } else { headers['x-api-key'] = provider.apiKey; headers.authorization = `Bearer ${provider.apiKey}`; }
+  return headers;
+}
+export const claudeEndpoint = provider => (provider.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
 const keychainService = directory => 'Claude Code-credentials-' + createHash('sha256').update(directory).digest('hex').slice(0, 8);
 export async function removeClaudeLogin(directory, executeImpl = execute) {
   if (process.platform !== 'darwin') return;

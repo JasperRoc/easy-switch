@@ -2,25 +2,35 @@ import { timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { init, readState, providerOrder, activateFallback } from './store.js';
-import { claudeToken } from './claude-auth.js';
-import { rejectionText, rejectionStatus, recoverable, atCapacity } from './failover.js';
+import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
+import { rejectionText, rejectionStatus, recoverable, atCapacity, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
 import { mappedClaudeModel } from './claude-models.js';
-import { claudeDesktopModels } from './claude-desktop.js';
+import { claudeDesktopModels, mappedDesktopModel } from './claude-desktop.js';
+import { discoverClaudeModels } from './catalog.js';
 
-export function claudeHeaders(provider, token, incoming = {}) {
-  const headers = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
-  for (const [key, value] of Object.entries(incoming)) if (/^(anthropic-|x-stainless-|x-claude-code-)/.test(key) || ['user-agent', 'x-app', 'accept'].includes(key)) headers[key] = value;
-  if (provider.type === 'account') {
-    headers.authorization = `Bearer ${token}`;
-    headers['anthropic-beta'] = [...new Set((headers['anthropic-beta'] || '').split(',').filter(Boolean).concat('oauth-2025-04-20'))].join(',');
-  } else { headers['x-api-key'] = provider.apiKey; headers.authorization = `Bearer ${provider.apiKey}`; }
-  return headers;
+export { claudeHeaders, claudeEndpoint } from './claude-auth.js';
+function upstreamMessage(message, secrets) {
+  let text;
+  try { const data = JSON.parse(message), error = data.error || data; text = error.message; } catch {}
+  if (typeof text !== 'string') return '';
+  for (const secret of secrets.filter(Boolean)) text = text.replaceAll(secret, '[redacted]');
+  return text.replace(/Bearer\s+[^\s"',]+|\bsk-[\w-]+/gi, '[redacted]').replace(/[\x00-\x1f]/g, ' ').slice(0, 500);
 }
-export const claudeEndpoint = provider => (provider.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
 export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = () => Date.now() }) {
   init(root);
-  const cooldown = new Map(); let manual;
+  const cooldown = new Map(), catalogs = new Map(); let manual;
+  async function desktopCatalog(alias, provider, signal) {
+    const key = JSON.stringify(provider), cached = catalogs.get(alias);
+    if (cached?.key === key && cached.until > now()) return cached.pending;
+    const pending = discoverClaudeModels(provider, root, { fetchImpl, signal }).then(result => result.models).catch(error => {
+      if (provider.claudeModels?.default) return [];
+      if (catalogs.get(alias)?.pending === pending) catalogs.delete(alias);
+      throw error;
+    });
+    const entry = { key, until: now() + 60000, pending }; catalogs.set(alias, entry);
+    return pending;
+  }
   return async (req, res) => {
     const abort = new AbortController();
     res.once('close', () => { if (!res.writableFinished) abort.abort(); });
@@ -36,8 +46,10 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
       if (!models && (req.method !== 'POST' || !['/v1/messages', '/v1/messages/count_tokens'].includes(target))) return fail(404, 'Only Anthropic Messages, token counting and model discovery are supported.');
       if (!state.providers[state.active]) return fail(409, 'Add a Claude Code provider first.');
       if (models && desktop) {
+        const provider = state.providers[state.active];
+        const catalog = await desktopCatalog(state.active, provider, abort.signal);
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        return res.end(JSON.stringify(claudeDesktopModels(state.providers[state.active], state.active)));
+        return res.end(JSON.stringify(claudeDesktopModels(provider, state.active, catalog)));
       }
       let payload;
       if (!models) {
@@ -54,12 +66,15 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
         let token;
         try { if (provider.type === 'account') token = await claudeToken(provider, fetchImpl); }
         catch { reauth(alias); }
-        let upstream, stream, startup, message = '';
+        let upstream, stream, startup, message = '', model = payload?.model;
         if (provider.type === 'account' && !token) {
           upstream = new Response('', { status: 401 });
         } else {
           const outgoing = payload && { ...payload };
-          if (outgoing) outgoing.model = mappedClaudeModel(provider, outgoing.model, req.headers);
+          if (outgoing) {
+            outgoing.model = desktop ? mappedDesktopModel(provider, outgoing.model, await desktopCatalog(alias, provider, abort.signal).catch(() => []), req.headers) : mappedClaudeModel(provider, outgoing.model, req.headers);
+            model = outgoing.model;
+          }
           upstream = await fetchImpl(claudeEndpoint(provider) + target + new URL(req.url, 'http://localhost').search, {
             method: models ? 'GET' : 'POST', headers: claudeHeaders(provider, token, req.headers),
             ...(models ? {} : { body: JSON.stringify(outgoing) }), redirect: 'error', signal: abort.signal,
@@ -73,7 +88,7 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
         const streamStatus = rejectionStatus(startup?.error);
         if (!upstream.ok || capacity || streamStatus) {
           const status = capacity ? 503 : streamStatus || upstream.status;
-          if (!models && (recoverable(status, message || JSON.stringify(startup?.error)) || capacity)) {
+          if (!models && (recoverable(status, message || JSON.stringify(startup?.error)) || modelUnavailable(status, message || JSON.stringify(startup?.error)) || capacity)) {
             cooldown.set(alias, now() + 60000);
             const latest = readState(root);
             // Honor a manual switch that occurred while this request was rejected.
@@ -88,7 +103,8 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
           }
           if (status === 401 && provider.type === 'account') reauth(alias);
           await stream?.cancel();
-          return fail(status, status === 401 ? `Claude provider ${alias} needs authentication. Sign in in easy-switch or run switch claude add account ${alias}; API providers need a valid key.` : `Claude upstream ${alias} returned HTTP ${status}. Check model support and account access.`);
+          const detail = upstreamMessage(message || JSON.stringify({ error: startup?.error }), [provider.apiKey, token, state.token]);
+          return fail(status, status === 401 ? `Claude provider ${alias} needs authentication. Sign in in easy-switch or run switch claude add account ${alias}; API providers need a valid key.` : `Claude upstream ${alias} returned HTTP ${status}${model ? ` for model ${model}` : ''}.${detail ? ` ${detail}` : ' Check model mapping, account access and Anthropic Messages support.'}`);
         }
         const type = upstream.headers.get('content-type') || 'application/json';
         if (!/^(?:application\/json|text\/event-stream)(?:;|$)/i.test(type)) { await upstream.body?.cancel(); return fail(502, 'The upstream did not return an Anthropic response.'); }

@@ -137,7 +137,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
   await page.locator('.query-models').click(); await page.locator('#models-status.failed').waitFor();
   await page.click('#close-models'); await page.locator('.edit-provider').click();
-  await page.locator('#claude-mapping summary').click();
+  assert.equal(await page.locator('#claude-mapping').getAttribute('open'), '');
   await page.fill('#claude-main-model', 'deepseek-main'); await page.fill('#claude-agent-model', 'deepseek-agent'); await page.click('#save-provider');
   await page.locator('#add-dialog').waitFor({ state: 'hidden' });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.renamed.claudeModels, { default: 'deepseek-main', subagent: 'deepseek-agent' });
@@ -152,6 +152,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
 test('Claude Desktop setup and icon-only provider switches share the CLI route without rewriting its profile', { skip: !enabled, timeout: 30000 }, async t => {
   const calls = [];
   const upstream = http.createServer(async (req, res) => {
+    if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'deepseek-first' }, { id: 'deepseek-helper' }] })); return; }
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     calls.push({ body: JSON.parse(Buffer.concat(chunks).toString()), key: req.headers['x-api-key'] });
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'LOCAL_OK' }] }));
@@ -178,6 +179,9 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.equal(await second.getAttribute('aria-pressed'), 'true'); assert.equal(await second.locator('use').getAttribute('href'), 'assets/ui.svg#check');
   await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-second'); assert.equal(calls.at(-1).key, 'second-key');
   assert.equal(fs.readFileSync(file, 'utf8'), original);
+  assert.equal(profile.inferenceModels, undefined);
+  const catalog = await (await fetch(profile.inferenceGatewayBaseUrl + '/v1/models', { headers: { authorization: `Bearer ${profile.inferenceGatewayApiKey}` } })).json();
+  assert.equal(catalog.data[0].display_name, 'deepseek-second');
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await page.locator('#claude-desktop-hint').filter({ hasText: '已接入 Claude Desktop' }).waitFor();
@@ -189,6 +193,29 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.equal(fs.existsSync(file), false);
   assert.equal(fs.existsSync(path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json')), false);
   assert.equal(fs.existsSync(path.join(root, 'claude-desktop-session.json')), false);
+});
+test('Claude provider catalog selects real main and subagent models without exposing the saved API key', { skip: !enabled, timeout: 30000 }, async t => {
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-v4-flash' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => upstream.close());
+  const { page, root } = await launch(t);
+  await page.click('[data-client="claude"]'); await page.click('#add-api');
+  await page.fill('#provider-alias', 'deepseek'); await page.fill('#api-key', 'private-catalog-key');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}`); await page.click('#save-provider');
+  await page.locator('.edit-provider').click(); await page.click('#claude-choose-model');
+  const rows = page.locator('.catalog-model'); await rows.first().waitFor();
+  await rows.first().getByRole('button', { name: 'Use as main model', exact: true }).click();
+  await rows.first().locator('button[aria-pressed="true"]').waitFor();
+  await rows.nth(1).getByRole('button', { name: 'Use for subagents', exact: true }).click();
+  await rows.nth(1).locator('button[aria-pressed="true"]').waitFor();
+  await page.click('#close-models');
+  assert.equal(await page.locator('#claude-main-model').inputValue(), 'deepseek-v4-pro');
+  assert.equal(await page.locator('#claude-agent-model').inputValue(), 'deepseek-v4-flash');
+  assert.equal(await page.locator('#api-key').inputValue(), '');
+  await page.click('#save-provider'); await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude/state.json'))).providers.deepseek;
+  assert.deepEqual(saved.claudeModels, { default: 'deepseek-v4-pro', subagent: 'deepseek-v4-flash' });
+  assert.equal(saved.apiKey, 'private-catalog-key');
 });
 test('Claude subscription authorization codes stay in the add dialog and disappear after sign-in', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');
