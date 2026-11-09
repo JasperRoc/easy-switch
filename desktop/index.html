@@ -16,7 +16,7 @@
     </div>
   </header>
   <main>
-    <div class="client-picker" role="group" aria-label="Client"><button class="secondary" data-client="codex" aria-pressed="true">Codex</button><button class="secondary" data-client="claude" aria-pressed="false">Claude Code</button><span class="help" data-i18n="clientHelp"></span></div>
+    <div class="client-picker" role="group" aria-label="Client"><button class="secondary" data-client="codex" aria-pressed="true">Codex</button><button class="secondary" data-client="claude" aria-pressed="false">Claude</button><span class="help" data-i18n="clientHelp"></span></div>
     <div id="tray-hint" class="notice" data-i18n="trayHidden" hidden></div>
     <div id="preferences-warning" class="notice" role="status" hidden></div>
     <div id="error" class="notice error" role="alert" hidden></div>
@@ -26,6 +26,7 @@
       <button id="import-existing" class="secondary import-action"><span class="import-icon"><svg aria-hidden="true"><use href="assets/ui.svg#download"/></svg></span><span class="import-copy"><strong data-i18n="importExisting">Import existing sign-in</strong><small data-i18n="importHint">Use the Codex account saved on this computer</small></span><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button>
       <div id="provider-list"></div>
       <p id="native-images" class="notice" data-i18n="nativeImagesHelp" hidden></p>
+      <p id="claude-desktop-hint" class="notice" data-i18n="claudeDesktopHelp" hidden></p>
       <div id="empty" class="empty" hidden><img src="assets/icon.png" width="68" height="68" alt=""><p data-i18n="empty">Add your first account or API.</p></div>
       <div id="failover" class="notice" hidden></div>
     </section>

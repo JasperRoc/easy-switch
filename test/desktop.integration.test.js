@@ -21,9 +21,10 @@ async function launch(t, extraEnv = {}, initialConfig, prepare) {
   const file = path.join(home, 'config.toml'), original = initialConfig ?? '# Original user config\nmodel="gpt-6.1-sol"\n';
   fs.writeFileSync(file, original);
   prepare?.(root);
+  const desktopHome = path.join(directory, 'desktop-clients'); fs.mkdirSync(path.join(desktopHome, 'Claude'), { recursive: true });
   // Never touch the developer's credentials, configuration or login items.
   const options = { ...(executable ? { executablePath: executable, args: [] } : { args: [project] }),
-    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(directory, 'claude'), SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
+    env: { ...process.env, SWITCH_HOME: root, CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(directory, 'claude'), SWITCH_CLAUDE_DESKTOP_HOME: desktopHome, SWITCH_CODEX_BIN: '', SWITCH_PORT: '0', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '', NO_PROXY: '*', ...extraEnv }, timeout: 20000 };
   const app = await _electron.launch(options);
   app.process().stderr?.resume();
   t.after(async () => {
@@ -130,7 +131,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
-  assert.match(await page.locator('[data-i18n="clientHelp"]').innerText(), /Claude Code CLI/);
+  assert.match(await page.locator('[data-i18n="clientHelp"]').innerText(), /Claude Code CLI and Claude Desktop/);
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
@@ -147,6 +148,47 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.click('[data-client="codex"]'); await page.locator('.provider[data-alias="renamed"]').waitFor();
   await page.evaluate(() => window.easySwitch.call('stop')); assert.equal(fs.existsSync(claudeFile), false);
   assert.deepEqual(errors, []);
+});
+test('Claude Desktop setup and icon-only provider switches share the CLI route without rewriting its profile', { skip: !enabled, timeout: 30000 }, async t => {
+  const calls = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    calls.push({ body: JSON.parse(Buffer.concat(chunks).toString()), key: req.headers['x-api-key'] });
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'LOCAL_OK' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => upstream.close());
+  const { page, root, options } = await launch(t);
+  await page.click('[data-client="claude"]');
+  await page.evaluate(async url => {
+    await window.easySwitch.call('add-api', { alias: 'first', key: 'first-key', url, claudeModels: { default: 'deepseek-first', subagent: 'deepseek-helper' } });
+    await window.easySwitch.call('add-api', { alias: 'second', key: 'second-key', url, claudeModels: { default: 'deepseek-second' } });
+  }, `http://127.0.0.1:${upstream.address().port}/anthropic`);
+  await page.locator('#claude-desktop-hint').waitFor();
+  const library = path.join(options.env.SWITCH_CLAUDE_DESKTOP_HOME, 'Claude-3p', 'configLibrary');
+  const meta = JSON.parse(fs.readFileSync(path.join(library, '_meta.json'))), file = path.join(library, `${meta.appliedId}.json`);
+  const original = fs.readFileSync(file, 'utf8'), profile = JSON.parse(original);
+  const send = async model => {
+    const response = await fetch(profile.inferenceGatewayBaseUrl + '/v1/messages', { method: 'POST', headers: { authorization: `Bearer ${profile.inferenceGatewayApiKey}` }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Continue this task' }] }) });
+    assert.equal(response.status, 200); await response.text();
+  };
+  await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-first');
+  assert.equal(await page.locator('.provider .tag').count(), 0);
+  const second = page.locator('.provider[data-alias="second"] .select-provider');
+  assert.equal(await second.innerText(), ''); assert.equal(await second.getAttribute('aria-pressed'), 'false');
+  await second.click(); await page.locator('#current-provider').filter({ hasText: /^second$/ }).waitFor();
+  assert.equal(await second.getAttribute('aria-pressed'), 'true'); assert.equal(await second.locator('use').getAttribute('href'), 'assets/ui.svg#check');
+  await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-second'); assert.equal(calls.at(-1).key, 'second-key');
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.locator('#claude-desktop-hint').filter({ hasText: '已接入 Claude Desktop' }).waitFor();
+  await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-light.png') });
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-dark.png') });
+  await page.evaluate(() => window.easySwitch.call('stop'));
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(fs.existsSync(path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'claude-desktop-session.json')), false);
 });
 test('Claude subscription authorization codes stay in the add dialog and disappear after sign-in', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');
@@ -327,18 +369,22 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   await last.waitFor(); await last.scrollIntoViewIfNeeded();
   assert.equal(await page.locator('.provider').count(), 24);
   assert.equal(await page.locator('main').evaluate(element => element.scrollTop > 0), true, 'many accounts remain accessible by scrolling');
-  assert.equal(await page.locator('.provider[data-alias="api"] .tag').innerText(), '当前路由');
+  assert.equal(await page.locator('.provider .tag').count(), 0);
+  assert.equal(await page.locator('.provider[data-alias="api"] .select-provider').getAttribute('aria-pressed'), 'true');
 });
 test('Electron recovery helper restores both clients after the main process is killed', { skip: !enabled,timeout:30000 }, async t => {
   const { app,page,file,original,root,options } = await launch(t);
   await page.evaluate(async () => { await window.easySwitch.call('client', 'claude'); await window.easySwitch.call('add-api', { alias: 'claude-api', key: 'fixture' }); });
   const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json'); assert.ok(fs.existsSync(claudeFile));
+  const desktopFile = path.join(options.env.SWITCH_CLAUDE_DESKTOP_HOME, 'Claude', 'claude_desktop_config.json'); assert.equal(JSON.parse(fs.readFileSync(desktopFile)).deploymentMode, '3p');
   const child = app.process(); const exit = once(child,'exit'); child.kill('SIGKILL'); await exit;
   for (let attempt=0; attempt<100 && fs.existsSync(path.join(root,'desktop-session.json')); attempt++) await new Promise(resolve=>setTimeout(resolve,50));
   assert.equal(fs.readFileSync(file,'utf8'),original);
   assert.equal(fs.existsSync(path.join(root,'desktop-session.json')),false);
   for (let attempt = 0; attempt < 100 && fs.existsSync(path.join(root, 'claude-session.json')); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(fs.existsSync(claudeFile), false);
+  for (let attempt = 0; attempt < 100 && fs.existsSync(path.join(root, 'claude-desktop-session.json')); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(fs.existsSync(desktopFile), false);
 });
 
 test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {

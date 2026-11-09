@@ -32,7 +32,7 @@ SWITCH_TEST_CLAUDE="$(command -v claude)" node --test test/claude.integration.te
 
 Runs the official client with an isolated `CLAUDE_CONFIG_DIR` against local mock upstreams. The test keeps one process and conversation open, switches APIs, and checks that the next message uses the new key with the original history. A second test makes the official client invoke its Agent tool and verifies a separate subagent model plus the parent tool-result continuation. It makes no paid model calls. Subscription OAuth, refresh, header isolation, failover and settings restoration also have mock tests; live subscription inference requires a separately authorized account.
 
-Claude support uses `src/claude-auth.js` for official sign-in and token refresh, `src/claude-config.js` for recoverable user settings, and `src/claude-proxy.js` for Messages routing. State lives in `SWITCH_HOME/claude`; the existing proxy listener dispatches `/claude/*` to this independent route. The desktop controller and CLI use the same store and protocol implementation.
+Claude support uses `src/claude-auth.js` for official sign-in and token refresh, `src/claude-config.js` for recoverable CLI settings, `src/claude-desktop.js` for separate Desktop profiles and a stable model-role catalog, and `src/claude-proxy.js` for shared Messages routing. State lives in `SWITCH_HOME/claude`; the existing listener dispatches `/claude/*` and `/claude-desktop/*` to the same provider state, credential and failover implementation. Only the Desktop endpoint substitutes a role catalog; CLI and provider model queries still read actual upstream catalogs. Desktop setup is invoked by the desktop application, not the Linux CLI installer. Tests always isolate Desktop paths with a temporary `SWITCH_CLAUDE_DESKTOP_HOME` or injected directories and do not read personal Desktop settings.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pull request guidelines.
 
@@ -70,7 +70,7 @@ The preparation script downloads the matching pinned official Codex platform pac
 After building, verify the actual DMGs before publishing:
 
 ```bash
-node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.5.5-mac-arm64.dmg dist/easy-switch-0.5.5-mac-x64.dmg
+node scripts/verify-mac-artifacts.cjs dist/easy-switch-0.5.6-mac-arm64.dmg dist/easy-switch-0.5.6-mac-x64.dmg
 ```
 
 This checks image checksums, mounts each image read-only without opening Finder, verifies the contained application/nested code, and detaches it. A successful `codesign` result does not mean `spctl` will trust an unnotarized ad hoc application.

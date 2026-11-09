@@ -2,6 +2,7 @@
 (async () => {
   const { restoreSession } = await import('./config.js');
   const { restoreClaude } = await import('../src/claude-config.js');
+  const { restoreClaudeDesktop } = await import('../src/claude-desktop.js');
   const path = require('node:path');
   let disarmed = false;
   process.on('message', message => {
@@ -12,6 +13,7 @@
       try { restoreSession(process.argv[2]); }
       catch { /* Keep the recovery record; the next launch reports the conflict. */ }
       try { restoreClaude(path.join(path.dirname(process.argv[2]), 'claude-session.json')); } catch {}
+      try { restoreClaudeDesktop(path.join(path.dirname(process.argv[2]), 'claude-desktop-session.json')); } catch {}
     }
     process.exit(0);
   });

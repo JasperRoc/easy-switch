@@ -10,7 +10,7 @@ let renderedState = '';
 let editingProvider = null;
 const resetAttempts = new Map();
 const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'clientHelp'].includes(key) ? 'claude_' + key : key, values)
-  .replaceAll('Codex', state?.client === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
+  .replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
 function appearance() {
   language = normalizeLanguage(state.language);
   document.documentElement.lang = language;
@@ -142,9 +142,10 @@ function renderProviders() {
       const reset = button('', () => openResetCards(provider.alias), 'icon-button reset-quota'); reset.append(icon('refresh'));
       reset.title = t('resetQuota'); reset.setAttribute('aria-label', t('resetQuota')); row.append(reset);
     }
-    if (provider.active) { const tag = node('span', t('activeRoute'), 'tag'); tag.title = t('activeRouteHelp'); row.append(tag); }
     if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
-    row.append(button(provider.active ? t('selected') : t('use'), () => run('switch', provider.alias), provider.active ? 'secondary' : ''));
+    const select = button('', () => provider.active ? undefined : run('switch', provider.alias), 'icon-button select-provider');
+    select.append(icon(provider.active ? 'check' : 'switch')); select.setAttribute('aria-pressed', String(provider.active));
+    select.title = t(provider.active ? 'selected' : 'use'); select.setAttribute('aria-label', `${select.title} · ${provider.alias}`); row.append(select);
     const query = button('', () => openProviderModels(provider.alias), 'icon-button query-models');
     query.append(icon('search')); query.title = t('queryModels'); query.setAttribute('aria-label', t('queryModels') + ' · ' + provider.alias); row.append(query);
     const edit = button('', () => openProvider('edit', provider.alias), 'icon-button edit-provider');
@@ -221,6 +222,7 @@ function refresh(nextState) {
     $('native-images').hidden = !state.imageTools && !state.imageToolsBlocked;
     const selected = state.providers.find(provider => provider.active);
     $('native-images').textContent = t(state.imageToolsBlocked ? 'freeImagesHelp' : 'nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });
+    $('claude-desktop-hint').hidden = !state.claudeDesktop;
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;
@@ -235,7 +237,7 @@ function refresh(nextState) {
 }
 function renderProviderModels() {
   if (!catalogProvider) return;
-  $('models-provider').textContent = `${catalogProvider.client === 'claude' ? 'Claude Code' : 'Codex'} · ${catalogProvider.alias}`;
+  $('models-provider').textContent = `${catalogProvider.client === 'claude' ? 'Claude' : 'Codex'} · ${catalogProvider.alias}`;
   $('models-refresh').disabled = catalogLoading;
   $('models-refresh').classList.toggle('loading', catalogLoading);
   $('models-status').classList.toggle('failed', !!catalogError);

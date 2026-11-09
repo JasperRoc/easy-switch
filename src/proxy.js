@@ -88,7 +88,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
-    if (req.url.startsWith('/claude/')) return claude(req, res);
+    if (req.url.startsWith('/claude/') || req.url.startsWith('/claude-desktop/')) return claude(req, res);
     const abort = new AbortController();
     res.on('close', () => { if (!res.writableFinished) abort.abort(); });
     try {

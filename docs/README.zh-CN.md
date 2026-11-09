@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-easy-switch 是面向 **Codex 与 Claude Code** 的桌面及命令行路由工具，统一管理 ChatGPT、Claude 订阅账号、官方 API 与第三方兼容 API，为两个客户端分别保存服务商列表和备用优先级。它在模型请求边界切换上游，保持客户端进程与会话连续；符合条件的额度或认证错误会按优先级尝试备用服务。
+easy-switch 是面向 **Codex、Claude Code CLI 与 Claude Desktop** 的桌面及命令行路由工具，统一管理 ChatGPT、Claude 订阅账号、官方 API 与第三方兼容 API。Codex 与 Claude 分别保存服务商列表和备用优先级，Claude CLI 与 Desktop 共用 Claude 列表。它在模型请求边界切换上游，保持客户端进程与会话连续；符合条件的额度或认证错误会按优先级尝试备用服务。
 
 🔄 **会话内切换** · 🖥️ **托盘与菜单栏操作** · 🌊 **海洋玻璃界面 · 中英切换 · 明暗主题** · 🔍 **服务商模型查询** · ⚙️ **自动故障切换**
 
@@ -28,13 +28,13 @@ easy-switch 是面向 **Codex 与 Claude Code** 的桌面及命令行路由工�
 | macOS 13+ · Intel | `easy-switch-<版本>-mac-x64.dmg` |
 
 1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
-2. 选择 **Codex** 或 **Claude Code**，再点击 **添加订阅**、**添加 API 服务商** 或 **导入现有登录方式**。Base URL 留空使用对应客户端的官方 API：Codex 使用 OpenAI，Claude Code 使用 Anthropic。Claude 订阅认证通过另行安装的官方 Claude Code 和浏览器完成；macOS 可能请求钥匙串读取权限。
+2. 选择 **Codex** 或 **Claude**，再点击 **添加订阅**、**添加 API 服务商** 或 **导入现有登录方式**。Base URL 留空使用对应客户端的官方 API：Codex 使用 OpenAI，Claude 使用 Anthropic。Claude 订阅认证通过另行安装的官方 Claude Code 和浏览器完成；macOS 可能请求钥匙串读取权限。
 3. 可在窗口顶部切换 **English / 简体中文**，以及 **跟随系统 / 浅色 / 深色**，偏好会自动保存。
 4. 首次接入后，重启对应客户端或重载编辑器窗口，使其读取本地路由。单击托盘或菜单栏图标可重新打开窗口，右键可选择客户端并切换服务商。按住左侧六点柄调整优先级，点击铅笔图标修改别名、地址或密钥，也可以删除服务商；编辑时密钥留空即保留原值。点击每行的放大镜可查询该服务商的模型目录，不改变当前路由。模型与推理强度在会话客户端内选择；Claude API 条目另外支持主模型和子代理模型映射。
 
-仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复两个客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude Code 指南](claude-code.md)。
+仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复所有客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude 指南](claude-code.md)。
 
-Claude 目前自动配置的是 **Claude Code CLI**。Claude 桌面端需要独立的网关配置，聊天模型菜单及 Code 权限不会跟随 CLI 设置变化。外网连接在启动时自动采用环境变量或系统 HTTP/HTTPS 代理；已有的手动配置会保留。
+Claude CLI 与 Desktop 分别写入各自配置，共用同一条路由。已初始化的 Claude Desktop 会自动接入第三方推理配置，路由启停后需完全退出并重新打开 Desktop 一次；持续运行时，切换服务商对后续模型请求生效，无需重写该配置。外网连接在启动时自动采用环境变量或系统 HTTP/HTTPS 代理；已有的手动配置会保留。
 
 Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应用完整性，但尚无 Developer ID 及 Apple 公证，首次打开仍可能需要系统手动允许。详见[macOS 预览版安装说明](desktop.md#macos-preview-and-the-damaged-app-alert)。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。
 
@@ -114,9 +114,9 @@ easy-switch 将账号配置、路由选择与备用排序集中在托盘应用�
 
 Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthropic Messages 兼容 API 与 Claude 订阅。DeepSeek 已提供 [Codex 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)和 [Claude Code 接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。请分别填写对应协议的地址，并选择服务商实际提供的模型；第三方 API Key 本身不代表同时支持两种协议。Gemini 订阅登录尚未实现。
 
-### 为什么 Claude 桌面端仍显示 Claude 模型，或提示“获取 Claude Code”？
+### Claude Desktop 如何使用第三方模型？
 
-easy-switch 目前写入 Claude Code CLI 的配置。[Claude 桌面端使用独立的第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)，因此在这里添加 DeepSeek API 不会自动接通桌面聊天或 Code 页面。普通 Claude 账号方式下，Code 页面需要符合要求的付费计划；添加第三方密钥不会改变此账号的访问权限。模型映射作用于已进入代理的 CLI 请求，自定义 `/model` 选项在 CLI 启动时读取。支持的使用方式及桌面端配置边界见 [Claude Code 指南](claude-code.md)。
+先打开 Claude Desktop 一次以初始化配置，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。easy-switch 会独立写入[桌面端第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)。接入 DeepSeek 时，在 **Claude 模型映射** 中填写服务商的准确主模型和子代理 ID。Desktop 使用固定的 `easy-switch` Sonnet／Opus／Subagent 路由入口，网关再映射到当前上游，切换时无需重新加载各服务商菜单。这些角色名称不代表已获得 Claude 模型权限。上游需支持 Anthropic Messages、流式响应及工具调用，仅兼容 OpenAI Chat 不足以接入。配置路径、恢复机制和验证范围见 [Claude 指南](claude-code.md)。
 
 ### 为什么 Codex 列出了我的 API 不支持的模型？
 
@@ -148,7 +148,7 @@ Free 账号不提供 Codex 图片生成。easy-switch 会跳过已识别的 Free
 
 ### 切换后，当前任务会中断吗？
 
-“当前路由”表示后续文字请求默认使用的服务商，成功自动切换后会同步更新；已经开始的请求可能仍在原服务商上完成，图片路由单独处理。手动切换对同一会话的后续模型请求生效；符合条件的上游拒绝可通过备用服务重试。对于 HTTP 或 SSE 启动阶段的“Selected model is at capacity”，在接受任何输出前尝试可用备用服务，再进行最多两次延迟重试。已接受的文字和工具事件不会重放。响应中途断流、上下文格式不兼容或全部备用不可用时，任务仍可能中断。
+顶部当前服务商表示后续文字请求默认使用的服务商，成功自动切换后会同步更新；已经开始的请求可能仍在原服务商上完成，图片路由单独处理。手动切换对同一会话的后续模型请求生效，包括 Claude Desktop 的任务续接；符合条件的上游拒绝可通过备用服务重试。对于 Codex HTTP 或 SSE 启动阶段的“Selected model is at capacity”，在接受任何输出前尝试可用备用服务，再进行最多两次延迟重试。已接受的文字和工具事件不会重放。响应中途断流、上下文格式不兼容或全部备用不可用时，任务仍可能中断。
 
 <a id="disclaimer"></a>
 

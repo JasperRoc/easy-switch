@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](docs/LICENSE)
 
-easy-switch is a desktop and command-line routing tool for **Codex and Claude Code**. Manage ChatGPT and Claude subscriptions, official APIs, and compatible third-party APIs with independent provider lists and fallback priorities for each client. Switch at model request boundaries while keeping the client process and conversation; eligible quota or authentication rejections try alternatives in priority order.
+easy-switch is a desktop and command-line routing tool for **Codex, Claude Code CLI and Claude Desktop**. Manage ChatGPT and Claude subscriptions, official APIs, and compatible third-party APIs. Codex and Claude have independent provider lists and fallback priorities; Claude CLI and Desktop share the Claude list. Switch at model request boundaries while keeping the client process and conversation; eligible quota or authentication rejections try alternatives in priority order.
 
 🔄 **In-session switching** · 🖥️ **Tray and menu bar controls** · 🌊 **Ocean glass UI · EN / 中文 · Light / dark** · 🔍 **Provider model lookup** · ⚙️ **Automatic failover**
 
@@ -28,13 +28,13 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 | macOS 13+ · Intel | `easy-switch-<version>-mac-x64.dmg` |
 
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
-2. Select **Codex** or **Claude Code**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude Code. Claude subscription sign-in uses your separately installed official Claude Code CLI and browser; macOS may request Keychain access.
+2. Select **Codex** or **Claude**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude. Claude subscription sign-in uses your separately installed official Claude Code CLI and browser; macOS may request Keychain access.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
 4. Restart the selected client or reload its editor window once to read the local route. Click the tray/menu bar icon to reopen the window; right-click to select a client and switch providers. Drag provider priorities, edit an alias/address/key with the pencil button, or delete a provider. A blank key in the edit dialog preserves the saved key. Click a provider’s magnifying glass to query its own model catalog without changing the active route. Select models and reasoning effort in the conversation client; Claude API entries also support optional main/subagent model mappings.
 
-Installing alone leaves client configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings for both clients. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Conversation clients are installed separately. See the [Claude Code guide](docs/claude-code.md) for authentication and protocol details.
+Installing alone leaves client configuration untouched. Closing the window keeps routing in the tray; **Quit easy-switch** restores the original connection settings for all clients. **Start at login** is optional and off by default. Existing clients may need a restart/reload after routing starts or stops. Conversation clients are installed separately. See the [Claude guide](docs/claude-code.md) for authentication and protocol details.
 
-Claude integration currently configures **Claude Code CLI**. Claude Desktop has a separate gateway setup; its chat model menu and Code access do not follow CLI settings. Outbound connections are configured automatically at startup from your environment or system HTTP/HTTPS proxy settings; existing saved overrides are retained.
+Claude CLI and Desktop use separate configuration adapters with one shared route. An initialized Claude Desktop installation is automatically connected through its third-party inference profile; fully quit and reopen Desktop after routing starts or stops. While routing remains active, provider changes apply to subsequent model requests without rewriting that profile. Outbound connections are configured automatically at startup from your environment or system HTTP/HTTPS proxy settings; existing saved overrides are retained.
 
 Windows packages have no publisher signature. macOS packages use ad hoc signing with verified bundle integrity, but have no Developer ID and are not notarized. Your OS may require explicit first-launch approval; see the [macOS preview instructions](docs/desktop.md#macos-preview-and-the-damaged-app-alert). The Apple silicon packaged app is tested on macOS; Intel macOS and Windows installers are built but their runtime behavior still needs verification on those systems. See the [desktop guide](docs/desktop.md) for lifecycle, recovery, network configuration and update instructions.
 
@@ -114,9 +114,9 @@ easy-switch brings account configuration, routing selection and fallback orderin
 
 Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code supports Anthropic Messages-compatible APIs and Claude subscriptions. [DeepSeek documents Codex integration](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) and [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/). Configure each protocol endpoint separately and select a model the provider actually offers; a generic third-party key alone does not establish protocol compatibility. Gemini subscription login is not implemented.
 
-### Why does Claude Desktop still show Claude models or ask me to get Claude Code?
+### How does Claude Desktop use a third-party model?
 
-easy-switch currently writes Claude Code CLI settings. [Claude Desktop reads a separate third-party inference configuration](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app), so adding a DeepSeek API here does not connect Desktop’s chat or Code tab. With a normal Claude account, the Code tab requires an eligible paid plan; adding a third-party key does not change that account’s access. Model mappings apply to routed CLI requests, and the CLI’s custom `/model` entry is loaded at startup. See the [Claude Code guide](docs/claude-code.md) for the supported workflow and Desktop setup limits.
+Open Claude Desktop once to initialize its configuration, add a provider under **Claude**, then fully quit and reopen Desktop. easy-switch writes its [third-party inference configuration](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app) separately from CLI settings. For DeepSeek, enter the provider’s exact main/subagent IDs in **Claude model mapping**. Desktop uses stable `easy-switch` Sonnet/Opus/Subagent route entries; the gateway maps them to the current upstream, so switching does not require reloading a provider-specific menu. These role names do not assert access to Claude models. Upstreams must support Anthropic Messages, streaming and tools; only OpenAI Chat compatibility is insufficient. See the [Claude guide](docs/claude-code.md) for paths, restoration and testing limits.
 
 ### Why does Codex list a model my API cannot use?
 
@@ -148,7 +148,7 @@ Desktop image support temporarily connects a native subscription so Codex can ex
 
 ### Does switching interrupt the current task?
 
-“Current route” identifies the default text provider for subsequent requests and changes after successful automatic failover. In-flight requests can still finish on their original provider; image routing is separate. Manual changes apply to subsequent model requests in the same session. Eligible upstream rejections can be retried through alternatives. A “Selected model is at capacity” rejection in HTTP or startup SSE is handled before any output is accepted: try available providers, then up to two delayed retries. Already accepted text/tool events are never replayed. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task.
+The current provider at the top identifies the default text provider for subsequent requests and changes after successful automatic failover. In-flight requests can still finish on their original provider; image routing is separate. Manual changes apply to subsequent model requests in the same session, including Claude Desktop task continuations. Eligible upstream rejections can be retried through alternatives. A Codex “Selected model is at capacity” rejection in HTTP or startup SSE is handled before any output is accepted: try available providers, then up to two delayed retries. Already accepted text/tool events are never replayed. Mid-stream failures, unsupported context formats, or an exhausted queue can still interrupt the task.
 
 <a id="disclaimer"></a>
 

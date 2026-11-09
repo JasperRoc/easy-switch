@@ -15,7 +15,7 @@ import { SubscriptionUsage } from './usage.js';
 import { codexResetCredits } from './reset-credits.js';
 
 export class DesktopController {
-  constructor({ root, codexHome, claudeHome = defaultClaudeHome(), binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits, repairPreferences = repairPreferencesAccess }) {
+  constructor({ root, codexHome, claudeHome = defaultClaudeHome(), claudeDesktop, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits, repairPreferences = repairPreferencesAccess }) {
     Object.assign(this, { root, codexHome, binary });
     this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
     protectDirectory(root);
@@ -24,7 +24,7 @@ export class DesktopController {
     const prompt = this.reauth.prompt;
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
       ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
-    this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, port, reauth: this.reauth, guardExec,
+    this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, port, reauth: this.reauth, guardExec,
       claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}) });
     this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
     this.preferencesFile = path.join(root, 'desktop.json');
@@ -113,6 +113,7 @@ export class DesktopController {
     });
     const login = this.currentLogin;
     return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active,
+      claudeDesktop: client === 'claude' && fs.existsSync(path.join(this.root, 'claude-desktop-session.json')),
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
       imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
   }

@@ -2,17 +2,17 @@
 
 [English README](../README.md) · [简体中文 README](README.zh-CN.md)
 
-## Codex and Claude Code
+## Codex and Claude
 
-The top client selector and tray menu manage independent provider lists for Codex and Claude Code. Adding a provider in one list does not add or switch the other. Both routes share the application lifetime; quitting restores both configurations. Each provider row has a pencil action to edit its alias and, for APIs, its Base URL/key. A blank replacement key keeps the original; existing keys never enter the renderer. Updating an endpoint or key invalidates its cached model selection.
+The top client selector and tray menu manage independent provider lists for Codex and Claude. Claude Code CLI and Claude Desktop share the Claude list and selected provider. All routes share the application lifetime; quitting restores their configurations. Each provider row has a pencil action to edit its alias and, for APIs, its Base URL/key. A blank replacement key keeps the original; existing keys never enter the renderer. Updating an endpoint or key invalidates its cached model selection. The check icon identifies the selected row; use the two-arrow icon to switch. The summary at the top displays the current provider.
 
 Claude API and subscription setup, protocol requirements and first-release limits are documented in the [Claude Code guide](claude-code.md). Claude Code must be installed separately for official subscription login. Codex’s bundled sign-in helper and existing quota/image features are unchanged.
 
-Automatic Claude configuration targets Claude Code CLI. Claude Desktop’s chat and Code tab use a separate third-party inference setup; their menus and account access do not follow CLI settings. See the [client scope notes](claude-code.md) before configuring a Desktop gateway.
+Claude CLI settings and Desktop’s third-party inference profile are configured separately. Start Desktop once to initialize its directory, then add a Claude provider and fully restart Desktop. Stable local model roles let subsequent provider changes take effect on the next model request, including task continuations. Restart Desktop again after routing stops. See the [Claude guide](claude-code.md) for paths, model mapping, recovery and protocol limits.
 
-顶部客户端选择器与托盘菜单分别管理 Codex 和 Claude Code 的服务商，互不切换；两个路由均随软件退出恢复。点击条目的铅笔图标可编辑别名及 API 地址、密钥，密钥留空保留；原密钥不传入界面。更改地址或密钥会清除旧模型选择。Claude 的 API、订阅认证与首批适配限制见 [Claude Code 指南](claude-code.md)。
+顶部客户端选择器与托盘菜单分别管理 Codex 和 Claude 的服务商，互不切换；Claude Code CLI 与 Claude Desktop 共用 Claude 列表及当前选择。所有配置均随软件退出恢复。条目使用勾选图标标识当前选择，双箭头图标用于切换，顶部统一显示当前服务商。点击铅笔图标可编辑别名及 API 地址、密钥，密钥留空保留；原密钥不传入界面。更改地址或密钥会清除旧模型选择。Claude 的 API、订阅认证与适配限制见 [Claude 指南](claude-code.md)。
 
-Claude 自动配置面向 Claude Code CLI；Claude 桌面聊天与 Code 页面需要独立的第三方推理配置，菜单和账号权限不会跟随 CLI 设置变化。配置桌面网关前请先阅读[客户端范围说明](claude-code.md)。
+CLI 设置与 Desktop 第三方推理 profile 分别写入。先打开 Desktop 一次初始化目录，再添加 Claude 服务商并完全重启 Desktop。固定的本地模型角色使日常切换在下一次模型请求生效，包括任务续接；停止路由后需再次重启 Desktop。路径、映射、恢复机制及协议限制见 [Claude 指南](claude-code.md)。
 
 ## Install
 

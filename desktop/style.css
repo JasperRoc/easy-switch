@@ -38,7 +38,6 @@ h2 { margin: 0 0 7px; font-size: 17px; font-weight: 650; letter-spacing: -.25px;
 .provider .identity { flex: 1; min-width: 0; }
 .provider strong { display: block; font-size: 13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .provider small { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.provider .tag { color: var(--accent); font-size: 10px; }
 .provider .quota { position:relative; padding:4px; color:var(--muted); display:flex; align-items:center; gap:10px; }
 .quota-segment:focus-visible { outline:none; filter:drop-shadow(0 0 2px var(--accent)); }
 .quota-ring { width:32px; height:32px; flex-shrink:0; overflow:visible; }
@@ -137,6 +136,10 @@ button.delete-provider:hover {color:#e54d59;background:rgba(232,80,98,.08);}
 .client-picker .help {margin:0 0 0 6px;font-size:11px;}
 button.edit-provider,button.query-models {color:var(--muted);width:30px;height:30px;padding:7px;background:transparent;border:0;box-shadow:none;}
 button.edit-provider:hover,button.query-models:hover {color:var(--ink);background:var(--notice);}
+button.select-provider {width:32px;height:32px;padding:7px;color:var(--muted);background:transparent;border-color:transparent;box-shadow:none;}
+button.select-provider:hover {color:var(--accent);background:var(--notice);border-color:var(--line);}
+button.select-provider[aria-pressed="true"] {color:var(--accent);background:var(--notice);border-color:var(--line);cursor:default;}
+button.select-provider[aria-pressed="true"]:hover {transform:none;box-shadow:none;}
 #models-dialog {width:520px;max-height:calc(100vh - 48px);overflow:auto;}
 #models-provider {display:block;margin-bottom:8px;letter-spacing:.5px;}
 #models-search {margin:14px 0;}

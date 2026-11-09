@@ -13,7 +13,7 @@ app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
 let window, tray, controller, updater, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '', lastFailover;
 let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
-const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude Code' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
+const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const repository = 'https://github.com/JasperRoc/easy-switch';
 
@@ -37,9 +37,9 @@ function updateTray(state = snapshot(false)) {
   if (signature === trayState) return;
   trayState = signature;
   controller.runtime.syncClaude();
-  tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude Code' : 'Codex'} · ${state.active || t('addProvider')}`);
+  tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude' : 'Codex'} · ${state.active || t('addProvider')}`);
   trayMenu = Menu.buildFromTemplate([
-    ...['codex', 'claude'].map(client => ({ label: client === 'codex' ? 'Codex' : 'Claude Code', type: 'radio', checked: state.client === client,
+    ...['codex', 'claude'].map(client => ({ label: client === 'codex' ? 'Codex' : 'Claude', type: 'radio', checked: state.client === client,
       click: () => { controller.clientSelection(client); updateTray(); window?.webContents.send('easy-switch:changed'); } })),
     { type: 'separator' },
     { label: state.running ? t('trayActive', { alias: state.active || t('noProvider') }) : t('trayStopped'), enabled: false },
@@ -77,13 +77,14 @@ function setAutoStart(enabled) {
 
 async function boot() {
   const { DesktopController } = await import('./controller.js');
+  const { claudeDesktopPaths } = await import('../src/claude-desktop.js');
   const { DesktopUpdater } = await import('./updater.js');
   const i18n = await import('./i18n.js'); translate = i18n.translate;
   loginItem = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {});
   const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const bundled = app.isPackaged ? path.join(process.resourcesPath, 'codex', exe) : path.join(__dirname, '..', '.desktop-cache', `codex-${process.platform}-${process.arch}`, exe);
   const binary = process.env.SWITCH_CODEX_BIN || bundled;
-  controller = new DesktopController({ root, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), binary, port: Number(process.env.SWITCH_PORT ?? 18345), guardExec: process.execPath });
+  controller = new DesktopController({ root, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), claudeDesktop: claudeDesktopPaths(), binary, port: Number(process.env.SWITCH_PORT ?? 18345), guardExec: process.execPath });
   const updateSession = session.fromPartition('easy-switch-updates', { cache: false });
   updater = new DesktopUpdater({ root, current: app.getVersion(),
     systemFetch: (url, options) => updateSession.fetch(url, { ...options, credentials: 'omit' }),

@@ -9,6 +9,7 @@ auth.json
 oauth.json
 .credentials.json
 claude-session.json
+claude-desktop-session.json
 desktop-session.json
 state.json
 network.json

@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { init } from '../src/store.js';
 import { activateClaude, restoreClaude } from '../src/claude-config.js';
+import { activateClaudeDesktop, restoreClaudeDesktop } from '../src/claude-desktop.js';
 import { claudeModelEnvironment } from '../src/claude-models.js';
 import { createProxy } from '../src/proxy.js';
 import { activateSession, restoreSession, syncSession } from './config.js';
@@ -34,8 +35,8 @@ export function repairPreferencesAccess(file, { platform = process.platform, run
 }
 
 export class DesktopRuntime {
-  constructor({ root, codexHome, claudeHome, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
-    Object.assign(this, { root, codexHome, claudeHome, port, reauth, claudeReauth, createServer, guardExec });
+  constructor({ root, codexHome, claudeHome, claudeDesktop, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
+    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, port, reauth, claudeReauth, createServer, guardExec });
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
@@ -49,12 +50,17 @@ export class DesktopRuntime {
   stop() { return this.transition(() => this.stopRouting()); }
   syncTools() { if (this.active) this.imageTools = syncSession(this.root, this.codexHome); }
   syncClaude() {
-    if (!this.active || !this.claudeHome) return;
+    if (!this.active) return;
     const state = init(path.join(this.root, 'claude'));
-    if (Object.keys(state.providers).length)
-      activateClaude(this.root, this.claudeHome, this.port, state.token, claudeModelEnvironment(state.providers[state.active]));
+    if (Object.keys(state.providers).length) {
+      if (this.claudeHome) activateClaude(this.root, this.claudeHome, this.port, state.token, claudeModelEnvironment(state.providers[state.active]));
+      activateClaudeDesktop(this.root, this.claudeDesktop, this.port, state.token);
+    } else {
+      restoreClaude(path.join(this.root, 'claude-session.json'));
+      restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json'));
+    }
   }
-  restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); }
+  restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json')); }
   async listen() {
     const server = this.createServer({ root: this.root, reauth: this.reauth, claudeReauth: this.claudeReauth });
     server.on('request', (req, res) => {
