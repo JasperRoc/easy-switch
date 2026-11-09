@@ -27,17 +27,15 @@ export function claudeDesktopPaths({ platform = process.platform, home = os.home
   return { normal: directory(false), thirdParty: directory(true) };
 }
 
-// Keep one default route across providers; other IDs identify actual catalog entries.
-const defaultRoute = 'claude-sonnet-5';
+// Use distinct routes so Desktop's published Claude catalog cannot override labels.
 export function claudeDesktopRoutes(provider, models = []) {
   const configured = provider.type === 'api' ? provider.claudeModels : null;
   const entries = [...models];
   for (const id of [configured?.default, configured?.subagent].filter(Boolean)) if (!entries.some(item => item.id === id)) entries.push({ id, label: id });
   if (configured?.default) entries.sort((a, b) => Number(b.id === configured.default) - Number(a.id === configured.default));
-  const nativeDefault = entries.some(item => item.id === defaultRoute);
-  return entries.map(({ id, label }, index) => {
+  return entries.map(({ id, label }) => {
     const route = /^claude-(?:sonnet|opus|haiku|fable)-/.test(id) ? id
-      : index === 0 && !nativeDefault ? defaultRoute : `claude-sonnet-5-es-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`;
+      : `claude-sonnet-5-es-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`;
     return { id: route, model: id, label: label || id };
   });
 }
@@ -50,15 +48,17 @@ export function claudeDesktopModels(provider, alias, models) {
 
 export function mappedDesktopModel(provider, model, models, headers = {}) {
   const routes = claudeDesktopRoutes(provider, models);
-  if (headers['x-claude-code-agent-id'] && provider.type === 'api' && provider.claudeModels) return provider.claudeModels.subagent || provider.claudeModels.default || model;
-  const exact = routes.find(route => route.id === model);
+  // [1m] is a client context marker, not part of an upstream model ID.
+  const requested = typeof model === 'string' ? model.replace(/\[1m\]$/i, '') : model;
+  const exact = routes.find(route => route.id === requested || route.model === requested);
   if (exact) return exact.model;
-  if (/-es-[a-f0-9]{16}$/.test(model || '')) return provider.claudeModels?.default || routes[0]?.model || model;
-  if (!/^claude-|^(?:sonnet|opus|haiku)$/.test(model || '')) return model;
-  const tier = /haiku/i.test(model) ? 'subagent' : 'default';
+  if (headers['x-claude-code-agent-id'] && provider.type === 'api' && provider.claudeModels) return provider.claudeModels.subagent || provider.claudeModels.default || model;
+  if (/-es-[a-f0-9]{16}$/.test(requested || '')) return provider.claudeModels?.default || routes[0]?.model || model;
+  if (!/^claude-|^(?:sonnet|opus|haiku)$/.test(requested || '')) return model;
+  const tier = /haiku/i.test(requested) ? 'subagent' : 'default';
   const configured = provider.type === 'api' && (provider.claudeModels?.[tier] || provider.claudeModels?.default);
   if (configured) return configured;
-  const family = /haiku|sonnet|opus|fable/i.exec(model)?.[0];
+  const family = /haiku|sonnet|opus|fable/i.exec(requested)?.[0];
   return routes.find(route => family && new RegExp(`^claude-${family}-`, 'i').test(route.model))?.model || routes[0]?.model || model;
 }
 

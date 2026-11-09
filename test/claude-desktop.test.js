@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { activateClaudeDesktop, restoreClaudeDesktop, claudeDesktopPaths } from '../src/claude-desktop.js';
-import { init, atomic, addProvider, activate, readState } from '../src/store.js';
+import { init, atomic, addProvider, editProvider, activate, readState } from '../src/store.js';
 import { DesktopController } from '../desktop/controller.js';
 import { createProxy } from '../src/proxy.js';
 
@@ -161,6 +161,38 @@ test('Desktop maps an existing chat onto the next provider’s default and inval
   activate('second', claude);
   const response = await fetch(base + '/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model: catalog.data[0].id, messages: [] }) });
   assert.equal(response.status, 200); await response.text(); assert.equal(calls.at(-1).model, 'other-model');
+});
+
+test('Desktop preserves every explicit model with context suffixes and agent headers despite main mappings', async t => {
+  const { root } = fixture(t), claude = path.join(root, 'claude'), { token } = init(claude), calls = [];
+  const ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'];
+  addProvider('relay', { type: 'api', baseUrl: 'https://relay.test', apiKey: 'private-key' }, claude);
+  const server = createProxy({ root, fetchImpl: async (_url, options) => {
+    if (!options.body) return Response.json({ data: ids.map(id => ({ id })) });
+    calls.push(JSON.parse(options.body)); return Response.json({ type: 'message', content: [], model: calls.at(-1).model });
+  } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}/claude-desktop`, headers = { authorization: `Bearer ${token}` };
+  const catalog = await (await fetch(base + '/v1/models', { headers })).json();
+  assert.deepEqual(catalog.data.map(item => item.display_name), ids);
+  assert.ok(catalog.data.every(item => /-es-[a-f0-9]{16}$/.test(item.id)), 'no model may use a published Claude ID that overrides its name');
+  const messages = [{ role: 'user', content: 'Continue the task' }], tools = [{ name: 'Read', input_schema: { type: 'object', properties: {} } }];
+  for (const claudeModels of [{ default: ids[0] }, { default: ids[0], subagent: ids[0] }]) {
+    editProvider('relay', { claudeModels }, claude);
+    for (let index = 0; index < ids.length; index++) {
+      for (const suffix of ['', '[1m]']) {
+        for (const agent of [false, true]) {
+          const requestHeaders = agent ? { ...headers, 'x-claude-code-agent-id': 'worker' } : headers;
+          for (const model of [catalog.data[index].id + suffix, ids[index] + suffix]) {
+            const response = await fetch(base + '/v1/messages', { method: 'POST', headers: requestHeaders, body: JSON.stringify({ model, messages, tools }) });
+            assert.equal(response.status, 200); await response.text();
+            assert.equal(calls.at(-1).model, ids[index], JSON.stringify({ model, agent, claudeModels }));
+            assert.deepEqual(calls.at(-1).messages, messages); assert.deepEqual(calls.at(-1).tools, tools);
+          }
+        }
+      }
+    }
+  }
 });
 
 test('Desktop can use explicit mappings when discovery is unavailable and errors retain safe upstream detail', async t => {

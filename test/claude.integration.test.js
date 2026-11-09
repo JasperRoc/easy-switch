@@ -9,8 +9,46 @@ import { addProvider, init, activate } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { activateClaude, restoreClaude } from '../src/claude-config.js';
 import { claudeModelEnvironment } from '../src/claude-models.js';
+import { claudeDesktopModels } from '../src/claude-desktop.js';
 
 const binary = process.env.SWITCH_TEST_CLAUDE;
+test('official Claude Code preserves three distinct Desktop model selections with context markers and saved defaults', { skip: !binary, timeout: 45000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-desktop-client-models-')), directory = path.join(root, 'config');
+  const claude = path.join(root, 'claude'); init(root); const { token } = init(claude);
+  const ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'], models = ids.map(id => ({ id, label: id }));
+  const provider = { type: 'api', baseUrl: 'https://relay.test', apiKey: 'fixture-key', claudeModels: { default: ids[0], subagent: ids[0] } };
+  addProvider('relay', provider, claude); const calls = [];
+  const server = createProxy({ root, fetchImpl: async (_url, options) => {
+    if (!options.body) return Response.json({ data: ids.map(id => ({ id })) });
+    const payload = JSON.parse(options.body); calls.push(payload.model);
+    const events = [
+      { type: 'message_start', message: { id: 'msg_fixture', type: 'message', role: 'assistant', model: payload.model, content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'MODEL_OK' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
+      { type: 'message_stop' },
+    ];
+    return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}/claude-desktop`, ANTHROPIC_AUTH_TOKEN: token, ANTHROPIC_API_KEY: '', CLAUDE_CODE_OAUTH_TOKEN: '' } }));
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: directory, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
+  for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_CODE_(?:OAUTH_TOKEN|USE_BEDROCK|USE_VERTEX|USE_FOUNDRY|SUBAGENT_MODEL|CUSTOM_HEADERS))/.test(key)) delete env[key];
+  const catalog = claudeDesktopModels(provider, 'relay', models);
+  for (let index = 0; index < ids.length; index++) for (const suffix of ['', '[1m]']) {
+    const before = calls.length;
+    const child = spawn(binary, ['--print', '--verbose', '--output-format', 'stream-json', '--model', catalog.data[index].id + suffix, '--tools', '', '--no-session-persistence', '--setting-sources', 'user', 'Reply MODEL_OK.'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.resume();
+    t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+    const [code] = await once(child, 'exit'); assert.equal(code, 0, output.slice(-1000));
+    assert.match(output, /MODEL_OK/); assert.ok(calls.length > before);
+    assert.ok(calls.slice(before).includes(ids[index]), JSON.stringify({ selected: catalog.data[index].id + suffix, calls: calls.slice(before) }));
+    assert.ok(calls.slice(before).every(model => model === ids[index]), 'no request may silently use the saved default');
+  }
+});
 test('official Claude Code reads user routing settings and continues the same conversation on another API', { skip: !binary, timeout: 45000 }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-real-claude-')), directory = path.join(root, 'config');
   const claude = path.join(root, 'claude'); init(root); const state = init(claude);
