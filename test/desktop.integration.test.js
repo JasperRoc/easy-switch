@@ -181,7 +181,8 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.equal(fs.readFileSync(file, 'utf8'), original);
   assert.equal(profile.inferenceModels, undefined);
   const catalog = await (await fetch(profile.inferenceGatewayBaseUrl + '/v1/models', { headers: { authorization: `Bearer ${profile.inferenceGatewayApiKey}` } })).json();
-  assert.equal(catalog.data[0].display_name, 'deepseek-second');
+  assert.deepEqual(catalog.data.map(item => item.display_name), ['deepseek-first', 'deepseek-helper', 'deepseek-second']);
+  assert.ok(catalog.data.every(item => item.description.startsWith('easy-switch · ')));
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await page.locator('#claude-desktop-hint').filter({ hasText: '已接入 Claude Desktop' }).waitFor();

@@ -1,6 +1,6 @@
 {
   "name": "easy-switch",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Switch Codex, Claude Code CLI and Claude Desktop accounts and APIs with a desktop tray app or Linux CLI",
   "type": "module",
   "bin": {

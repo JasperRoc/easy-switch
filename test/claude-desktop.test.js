@@ -99,7 +99,7 @@ test('CLI and Desktop share providers and failover while Desktop displays actual
   const catalog = async credential => fetch(base + '/claude-desktop/v1/models', { headers: { authorization: `Bearer ${credential}` } });
   assert.equal((await catalog(readState(root).token)).status, 401);
   let models = await (await catalog(token)).json(); assert.equal(calls.length, 0);
-  assert.deepEqual(models.data.map(item => item.display_name), ['a-main', 'a-agent']); assert.match(models.data[0].description, /a-main/);
+  assert.deepEqual(models.data.map(item => item.display_name), ['a-main', 'a-agent', 'b-main', 'b-agent']); assert.match(models.data[0].description, /^easy-switch · a-main$/);
   const messages = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file: 'local' } }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'file result' }] }];
   const tools = [{ name: 'Read', input_schema: { type: 'object', properties: {} } }];
   const request = async (prefix, model) => {
@@ -111,8 +111,9 @@ test('CLI and Desktop share providers and failover while Desktop displays actual
   await request('/claude-desktop', 'claude-haiku-4-5-20251001'); assert.equal(calls.at(-1).body.model, 'b-agent');
   assert.deepEqual(calls.at(-1).body.messages, messages); assert.deepEqual(calls.at(-1).body.tools, tools);
   await request('/claude', 'claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'b-main');
-  models = await (await catalog(token)).json(); assert.match(models.data[0].description, /b-main/);
+  models = await (await catalog(token)).json(); assert.match(models.data[0].description, /a-main/);
   activate('a', claude); quota = true;
+  editProvider('b', { claudeModels: { default: 'a-main', subagent: 'b-agent' } }, claude);
   const response = await request('/claude-desktop', 'claude-sonnet-5');
   assert.equal(response.headers.get('x-switch-alias'), 'b'); assert.equal(readState(claude).active, 'b');
   assert.deepEqual(calls.at(-1).body.messages, messages); assert.ok(!JSON.stringify(calls).includes(token));
@@ -148,11 +149,11 @@ test('Desktop discovers non-Claude models and maps health checks, chat, tools an
   assert.equal(readState(claude).providers.deepseek.claudeModels, undefined, 'automatic routing never overwrites saved preferences');
 });
 
-test('Desktop maps an existing chat onto the next provider’s default and invalidates edited catalog entries', async t => {
+test('Desktop keeps a chat’s selected model across provider switches and invalidates edited catalogs', async t => {
   const { root } = fixture(t), claude = path.join(root, 'claude'), { token } = init(claude), calls = [];
   for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.test`, apiKey: alias + '-secret' }, claude);
   const server = createProxy({ root, fetchImpl: async (url, options) => {
-    if (!options.body) return Response.json({ data: [{ id: url.includes('first.test') ? 'deepseek-pro' : 'other-model' }] });
+    if (!options.body) return Response.json({ data: [{ id: url.includes('first.test') ? 'deepseek-pro' : url.includes('new.test') ? 'edited-model' : 'other-model' }] });
     calls.push(JSON.parse(options.body)); return Response.json({ type: 'message', content: [] });
   } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
@@ -160,7 +161,11 @@ test('Desktop maps an existing chat onto the next provider’s default and inval
   const catalog = await (await fetch(base + '/v1/models', { headers })).json();
   activate('second', claude);
   const response = await fetch(base + '/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model: catalog.data[0].id, messages: [] }) });
-  assert.equal(response.status, 200); await response.text(); assert.equal(calls.at(-1).model, 'other-model');
+  assert.equal(response.status, 200); await response.text(); assert.equal(calls.at(-1).model, 'deepseek-pro');
+  assert.equal(response.headers.get('x-switch-alias'), 'first');
+  editProvider('second', { baseUrl: 'https://new.test' }, claude);
+  const refreshed = await (await fetch(base + '/v1/models', { headers })).json();
+  assert.deepEqual(refreshed.data.map(item => item.display_name), ['deepseek-pro', 'edited-model']);
 });
 
 test('Desktop preserves every explicit model with context suffixes and agent headers despite main mappings', async t => {
