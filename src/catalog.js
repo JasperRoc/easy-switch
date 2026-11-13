@@ -8,6 +8,17 @@ import { accountAuth, atomic, providerOrder } from './store.js';
 import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
 import { providerModels } from './provider-models.js';
 
+// Reference metadata enriches exact provider IDs; it never adds availability.
+const codexReference = new Map(JSON.parse(fs.readFileSync(new URL('./codex-models.json', import.meta.url), 'utf8')).models.map(model => [model.slug, model]));
+function codexMetadata(model) {
+  return { ...codexReference.get(model.id), ...model.metadata };
+}
+function compareCodexModels(a, b) {
+  const first = codexMetadata(a).priority, second = codexMetadata(b).priority;
+  return (Number.isFinite(first) ? first : Number.MAX_SAFE_INTEGER) - (Number.isFinite(second) ? second : Number.MAX_SAFE_INTEGER)
+    || a.id.localeCompare(b.id, 'en', { numeric: true });
+}
+
 // Read model metadata in an isolated app-server without creating a thread.
 export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'codex', provider, spawnImpl = spawn, timeoutMs = 12000, signal } = {}) {
   signal?.throwIfAborted();
@@ -97,11 +108,14 @@ export async function discoverModels(provider, root, { fetchImpl, signal, client
       return { models: result.models.filter(item => typeof item?.slug === 'string' && item.visibility !== 'hide').map(item => ({
         id: item.slug, label: item.display_name || item.slug, metadata: item,
         efforts: (item.supported_reasoning_levels || []).map(level => level.effort), defaultEffort: item.default_reasoning_level || null,
-      })), notice: 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.' };
+      })).sort(compareCodexModels), notice: 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.' };
     }
     if (!Array.isArray(result.data)) throw Error();
     const ids = [...new Set(result.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim()))];
-    return { models: ids.map(id => ({ id, label: id, efforts: [], defaultEffort: null })),
+    return { models: ids.map(id => {
+      const reference = codexReference.get(id);
+      return { id, label: reference?.display_name || id, efforts: (reference?.supported_reasoning_levels || []).map(level => level.effort), defaultEffort: reference?.default_reasoning_level || null };
+    }).sort(compareCodexModels),
       notice: ids.length ? '目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
     if (signal?.aborted) throw signal.reason;
@@ -146,11 +160,11 @@ export function createCodexCatalog({ root, fetchImpl, now = () => Date.now() }) 
         if (!models.has(model.id)) models.set(model.id, model);
         else if (!models.get(model.id).metadata && model.metadata) models.set(model.id, { ...model, label: models.get(model.id).label });
       }
-      return { models: [...models.values()].map((model, priority) => ({
+      return { models: [...models.values()].sort(compareCodexModels).map((model, priority) => ({
         base_instructions: 'Help the user with their coding tasks.', supported_reasoning_levels: [],
         shell_type: 'shell_command', support_verbosity: false, truncation_policy: { mode: 'tokens', limit: 10000 },
-        experimental_supported_tools: [], ...model.metadata, slug: model.id, display_name: model.label,
-        visibility: 'list', supported_in_api: true, priority, upgrade: null,
+        experimental_supported_tools: [], visibility: 'list', ...codexMetadata(model), slug: model.id, display_name: model.label,
+        supported_in_api: true, priority, upgrade: null,
       })) };
     },
     supports(alias, provider, model) {

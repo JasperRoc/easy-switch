@@ -68,10 +68,10 @@ test('an unreadable desktop.json cannot block startup; the warning clears when f
 });
 test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { skip: !enabled, timeout: 60000 }, async t => {
   const upstream = http.createServer((req,res) => {
-    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-6.1-sol' }, { id: 'relay-only-model' }] }));
+    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'relay-only-model' }, { id: 'gpt-6.1-sol' }] }));
   }).listen(0,'127.0.0.1'); await once(upstream,'listening');
   t.after(() => upstream.close());
-  const { app,page,file,original } = await launch(t);
+  const { app,page,file,original,root } = await launch(t);
   const uiErrors = []; page.on('pageerror', error => uiErrors.push(error.message));
   await page.click('#add-api'); await page.fill('#provider-alias','personal');
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
@@ -79,6 +79,13 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(await page.locator('[data-tab="model"], #model, #current-model').count(), 0);
   await page.locator('.query-models').click();
   await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  assert.equal(await page.locator('.catalog-id').first().inputValue(), 'gpt-6.1-sol');
+  const endpoint = parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch.model_catalog_url;
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const catalog = await (await fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).json();
+  assert.deepEqual(catalog.models.map(model => model.slug), ['gpt-6.1-sol', 'relay-only-model']);
+  assert.deepEqual(catalog.models[0].supported_reasoning_levels.map(level => level.effort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.equal(catalog.models[0].default_reasoning_level, 'low');
   await page.fill('#models-search', 'relay-only'); assert.equal(await page.locator('.catalog-model').count(), 1);
   assert.equal(await page.locator('.catalog-id').inputValue(), 'relay-only-model');
   await page.click('#close-models');

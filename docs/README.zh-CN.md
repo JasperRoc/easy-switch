@@ -82,7 +82,7 @@ cd easy-switch
 
 进入 `switch order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
 
-模型及推理强度由 Codex 或 Claude Code 自身管理。桌面版每行的放大镜独立查询该服务商，包括未选中的服务商，并提供目录编辑、搜索、刷新状态与读取时间，修改在点击保存前仅为草稿。两个客户端分别接入各自所有服务商的模型并集，实际请求保留所选模型 ID；目录中的模型仍需具备实际推理和工具调用权限。详见[服务商模型查询](usage.md#provider-model-lookup)及 [Claude 模型映射](claude-code.md)。
+模型及推理强度由 Codex 或 Claude Code 自身管理。桌面版每行的放大镜独立查询该服务商，包括未选中的服务商，并提供目录编辑、搜索、刷新状态与读取时间，修改在点击保存前仅为草稿。两个客户端分别接入各自所有服务商的模型并集，实际请求保留所选模型 ID。Codex 沿用官方模型顺序及各模型的推理强度选项，额外模型按名称排列在后；目录中的模型仍需具备实际推理和工具调用权限。详见[服务商模型查询](usage.md#provider-model-lookup)及 [Claude 模型映射](claude-code.md)。
 
 安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，文字请求的模型与推理强度沿用 Codex 当前配置。
 

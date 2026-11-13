@@ -36,7 +36,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   const upstream = label => http.createServer(async (req, res) => {
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ data: [{ id: 'gpt-5.1-codex' }, { id: `provider-${label}-only` }] }));
+      return res.end(JSON.stringify({ data: [{ id: `provider-${label}-only` }, { id: 'gpt-6-luna' }, { id: 'gpt-6.1-sol' }] }));
     }
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -102,7 +102,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     assert.ok(url.startsWith('http://127.0.0.1:'), 'test traffic must stay on simulated upstreams');
     return fetch(url, options);
   } }));
-  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-5.1-codex"\n' + (nativeAuth === 'bridge' ? 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\n' : '[features]\nimage_generation=true\n'));
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-6.1-sol"\n' + (nativeAuth === 'bridge' ? 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\n' : '[features]\nimage_generation=true\n'));
   if (nativeAuth) {
     const jwt = 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture', chatgpt_plan_type: nativeAuth === 'free' ? 'free' : 'plus' }, exp: 4102444800 })).toString('base64url') + '.fixture';
     const auth = { tokens: { id_token: jwt, access_token: jwt, refresh_token: 'fixture', account_id: 'fixture' }, last_refresh: new Date().toISOString() };
@@ -151,16 +151,22 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
   const models = await call('model/list', { includeHidden: false });
-  assert.deepEqual(models.data.map(model => model.model).sort(), ['gpt-5.1-codex', 'provider-A-only', 'provider-B-only'].sort(), 'official Codex reads the provider union without adding bundled models: ' + stderr);
+  assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6-luna', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
+  assert.equal(models.data[0].displayName, 'GPT-6.1-Sol');
+  assert.equal(models.data[0].defaultReasoningEffort, 'low');
+  assert.deepEqual(models.data[0].supportedReasoningEfforts.map(level => level.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(models.data[1].supportedReasoningEfforts.map(level => level.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(models.data[2].supportedReasoningEfforts, [], 'unrecognized vendor models do not inherit invented effort support');
   const { thread } = await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' });
   for (const [alias, text] of [['a', 'First turn'], ['b', 'Second turn']]) {
     activate(alias, root);
     const completed = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
-    await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text, text_elements: [] }] });
+    await call('turn/start', { threadId: thread.id, effort: 'high', input: [{ type: 'text', text, text_elements: [] }] });
     const turn = await completed;
     assert.equal(turn.status, 'completed', JSON.stringify(turn) + stderr);
   }
   assert.deepEqual(requests.map(r => r.label), ['A', 'B']);
+  assert.ok(requests.every(r => r.body.model === 'gpt-6.1-sol' && r.body.reasoning?.effort === 'high'), 'effort selected in the actual Codex client must reach both upstreams');
   assert.deepEqual(requests.map(r => r.authorization), ['Bearer a', 'Bearer b'], 'API switches replace the native subscription bearer with the selected API key');
   assert.ok(requests.every(r => r.accountID === undefined), 'the native subscription identity never leaks to API providers');
   if (nativeAuth === 'bridge') assert.equal(JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'))).auth_mode, 'chatgpt');
@@ -192,7 +198,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   const originalTool = requests.at(-1);
   const other = (await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' })).thread;
   const otherCompleted = new Promise(resolve => { finishTurns.set(other.id, resolve); });
-  await call('turn/start', { threadId: other.id, input: [{ type: 'text', text: 'An independent parallel task', text_elements: [] }] });
+  await call('turn/start', { threadId: other.id, effort: 'high', input: [{ type: 'text', text: 'An independent parallel task', text_elements: [] }] });
   assert.equal((await otherCompleted).status, 'completed');
   assert.equal(requests.at(-1).body.model, requests[0].body.model);
   assert.equal(requests.at(-1).body.reasoning.effort, requests[0].body.reasoning.effort);

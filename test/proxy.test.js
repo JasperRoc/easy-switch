@@ -288,9 +288,10 @@ test('Codex discovers the real provider union and routes exact model IDs only to
   const getModels = () => fetch(proxy + '/v1/models?client_version=0.165.0', { headers: { authorization: `Bearer ${token}` } });
   const unauthorized = await fetch(proxy + '/v1/models'); assert.equal(unauthorized.status, 401);
   const union = await (await getModels()).json();
-  assert.deepEqual(union.models.map(model => model.slug), ['common-model', 'api-only', 'subscription-only']);
-  assert.equal(union.models[0].context_window, 120000); assert.equal(union.models[0].base_instructions, metadata.base_instructions);
-  assert.deepEqual(union.models[0].supported_reasoning_levels, metadata.supported_reasoning_levels);
+  assert.deepEqual(union.models.map(model => model.slug), ['api-only', 'common-model', 'subscription-only']);
+  const common = union.models.find(model => model.slug === 'common-model');
+  assert.equal(common.context_window, 120000); assert.equal(common.base_instructions, metadata.base_instructions);
+  assert.deepEqual(common.supported_reasoning_levels, metadata.supported_reasoning_levels);
   assert.doesNotMatch(JSON.stringify(union), /gpt-5.5|private-/);
   await (await getModels()).text(); assert.equal(discoveries.length, 3, 'discovery is cached without polling or generation requests');
   assert.equal(discoveries.find(item => item.url.includes('chatgpt.com')).headers['ChatGPT-Account-ID'], 'elias-id');
