@@ -10,4 +10,5 @@ test('desktop languages cover the same controls and preserve untrusted parameter
   const html=fs.readFileSync(new URL('../desktop/index.html',import.meta.url),'utf8');
   for(const match of html.matchAll(/data-i18n(?:-aria|-placeholder)?="([^"]+)"/g)) assert.ok(messages.en[match[1]],match[1]);
   assert.equal(localizeMessage('仅列出服务商目录与 Codex 目录共同识别的模型。','en'),'Showing models recognized by both your provider and Codex.');
+  assert.equal(localizeMessage('Unable to find Claude Code. Install the CLI or its VS Code extension, or set SWITCH_CLAUDE_BIN to its executable.', 'zh-CN'), '未找到 Claude Code。请安装独立 CLI 或 VS Code 插件，也可通过 SWITCH_CLAUDE_BIN 指定可执行文件。');
 });

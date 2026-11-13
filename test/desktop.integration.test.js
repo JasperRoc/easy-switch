@@ -231,7 +231,7 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   assert.match(await page.locator('[data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-zh.png') });
 });
-test('Claude subscription authorization codes stay in the add dialog and disappear after sign-in', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
+test('Claude subscription can be deleted and added again, with authorization codes confined to the dialog', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');
   fs.writeFileSync(binary, `#!${process.execPath}\nconst fs=require('fs'),path=require('path');
 process.stdout.write('https://claude.com/cai/oauth/authorize?code=true&state=fixture\\n');
@@ -248,6 +248,17 @@ process.stdin.once('data',()=>{fs.writeFileSync(path.join(process.env.CLAUDE_CON
   assert.ok(!JSON.stringify(state).includes('fixture-oauth-secret'));
   const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.personal;
   assert.equal(JSON.parse(fs.readFileSync(path.join(saved.accountHome, 'oauth.json'))).accessToken, 'fixture-oauth-secret');
+  await page.click('#save-provider'); await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('.provider[data-alias="personal"] .delete-provider').click();
+  await page.locator('.provider[data-alias="personal"]').waitFor({ state: 'hidden' });
+  assert.equal(fs.existsSync(saved.accountHome), false);
+  await page.click('#add-subscription'); await page.fill('#provider-alias', 'personal');
+  await page.evaluate(() => window.easySwitch.call('login', 'personal'));
+  await page.locator('#claude-code-field').waitFor(); await page.fill('#authorization-code', 'fixture-second-code#state'); await page.click('#save-provider');
+  await page.locator('#login-message').filter({ hasText: 'Signed in successfully.' }).waitFor();
+  const renewed = JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.personal;
+  assert.notEqual(renewed.accountHome, saved.accountHome);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(renewed.accountHome, 'oauth.json'))).accessToken, 'fixture-oauth-secret');
 });
 test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foreground work while routing remains usable', { skip: !enabled, timeout: 30000 }, async t => {
   const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }).listen(0, '127.0.0.1');

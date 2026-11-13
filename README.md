@@ -28,7 +28,7 @@ Download the matching installer from [GitHub Releases](https://github.com/Jasper
 | macOS 13+ · Intel | `easy-switch-<version>-mac-x64.dmg` |
 
 1. Install and launch **easy-switch**. Node.js and the official Codex sign-in helper are bundled.
-2. Select **Codex** or **Claude**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude. Claude subscription sign-in uses your separately installed official Claude Code CLI and browser; macOS may request Keychain access.
+2. Select **Codex** or **Claude**, then use **Add subscription**, **Add API provider**, or **Import existing sign-in**. An empty Base URL uses that client’s official API: OpenAI for Codex, Anthropic for Claude. Claude subscription sign-in automatically detects your official Claude Code CLI or its VS Code extension’s bundled program and opens browser authentication; macOS may request Keychain access.
 3. Choose **English / 简体中文** and **System / Light / Dark** at the top of the window; your preferences are saved.
 4. Restart the selected client or reload its editor window once to read the local route. Click the tray/menu bar icon to reopen the window; right-click to select a client and switch providers. Drag provider priorities, edit an alias/address/key with the pencil button, or delete a provider. A blank key in the edit dialog preserves the saved key. Click a provider’s magnifying glass to query its own model catalog without changing the active route. Select models and reasoning effort in the conversation client; Claude API entries also support independent Fable, Opus, Sonnet and Haiku mappings.
 

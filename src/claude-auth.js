@@ -24,14 +24,33 @@ export async function removeClaudeLogin(directory, executeImpl = execute) {
   catch (error) { if (error.code !== 44) throw new Error('Unable to remove this isolated Claude Keychain login. Allow Keychain access and retry.'); }
 }
 export const claudeHome = () => path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
-export function claudeBinary() {
-  if (process.env.SWITCH_CLAUDE_BIN) return process.env.SWITCH_CLAUDE_BIN;
-  const name = process.platform === 'win32' ? 'claude.exe' : 'claude';
-  const dirs = [path.join(os.homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', ...(process.env.PATH || '').split(path.delimiter)];
-  if (process.platform === 'win32' && process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin'));
-  const binary = dirs.map(dir => path.join(dir, name)).find(file => fs.existsSync(file));
-  if (!binary) throw new Error('Install Claude Code first, or set SWITCH_CLAUDE_BIN to its executable.');
-  return binary;
+export function claudeBinary({ env = process.env, home = os.homedir(), platform = process.platform, arch = process.arch, files = fs } = {}) {
+  if (env.SWITCH_CLAUDE_BIN) return env.SWITCH_CLAUDE_BIN;
+  const name = platform === 'win32' ? 'claude.exe' : 'claude';
+  const dirs = [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', ...(env.PATH || '').split(platform === 'win32' ? ';' : ':').filter(Boolean)];
+  if (platform === 'win32' && env.APPDATA) dirs.push(path.join(env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin'));
+  const usable = file => {
+    try { if (!files.statSync(file).isFile()) return false; files.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK); return true; }
+    catch { return false; }
+  };
+  const binary = dirs.map(dir => path.join(dir, name)).find(usable);
+  if (binary) return binary;
+  // Editor extensions bundle the official native CLI even without a shell command.
+  const extensions = [];
+  for (const editor of ['.vscode', '.vscode-insiders', '.cursor']) {
+    const directory = path.join(home, editor, 'extensions');
+    let entries;
+    try { entries = files.readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const match = /^anthropic\.claude-code-(\d+\.\d+\.\d+)(?:-(.+))?$/.exec(entry.name);
+      if (!match || !entry.isDirectory() || match[2] && match[2] !== `${platform}-${arch}`) continue;
+      const file = path.join(directory, entry.name, 'resources', 'native-binary', name);
+      if (usable(file)) extensions.push({ file, version: match[1] });
+    }
+  }
+  extensions.sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
+  if (extensions.length) return extensions[0].file;
+  throw new Error('Unable to find Claude Code. Install the CLI or its VS Code extension, or set SWITCH_CLAUDE_BIN to its executable.');
 }
 export async function existingClaudeAuth(directory = claudeHome(), { platform = process.platform, explicit = !!process.env.CLAUDE_CONFIG_DIR, executeImpl = execute } = {}) {
   let credentials;

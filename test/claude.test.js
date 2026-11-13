@@ -7,7 +7,7 @@ import { once, EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { init, atomic, addProvider, editProvider, removeProvider, readState, activate } from '../src/store.js';
 import { activateClaude, restoreClaude } from '../src/claude-config.js';
-import { existingClaudeAuth, claudeToken, startClaudeLogin } from '../src/claude-auth.js';
+import { claudeBinary, existingClaudeAuth, claudeToken, startClaudeLogin } from '../src/claude-auth.js';
 import { discoverClaudeModels } from '../src/catalog.js';
 import { createProxy } from '../src/proxy.js';
 import { DesktopController } from '../desktop/controller.js';
@@ -26,6 +26,7 @@ async function proxy(t, root, options) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 const request = (url, token, payload = {}, headers = {}) => fetch(url + '/claude/v1/messages?beta=true', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers }, body: JSON.stringify({ model: 'claude-client', max_tokens: 100, messages: [{ role: 'user', content: 'hello' }], stream: true, ...payload }) });
+const localFiles = home => ({ ...fs, statSync(file) { if (!file.startsWith(home + path.sep)) throw Error(); return fs.statSync(file); } });
 
 test('provider editing preserves keys, active priority and account ownership; failed validation is atomic', t => {
   const root = fixture(t), accountHome = path.join(root, 'accounts', 'original');
@@ -60,6 +61,36 @@ test('Claude settings restore exact original text, preserve concurrent edits and
   const restored = JSON.parse(fs.readFileSync(file)); assert.equal(restored.language, 'Japanese'); assert.equal(restored.env.ANTHROPIC_AUTH_TOKEN, 'user-new-key');
   assert.equal(restored.env.ANTHROPIC_BASE_URL, 'https://original.test'); assert.equal(restored.env.CUSTOM, 'yes');
   assert.equal(fs.readFileSync(path.join(directory, '.credentials.json'), 'utf8'), 'original-login');
+});
+
+test('Claude detection finds the newest compatible editor binary without a terminal PATH', t => {
+  for (const platform of ['darwin', 'win32']) for (const editor of ['.vscode', '.vscode-insiders', '.cursor']) {
+    const home = fixture(t), name = platform === 'win32' ? 'claude.exe' : 'claude';
+    const install = (version, target = `${platform}-arm64`) => {
+      const file = path.join(home, editor, 'extensions', `anthropic.claude-code-${version}-${target}`, 'resources', 'native-binary', name);
+      fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture', { mode: 0o700 }); return file;
+    };
+    install('2.1.99'); const latest = install('2.1.100');
+    install('2.1.999', 'linux-arm64'); install('2.1.998', `${platform}-x64`);
+    const options = { home, platform, arch: 'arm64', env: { PATH: '' }, files: localFiles(home) };
+    assert.equal(claudeBinary(options), latest);
+    const standalone = path.join(home, '.local', 'bin', name);
+    fs.mkdirSync(path.dirname(standalone), { recursive: true }); fs.writeFileSync(standalone, 'fixture', { mode: 0o700 });
+    assert.equal(claudeBinary(options), standalone, 'a standalone CLI takes priority over an editor extension');
+    assert.equal(claudeBinary({ ...options, env: { SWITCH_CLAUDE_BIN: 'explicit-claude' } }), 'explicit-claude');
+  }
+});
+
+test('Claude detection ignores broken links, directories and nonexecutable files', { skip: process.platform === 'win32' }, t => {
+  const home = fixture(t), extensions = path.join(home, '.vscode', 'extensions');
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+  fs.symlinkSync(path.join(home, 'missing'), path.join(home, '.local', 'bin', 'claude'));
+  for (const version of ['2.1.100', '2.1.99']) {
+    const file = path.join(extensions, `anthropic.claude-code-${version}-darwin-arm64`, 'resources', 'native-binary', 'claude');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (version === '2.1.100') fs.mkdirSync(file); else fs.writeFileSync(file, 'fixture', { mode: 0o600 });
+  }
+  assert.throws(() => claudeBinary({ home, platform: 'darwin', arch: 'arm64', env: { PATH: '' }, files: localFiles(home) }), /Unable to find Claude Code/);
 });
 
 test('Claude sign-in delegates PKCE to the official CLI and only accepts a code on stdin', async t => {
