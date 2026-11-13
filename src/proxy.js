@@ -82,11 +82,11 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
-  const catalog = createCodexCatalog({ root, fetchImpl });
+  const catalog = createCodexCatalog({ root, fetchImpl, binary });
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {

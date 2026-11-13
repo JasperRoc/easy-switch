@@ -36,7 +36,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   const upstream = label => http.createServer(async (req, res) => {
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ data: [{ id: `provider-${label}-only` }, { id: 'gpt-6-luna' }, { id: 'gpt-6.1-sol' }] }));
+      return res.end(JSON.stringify({ data: [{ id: `provider-${label}-only` }, { id: 'gpt-image-2' }, { id: 'gpt-5.6-sol' }, { id: 'gpt-6-luna' }, { id: 'gpt-6.1-terra' }, { id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }] }));
     }
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -91,7 +91,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   });
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
-  const proxy = await serve(createProxy({ root, wait: async () => {}, fetchImpl: async (url, options) => {
+  const proxy = await serve(createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, wait: async () => {}, fetchImpl: async (url, options) => {
     if (url.endsWith('/images/generations')) {
       imageCalls++;
       assert.equal(options.headers.authorization, 'Bearer fixture-subscription');
@@ -151,12 +151,12 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
   const models = await call('model/list', { includeHidden: false });
-  assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6-luna', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
+  assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-sol', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
   assert.equal(models.data[0].displayName, 'GPT-6.1-Sol');
   assert.equal(models.data[0].defaultReasoningEffort, 'low');
   assert.deepEqual(models.data[0].supportedReasoningEfforts.map(level => level.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-  assert.deepEqual(models.data[1].supportedReasoningEfforts.map(level => level.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max']);
-  assert.deepEqual(models.data[2].supportedReasoningEfforts, [], 'unrecognized vendor models do not inherit invented effort support');
+  assert.deepEqual(models.data[3].supportedReasoningEfforts.map(level => level.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(models.data[5].supportedReasoningEfforts, [], 'unrecognized vendor models do not inherit invented effort support');
   const { thread } = await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' });
   for (const [alias, text] of [['a', 'First turn'], ['b', 'Second turn']]) {
     activate(alias, root);

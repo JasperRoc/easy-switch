@@ -68,7 +68,7 @@ test('an unreadable desktop.json cannot block startup; the warning clears when f
 });
 test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { skip: !enabled, timeout: 60000 }, async t => {
   const upstream = http.createServer((req,res) => {
-    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'relay-only-model' }, { id: 'gpt-6.1-sol' }] }));
+    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-image-2' }, { id: 'relay-only-model' }, { id: 'gpt-6-luna' }, { id: 'gpt-6.1-terra' }, { id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }] }));
   }).listen(0,'127.0.0.1'); await once(upstream,'listening');
   t.after(() => upstream.close());
   const { app,page,file,original,root } = await launch(t);
@@ -78,12 +78,12 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
   assert.equal(await page.locator('[data-tab="model"], #model, #current-model').count(), 0);
   await page.locator('.query-models').click();
-  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 5 models' }).waitFor();
   assert.equal(await page.locator('.catalog-id').first().inputValue(), 'gpt-6.1-sol');
   const endpoint = parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch.model_catalog_url;
   const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
   const catalog = await (await fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).json();
-  assert.deepEqual(catalog.models.map(model => model.slug), ['gpt-6.1-sol', 'relay-only-model']);
+  assert.deepEqual(catalog.models.map(model => model.slug), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'relay-only-model']);
   assert.deepEqual(catalog.models[0].supported_reasoning_levels.map(level => level.effort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.equal(catalog.models[0].default_reasoning_level, 'low');
   await page.fill('#models-search', 'relay-only'); assert.equal(await page.locator('.catalog-model').count(), 1);
@@ -91,14 +91,14 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.click('#close-models');
   await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'inactive', url, key: 'fixture-inactive' }), `http://127.0.0.1:${upstream.address().port}/v1`);
   await page.locator('.provider[data-alias="inactive"] .query-models').click();
-  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 5 models' }).waitFor();
   assert.equal((await page.evaluate(() => window.easySwitch.call('state'))).active, 'personal');
   assert.match(await page.locator('#models-provider').innerText(), /inactive/);
   await page.click('#close-models');
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await page.click('#theme-button'); await page.click('[data-theme="dark"]');
   await page.locator('.provider[data-alias="inactive"] .query-models').click();
-  await page.locator('#models-status').filter({ hasText: '目录已刷新 · 2 个模型' }).waitFor();
+  await page.locator('#models-status').filter({ hasText: '目录已刷新 · 5 个模型' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-models-dark-zh.png') });
   await page.click('#close-models');
   await page.click('#language-button'); await page.click('[data-language="en"]');

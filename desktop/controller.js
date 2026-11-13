@@ -25,7 +25,7 @@ export class DesktopController {
     const prompt = this.reauth.prompt;
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
       ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
-    this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, port, reauth: this.reauth, guardExec,
+    this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, binary, port, reauth: this.reauth, guardExec,
       claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}) });
     this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
     this.preferencesFile = path.join(root, 'desktop.json');
@@ -272,7 +272,7 @@ export class DesktopController {
     const client = this.client, root = this.providerRoot;
     const state = readState(root), name = aliasName(alias), provider = state.providers[name];
     if (!provider) throw new Error('Unknown provider.');
-    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root);
+    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root, { binary: this.binary });
     const current = readState(root).providers[name];
     if (this.providerRoot !== root || !current || JSON.stringify(current) !== JSON.stringify(provider)) throw new Error('The provider changed while loading models. Refresh the catalog again.');
     return { alias: name, client, ...result, models: providerModels(provider, result.models), discovered: result.models, fetchedAt: Date.now() };

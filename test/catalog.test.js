@@ -8,6 +8,15 @@ import path from 'node:path';
 import { atomic, accountAuth } from '../src/store.js';
 import { codexModels, discoverModels, createCodexCatalog } from '../src/catalog.js';
 
+
+const nativeModel = (id, priority, efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hidden = false) => ({
+  id, label: id === 'gpt-6.1-sol' ? 'GPT-6.1-Sol' : id, efforts, defaultEffort: 'low',
+  metadata: { priority, visibility: hidden ? 'hide' : 'list', default_reasoning_level: 'low', supported_reasoning_levels: efforts.map(effort => ({ effort, description: effort })) },
+});
+const clientMetadata = async () => [nativeModel('gpt-6.1-sol', 0), nativeModel('gpt-6-astra', 1), nativeModel('gpt-6-sol', 2),
+  nativeModel('gpt-6-luna', 3, ['low', 'medium', 'high', 'xhigh', 'max']), nativeModel('gpt-5.6-sol', 4), nativeModel('gpt-6.1-terra', 5),
+  nativeModel('gpt-5.6-terra', 6), nativeModel('gpt-5.6-luna', 7), nativeModel('codex-auto-review', 8, [], true)];
+
 const entry = { model: 'model-a', displayName: 'Model A', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] };
 function fakeServer(mode = 'success') {
   const requests = []; let directory;
@@ -116,7 +125,7 @@ test('subscription discovery isolates credentials and preserves refresh without 
 test('API catalogs use official Codex ordering and reasoning presets without adding unavailable models', async () => {
   const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture' };
   const ids = ['vendor-10', 'gpt-6-luna', 'gpt-6.1-sol', 'vendor-2'];
-  const result = await discoverModels(provider, '/unused', { fetchImpl: async () => Response.json({ data: ids.map(id => ({ id })) }) });
+  const result = await discoverModels(provider, '/unused', { metadataImpl: clientMetadata, fetchImpl: async () => Response.json({ data: ids.map(id => ({ id })) }) });
   assert.deepEqual(result.models.map(model => model.id), ['gpt-6.1-sol', 'gpt-6-luna', 'vendor-2', 'vendor-10']);
   assert.equal(result.models[0].label, 'GPT-6.1-Sol');
   assert.deepEqual(result.models[0].efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -130,20 +139,19 @@ test('API-only union retains official effort choices and ignores provider order 
     first: { type: 'api', baseUrl: 'https://first.example/v1', apiKey: 'fixture' },
     second: { type: 'api', baseUrl: 'https://second.example/v1', apiKey: 'fixture' },
   };
-  const catalog = createCodexCatalog({ root: '/unused', fetchImpl: async url => Response.json({ data: (url.includes('first')
+  const catalog = createCodexCatalog({ root: '/unused', metadataImpl: clientMetadata, fetchImpl: async url => Response.json({ data: (url.includes('first')
     ? ['vendor-10', 'gpt-6-luna', 'codex-auto-review'] : ['vendor-2', 'gpt-6.1-sol']).map(id => ({ id })) }) });
   for (const order of [['first', 'second'], ['second', 'first']]) {
     const result = await catalog.union({ providers, order }, '0.165.0', new AbortController().signal);
-    assert.deepEqual(result.models.map(model => model.slug), ['gpt-6.1-sol', 'gpt-6-luna', 'codex-auto-review', 'vendor-2', 'vendor-10']);
+    assert.deepEqual(result.models.map(model => model.slug), ['gpt-6.1-sol', 'gpt-6-luna', 'vendor-2', 'vendor-10']);
     assert.deepEqual(result.models[0].supported_reasoning_levels.map(level => level.effort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     assert.equal(result.models[0].default_reasoning_level, 'low');
-    assert.equal(result.models[2].visibility, 'hide');
-    assert.deepEqual(result.models[3].supported_reasoning_levels, []);
+    assert.deepEqual(result.models[2].supported_reasoning_levels, []);
     assert.ok(!result.models.some(model => model.slug === 'gpt-5.5'), 'bundled metadata must not add model availability');
   }
 });
 
-test('live subscription priorities and reasoning presets override reference defaults, including explicit empty choices', async t => {
+test('native variant ordering and live subscription reasoning presets coexist, including explicit empty choices', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-catalog-priority-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   atomic(path.join(root, 'auth.json'), { tokens: { access_token: 'fixture', account_id: 'fixture' } });
@@ -151,28 +159,84 @@ test('live subscription priorities and reasoning presets override reference defa
     api: { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture' },
     account: { type: 'account', accountHome: root },
   };
-  const catalog = createCodexCatalog({ root, fetchImpl: async url => url.includes('chatgpt.com') ? Response.json({ models: [
-    { slug: 'gpt-6.1-sol', display_name: 'Live Sol', priority: 20, supported_reasoning_levels: [], default_reasoning_level: null },
+  const catalog = createCodexCatalog({ root, metadataImpl: clientMetadata, fetchImpl: async url => url.includes('chatgpt.com') ? Response.json({ models: [
+    { slug: 'gpt-6-sol', display_name: 'Live Sol', priority: 20, supported_reasoning_levels: [], default_reasoning_level: null },
     { slug: 'gpt-6-luna', display_name: 'Live Luna', priority: 0, supported_reasoning_levels: [{ effort: 'high', description: 'Live high' }], default_reasoning_level: 'high', context_window: 100000 },
-  ] }) : Response.json({ data: [{ id: 'gpt-6.1-sol' }, { id: 'gpt-6-luna' }] }) });
+  ] }) : Response.json({ data: [{ id: 'gpt-6-sol' }, { id: 'gpt-6-luna' }] }) });
   const result = await catalog.union({ providers, order: ['api', 'account'] }, '0.165.0', new AbortController().signal);
-  assert.deepEqual(result.models.map(model => model.slug), ['gpt-6-luna', 'gpt-6.1-sol']);
-  assert.equal(result.models[0].default_reasoning_level, 'high');
-  assert.deepEqual(result.models[0].supported_reasoning_levels, [{ effort: 'high', description: 'Live high' }]);
-  assert.equal(result.models[0].context_window, 100000);
-  assert.deepEqual(result.models[1].supported_reasoning_levels, []);
-  assert.equal(result.models[1].default_reasoning_level, null);
+  assert.deepEqual(result.models.map(model => model.slug), ['gpt-6-sol', 'gpt-6-luna']);
+  assert.equal(result.models[1].default_reasoning_level, 'high');
+  assert.deepEqual(result.models[1].supported_reasoning_levels, [{ effort: 'high', description: 'Live high' }]);
+  assert.equal(result.models[1].context_window, 100000);
+  assert.deepEqual(result.models[0].supported_reasoning_levels, []);
+  assert.equal(result.models[0].default_reasoning_level, null);
 });
 
 test('custom catalog labels retain official reasoning defaults when provider discovery fails', async () => {
   const providers = { api: { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture', modelCatalog: [
     { id: 'vendor-model', label: 'My model' }, { id: 'gpt-6.1-sol', label: 'My Sol' },
   ] } };
-  const catalog = createCodexCatalog({ root: '/unused', fetchImpl: async () => new Response('', { status: 403 }) });
+  const catalog = createCodexCatalog({ root: '/unused', metadataImpl: clientMetadata, fetchImpl: async () => new Response('', { status: 403 }) });
   const result = await catalog.union({ providers, order: ['api'] }, '0.165.0', new AbortController().signal);
   assert.equal(result.models[0].slug, 'gpt-6.1-sol');
   assert.equal(result.models[0].display_name, 'My Sol');
   assert.equal(result.models[0].default_reasoning_level, 'low');
   assert.ok(result.models[0].supported_reasoning_levels.some(level => level.effort === 'high'));
   assert.equal(result.models[1].display_name, 'My model');
+});
+
+
+test('Codex keeps model series together, follows native variant order and removes image-only models', async () => {
+  const ids = ['gpt-5.6-luna', 'gpt-image-2', 'gpt-6-luna', 'gpt-6.1-terra', 'gpt-5.6-terra', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-image-2.5-flare', 'dall-e-3'];
+  const expected = ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+  const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture' };
+  const fetchImpl = async () => Response.json({ data: ids.map(id => ({ id })) });
+  const result = await discoverModels(provider, '/unused', { metadataImpl: clientMetadata, fetchImpl });
+  assert.deepEqual(result.models.map(model => model.id), expected);
+  const catalog = createCodexCatalog({ root: '/unused', metadataImpl: clientMetadata, fetchImpl });
+  const union = await catalog.union({ providers: { api: provider }, order: ['api'] }, '0.165.0', new AbortController().signal);
+  assert.deepEqual(union.models.map(model => model.slug), expected);
+  assert.ok(union.models[0].supported_reasoning_levels.some(level => level.effort === 'high'));
+});
+
+test('Codex never substitutes client models for an empty or failed provider directory', async () => {
+  for (const response of [() => Response.json({ data: [] }), () => new Response('', { status: 403 })]) {
+    let reads = 0;
+    const catalog = createCodexCatalog({ root: '/unused', metadataImpl: async () => { reads++; return clientMetadata(); }, fetchImpl: async () => response() });
+    const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture' };
+    const result = await catalog.union({ providers: { api: provider }, order: ['api'] }, '0.165.0', new AbortController().signal);
+    assert.deepEqual(result.models, []);
+    assert.equal(reads, 0, 'an empty directory does not start a metadata helper');
+  }
+});
+
+test('Codex catalog filtering also applies to saved image IDs and metadata-only image routes', async () => {
+  const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture', modelCatalog: [{ id: 'gpt-image-2', label: 'Pictures' }, { id: 'gpt-6-sol', label: 'My Sol' }] };
+  const catalog = createCodexCatalog({ root: '/unused', metadataImpl: clientMetadata, fetchImpl: async () => Response.json({ data: [] }) });
+  const result = await catalog.union({ providers: { api: provider }, order: ['api'] }, '0.165.0', new AbortController().signal);
+  assert.deepEqual(result.models.map(model => model.slug), ['gpt-6-sol']);
+  assert.equal(result.models[0].display_name, 'My Sol');
+});
+
+
+test('Codex filters image-only metadata even when an API uses an unrelated image model ID', async () => {
+  const provider = { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'fixture' };
+  const result = await discoverModels(provider, '/unused', { metadataImpl: clientMetadata, fetchImpl: async () => Response.json({ data: [
+    { id: 'art-model', output_modalities: ['image'] }, { id: 'gpt-6-sol', output_modalities: ['text', 'image'] },
+  ] }) });
+  assert.deepEqual(result.models.map(model => model.id), ['gpt-6-sol']);
+});
+
+
+test('subscription model directories use series grouping and native variant order while retaining live effort', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-sub-series-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  atomic(path.join(root, 'auth.json'), { tokens: { access_token: 'fixture', account_id: 'fixture' } });
+  const provider = { type: 'account', accountHome: root };
+  const ids = ['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-image-2'];
+  const result = await discoverModels(provider, root, { metadataImpl: clientMetadata, fetchImpl: async () => Response.json({ models: ids.map((slug, priority) => ({
+    slug, priority, display_name: slug, supported_reasoning_levels: [{ effort: 'high', description: 'Live high' }], default_reasoning_level: 'high',
+  })) }) });
+  assert.deepEqual(result.models.map(model => model.id), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']);
+  assert.ok(result.models.every(model => model.defaultEffort === 'high'));
 });

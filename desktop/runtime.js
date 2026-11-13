@@ -35,8 +35,8 @@ export function repairPreferencesAccess(file, { platform = process.platform, run
 }
 
 export class DesktopRuntime {
-  constructor({ root, codexHome, claudeHome, claudeDesktop, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
-    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, port, reauth, claudeReauth, createServer, guardExec });
+  constructor({ root, codexHome, claudeHome, claudeDesktop, binary, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
+    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, binary, port, reauth, claudeReauth, createServer, guardExec });
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
@@ -62,7 +62,7 @@ export class DesktopRuntime {
   }
   restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json')); }
   async listen() {
-    const server = this.createServer({ root: this.root, reauth: this.reauth, claudeReauth: this.claudeReauth });
+    const server = this.createServer({ root: this.root, binary: this.binary, reauth: this.reauth, claudeReauth: this.claudeReauth });
     server.on('request', (req, res) => {
       if (req.method !== 'POST') return;
       this.activeRequests++;
