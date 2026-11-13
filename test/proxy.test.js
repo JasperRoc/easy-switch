@@ -816,3 +816,53 @@ test('startup SSE inspection handles event names, CRLF, multiline data and bound
   const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; return new Response(original, { headers: { 'content-type': 'text/event-stream' } }); } }));
   assert.equal(await (await send(proxy, token)).text(), original); assert.equal(calls, 1);
 });
+
+
+test('native image metadata reaches the selected subscription without leaking local or API credentials', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-aos' }, root);
+  const accountHome = path.join(root, 'accounts', 'elias');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-elias', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    return Response.json({ data: [{ b64_json: 'fixture-image' }] }, { headers: { 'x-codex-imagegen-request-id': 'image-request-id' } });
+  } }));
+  const metadata = JSON.stringify({ display_name: 'Draw a cat', turn_trigger: 'page_prompt' });
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: {
+    authorization: 'Bearer native-login', 'x-easy-switch-token': token, 'content-type': 'application/json',
+    originator: 'codex_vscode', 'user-agent': 'codex_vscode/0.165.0', 'x-codex-image-turn-id': 'turn-1', 'x-codex-turn-metadata': metadata,
+    cookie: 'private-cookie', 'x-unrelated-private': 'private-header',
+  }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A cat chasing a mouse' }) });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(response.headers.get('x-switch-alias'), 'elias');
+  assert.equal(response.headers.get('x-codex-imagegen-request-id'), 'image-request-id');
+  assert.equal(calls.length, 1); assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/images/generations');
+  assert.equal(calls[0].headers.originator, 'codex_vscode');
+  assert.equal(calls[0].headers['user-agent'], 'codex_vscode/0.165.0');
+  assert.equal(calls[0].headers['x-codex-image-turn-id'], 'turn-1');
+  assert.equal(calls[0].headers['x-codex-turn-metadata'], metadata);
+  assert.equal(calls[0].headers.authorization, 'Bearer private-elias');
+  assert.equal(calls[0].headers['ChatGPT-Account-ID'], 'elias-id');
+  assert.equal(calls[0].headers.cookie, undefined); assert.equal(calls[0].headers['x-easy-switch-token'], undefined);
+  assert.equal(calls[0].headers['x-unrelated-private'], undefined);
+  assert.equal(readState(root).active, 'aos');
+});
+
+test('exhausted subscription image rejection names the actual image route without blaming the text API', async t => {
+  const { root, token } = fixture(t);
+  addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-aos' }, root);
+  const accountHome = path.join(root, 'accounts', 'elias');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-elias', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls++; assert.equal(options.headers.authorization, 'Bearer private-elias');
+    return Response.json({ detail: 'Forbidden private-elias' }, { status: 403 });
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A cat chasing a mouse' }) });
+  assert.equal(response.status, 403); assert.equal(response.headers.get('x-switch-alias'), 'elias');
+  const text = await response.text(); assert.match(text, /图片.*elias.*403/);
+  assert.match(text, /已尝试：elias/); assert.doesNotMatch(text, /private-|API_KEY|冷却/);
+  assert.equal(calls, 1); assert.equal(readState(root).active, 'aos');
+});

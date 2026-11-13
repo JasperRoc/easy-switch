@@ -221,7 +221,9 @@ function refresh(nextState) {
     for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(item.dataset.client === (state.client || 'codex')));
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
-    $('routing-toggle').textContent = t(state.running ? 'stopRouting' : 'startRouting');
+    $('routing-toggle').setAttribute('aria-checked', String(state.running));
+    $('routing-toggle').setAttribute('aria-label', t(state.running ? 'stopRouting' : 'startRouting'));
+    $('routing-toggle').title = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
@@ -408,7 +410,7 @@ $('claude-choose-model').addEventListener('click', () => openProviderModels(edit
 function providerType() {
   const api = providerMode === 'api' || editingProvider?.type === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api || providerMode === 'edit';
   $('edit-key-help').hidden = providerMode !== 'edit';
-  $('claude-mapping').hidden = !api || state.client !== 'claude';
+  $('claude-mapping').hidden = !api || state.client !== 'claude' || providerMode !== 'edit';
   $('claude-choose-model').hidden = !editingProvider || editingProvider.type !== 'api';
   $('account-help').textContent = t(imported ? 'importHelp' : 'subscriptionHelp');
   $('provider-dialog-title').textContent = t(providerMode === 'edit' ? 'editProvider' : api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
@@ -419,7 +421,7 @@ $('provider-form').addEventListener('submit', async event => {
   try {
     if (dialogLogin()?.phase === 'complete') { $('add-dialog').close(); return; }
     const alias = $('provider-alias').value.trim();
-    const mapping = state.client === 'claude' ? { claudeModels: Object.fromEntries(Object.entries(mappingFields).map(([role, id]) => [role, $(id).value.trim()])) } : {};
+    const mapping = providerMode === 'edit' && state.client === 'claude' ? { claudeModels: Object.fromEntries(Object.entries(mappingFields).map(([role, id]) => [role, $(id).value.trim()])) } : {};
     if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }
     else if (dialogLogin()?.codeRequired) { await call('login-code', $('authorization-code').value.trim()); $('authorization-code').value = ''; }
     else if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }

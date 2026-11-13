@@ -76,6 +76,13 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.click('#add-api'); await page.fill('#provider-alias','personal');
   await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
   await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
+  assert.equal(await page.locator('#routing-toggle').getAttribute('role'), 'switch');
+  assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'true');
+  const layout = await page.evaluate(() => {
+    const status = document.getElementById('status').getBoundingClientRect(), control = document.getElementById('routing-toggle').getBoundingClientRect();
+    return { statusCenter: status.y + status.height / 2, controlCenter: control.y + control.height / 2 };
+  });
+  assert.ok(Math.abs(layout.statusCenter - layout.controlCenter) < 1, 'route status and switch share a center line');
   assert.equal(await page.locator('[data-tab="model"], #model, #current-model').count(), 0);
   await page.locator('.query-models').click();
   await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 5 models' }).waitFor();
@@ -107,6 +114,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
   assert.equal(await page.locator('nav, #network, #network-form').count(), 0);
   await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing stopped'}).waitFor();
+  assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'false');
   assert.equal(fs.readFileSync(file,'utf8'),original);
   await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing active'}).waitFor();
   const image = path.join(project,'.desktop-test','settings.png'); fs.mkdirSync(path.dirname(image),{recursive:true}); await page.screenshot({path:image});
@@ -142,8 +150,12 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
   assert.match(await page.locator('[data-i18n="clientHelp"]').innerText(), /Claude Code CLI and Claude Desktop/);
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
+  assert.equal(await page.locator('#claude-mapping').isVisible(), false, 'adding a Claude API starts with the same simple fields as Codex');
+  assert.equal(await page.locator('#claude-fable-model').isVisible(), false);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-add-api-0.5.15-en.png') });
   await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.renamed.claudeModels, undefined);
   await page.locator('.query-models').click(); await page.locator('#models-status.failed').waitFor();
   await page.click('#close-models'); await page.locator('.edit-provider').click();
   assert.equal(await page.locator('#claude-mapping').getAttribute('open'), '');

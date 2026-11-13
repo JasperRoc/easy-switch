@@ -162,6 +162,9 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         attempted.add(alias);
         const provider = state.providers[alias];
         const headers = { 'content-type': image ? contentType : 'application/json', accept: image ? 'application/json' : 'text/event-stream' };
+        if (image) for (const name of ['originator', 'user-agent', 'x-codex-image-turn-id', 'x-codex-turn-metadata']) {
+          if (typeof req.headers[name] === 'string') headers[name] = req.headers[name];
+        }
         const outgoing = { ...payload };
         let url, credentialsUnavailable = false;
         if (provider.type === 'account') {
@@ -171,7 +174,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             headers.authorization = `Bearer ${auth.tokens.access_token}`;
             headers['ChatGPT-Account-ID'] = auth.tokens.account_id;
           }
-          headers.originator = 'codex_cli_rs';
+          headers.originator ||= 'codex_cli_rs';
           headers['OpenAI-Beta'] = 'responses=experimental';
           url = 'https://chatgpt.com/backend-api/codex' + req.url.slice(3);
           if (!image) outgoing.instructions ??= '';
@@ -262,7 +265,15 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             await pipeline(Readable.fromWeb(stream), res); return;
           }
           if (status === 401 && provider.type === 'account') { await stream?.cancel(); return error(res, 401, await reauth.prompt(provider)); }
-          if (imageDenied) return error(res, status, `图片上游 ${alias} 不具备当前图片模型的使用权限；请添加有图片权限的付费账号或图片 API。`);
+          if (image) {
+            await stream?.cancel();
+            res.setHeader('x-switch-alias', alias);
+            if (upstream.headers.has('x-codex-imagegen-request-id')) res.setHeader('x-codex-imagegen-request-id', upstream.headers.get('x-codex-imagegen-request-id'));
+            const detail = !recoverable(403, failureMessage) ? '图片上游明确拒绝此请求，未通过其他服务商重试'
+              : status === 403 ? `${provider.type === 'account' ? '订阅' : 'API'}图片接口拒绝了请求，请检查该账号的图片权限、额度或登录状态`
+              : '没有其他可用的图片上游，请检查图片服务或稍后重试';
+            return error(res, status, `图片请求已路由到 ${alias}，该图片上游返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}；${detail}。`);
+          }
           if (modelDenied) { await stream?.cancel(); return error(res, status, `备用服务商均无法使用模型 ${outgoing.model}；请添加有权限的服务商或选择其他模型。`); }
           await stream?.cancel();
           return error(res, status, `上游 ${alias} 返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}${status === 403 ? recoverable(status, failureMessage) ? '；没有可用的备用服务商，请检查备用登录、额度或冷却状态' : '；上游明确拒绝此请求，未通过其他服务商重试' : ''}`);
@@ -270,6 +281,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (image && !stream && !/^application\/json(?:;|$)/i.test(upstream.headers.get('content-type') || '')) {
           await upstream.body?.cancel(); return error(res, 502, '上游未返回图片 JSON 响应');
         }
+        if (image && upstream.headers.has('x-codex-imagegen-request-id')) res.setHeader('x-codex-imagegen-request-id', upstream.headers.get('x-codex-imagegen-request-id'));
         res.writeHead(200, { 'content-type': stream ? 'text/event-stream' : 'application/json', 'cache-control': 'no-cache', 'x-switch-alias': alias });
         res.flushHeaders();
         // Accepted output and tool events are never replayed.

@@ -16,8 +16,14 @@ main { overflow: auto; padding: 0 30px 12px; scrollbar-width: thin; scrollbar-co
 .summary > div:first-child { flex:1; min-width:0; }
 .summary strong { display: block; margin-top: 8px; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .eyebrow { color: var(--muted); font-size: 9px; letter-spacing: 1.3px; font-weight: 600; }
-.route-controls { display: flex; flex-direction: column; gap: 9px; align-items: flex-end; }
-.badge { color: var(--accent); font-size: 10px; display: flex; align-items: center; gap: 6px; }
+.route-controls { display:flex;align-items:center;gap:12px;flex-shrink:0; }
+button.route-switch { width:42px;height:26px;padding:3px;border-radius:99px;display:flex;align-items:center;flex-shrink:0;color:var(--ink);background:var(--notice);border-color:var(--line);box-shadow:inset 0 1px 3px rgba(0,0,0,.06); }
+button.route-switch[aria-checked="true"] { background:var(--accent);border-color:transparent; }
+.route-switch-thumb { width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.2);transform:translateX(0);transition:transform .2s cubic-bezier(.2,.8,.2,1); }
+.route-switch[aria-checked="true"] .route-switch-thumb { transform:translateX(16px); }
+button.route-switch:hover:not(:disabled),button.route-switch:active:not(:disabled) { transform:none; }
+
+.badge { color: var(--muted); font-size: 11px;white-space:nowrap; display: flex; align-items: center; gap: 6px; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #379fa9; box-shadow: 0 0 0 3px rgba(55, 159, 169, .12); }
 .badge.stopped::before { background: #c69758; box-shadow: none; }
 button { font: inherit; font-weight: 550; border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; cursor: pointer; color: #fff; background: var(--button); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .23), 0 3px 10px rgba(0, 0, 0, .07); backdrop-filter: blur(15px); -webkit-app-region: no-drag; transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease; }

@@ -97,6 +97,10 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
       assert.equal(options.headers.authorization, 'Bearer fixture-subscription');
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/images/generations');
       assert.equal(JSON.parse(options.body).model, 'gpt-image-2');
+      assert.equal(typeof options.headers.originator, 'string');
+      assert.match(options.headers['user-agent'], /0\.165\.0/);
+      assert.equal(typeof options.headers['x-codex-image-turn-id'], 'string');
+      assert.ok(options.headers['x-codex-image-turn-id'].length > 0, 'native image turn context survives subscription routing');
       return Response.json({ created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] });
     }
     assert.ok(url.startsWith('http://127.0.0.1:'), 'test traffic must stay on simulated upstreams');
