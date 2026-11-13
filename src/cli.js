@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { home, init, aliasName, addProvider, editProvider, activate, baseURL, accountAuth, providerOrder, setOrder } from './store.js';
 import { claudeHome, startClaudeLogin } from './claude-auth.js';
 import { activateClaude } from './claude-config.js';
-import { claudeModelEnvironment } from './claude-models.js';
+import { claudeFamilies, claudeModelEnvironment } from './claude-models.js';
 import { editOrder } from './order.js';
 import { candidates } from './completion.js';
 import { updateTool } from './update.js';
@@ -134,9 +134,14 @@ async function main() {
   console.log(`已切换至 ${command}；新模型请求生效，进行中的请求不受影响`);
 }
 async function askClaudeMapping(previous = {}) {
+  const mapping = {};
+  for (const family of claudeFamilies) {
+    const model = await ask(`${family[0].toUpperCase() + family.slice(1)} → 服务商模型 ID [${previous?.[family] || '不映射'}]（- 清除）：`);
+    mapping[family] = model === '-' ? '' : model || previous?.[family];
+  }
   const model = await ask(`Claude 主模型映射 [${previous?.default || '不映射'}]（- 清除）：`);
   const subagent = await ask(`Claude 子代理模型映射 [${previous?.subagent || '沿用主映射'}]（- 清除）：`);
   const { claudeModelMapping } = await import('./claude-models.js');
-  return claudeModelMapping({ default: model === '-' ? '' : model || previous?.default, subagent: subagent === '-' ? '' : subagent || previous?.subagent });
+  return claudeModelMapping({ ...mapping, default: model === '-' ? '' : model || previous?.default, subagent: subagent === '-' ? '' : subagent || previous?.subagent });
 }
 main().catch(e => { console.error(`错误：${e.code === 'ENOENT' ? '配置或 Codex 不存在，请先添加配置并安装 Codex CLI' : e.message}`); process.exitCode = 1; });

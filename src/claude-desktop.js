@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { atomic } from './store.js';
+import { claudeModelFamily, mappedClaudeModel } from './claude-models.js';
 
 const profileId = 'a71322d6-7f51-44d8-93b5-ea515c001001';
 const configName = 'claude_desktop_config.json';
@@ -31,7 +32,7 @@ export function claudeDesktopPaths({ platform = process.platform, home = os.home
 export function claudeDesktopRoutes(provider, models = []) {
   const configured = provider.type === 'api' ? provider.claudeModels : null;
   const entries = [...models];
-  for (const id of [configured?.default, configured?.subagent].filter(Boolean)) if (!entries.some(item => item.id === id)) entries.push({ id, label: id });
+  for (const id of Object.values(configured || {}).filter(Boolean)) if (!entries.some(item => item.id === id)) entries.push({ id, label: id });
   if (configured?.default) entries.sort((a, b) => Number(b.id === configured.default) - Number(a.id === configured.default));
   return entries.map(({ id, label }) => {
     const route = /^claude-(?:sonnet|opus|haiku|fable)-/.test(id) ? id
@@ -51,15 +52,14 @@ export function mappedDesktopModel(provider, model, models, headers = {}) {
   // [1m] is a client context marker, not part of an upstream model ID.
   const requested = typeof model === 'string' ? model.replace(/\[1m\]$/i, '') : model;
   const exact = routes.find(route => route.id === requested || route.model === requested);
+  if (exact && /-es-[a-f0-9]{16}$/.test(requested || '')) return exact.model;
+  const mapped = mappedClaudeModel(provider, requested, headers);
+  if (mapped !== requested) return mapped;
   if (exact) return exact.model;
-  if (headers['x-claude-code-agent-id'] && provider.type === 'api' && provider.claudeModels) return provider.claudeModels.subagent || provider.claudeModels.default || model;
-  if (/-es-[a-f0-9]{16}$/.test(requested || '')) return provider.claudeModels?.default || routes[0]?.model || model;
-  if (!/^claude-|^(?:sonnet|opus|haiku)$/.test(requested || '')) return model;
-  const tier = /haiku/i.test(requested) ? 'subagent' : 'default';
-  const configured = provider.type === 'api' && (provider.claudeModels?.[tier] || provider.claudeModels?.default);
-  if (configured) return configured;
-  const family = /haiku|sonnet|opus|fable/i.exec(requested)?.[0];
-  return routes.find(route => family && new RegExp(`^claude-${family}-`, 'i').test(route.model))?.model || routes[0]?.model || model;
+  if (!requested || requested === 'default') return provider.claudeModels?.default || routes[0]?.model || model;
+  const family = claudeModelFamily(requested);
+  if (family && !/^claude-/i.test(requested)) return routes.find(route => claudeModelFamily(route.model) === family)?.model || model;
+  return model;
 }
 
 export function activateClaudeDesktop(root, directories, port, token) {

@@ -30,7 +30,7 @@ easy-switch 是面向 **Codex、Claude Code CLI 与 Claude Desktop** 的桌面�
 1. 安装并启动 **easy-switch**，无需额外安装 Node.js 或用于登录的 Codex 程序，安装包已内置。
 2. 选择 **Codex** 或 **Claude**，再点击 **添加订阅**、**添加 API 服务商** 或 **导入现有登录方式**。Base URL 留空使用对应客户端的官方 API：Codex 使用 OpenAI，Claude 使用 Anthropic。Claude 订阅认证通过另行安装的官方 Claude Code 和浏览器完成；macOS 可能请求钥匙串读取权限。
 3. 可在窗口顶部切换 **English / 简体中文**，以及 **跟随系统 / 浅色 / 深色**，偏好会自动保存。
-4. 首次接入后，重启对应客户端或重载编辑器窗口，使其读取本地路由。单击托盘或菜单栏图标可重新打开窗口，右键可选择客户端并切换服务商。按住左侧六点柄调整优先级，点击铅笔图标修改别名、地址或密钥，也可以删除服务商；编辑时密钥留空即保留原值。点击每行的放大镜可查询该服务商的模型目录，不改变当前路由。模型与推理强度在会话客户端内选择；Claude API 条目另外支持主模型和子代理模型映射。
+4. 首次接入后，重启对应客户端或重载编辑器窗口，使其读取本地路由。单击托盘或菜单栏图标可重新打开窗口，右键可选择客户端并切换服务商。按住左侧六点柄调整优先级，点击铅笔图标修改别名、地址或密钥，也可以删除服务商；编辑时密钥留空即保留原值。点击每行的放大镜可查询该服务商的模型目录，不改变当前路由。模型与推理强度在会话客户端内选择；Claude API 条目另外支持 Fable、Opus、Sonnet、Haiku 独立模型映射。
 
 仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复所有客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude 指南](claude-code.md)。
 
@@ -116,7 +116,7 @@ Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthro
 
 ### Claude Desktop 如何使用第三方模型？
 
-先打开 Claude Desktop 一次以初始化配置，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。easy-switch 会独立写入[桌面端第三方推理配置](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app)。Desktop 在固定的 easy-switch 网关下显示已配置 Claude 服务商模型目录的去重并集；非 Claude 模型使用稳定内部路由 ID，发送前转换为上游真实 ID。明确选择的模型在切换、重试时保持不变，不提供该模型的服务商会被跳过；仅未明确选模型的请求使用主模型、子代理默认映射。备用尝试失败不会改变当前服务商，最终错误保留完整尝试链。点击放大镜可选择两个客户端共用的主模型、子代理模型映射，目录不可读时也可填写准确 ID。从 0.5.7 及更早版本升级后，请完全退出并重新打开 Desktop 一次，刷新模型菜单。上游需支持 Anthropic Messages、流式响应及工具调用，仅兼容 OpenAI Chat 不足以接入。配置路径、恢复机制和验证范围见 [Claude 指南](claude-code.md)。
+先打开 Claude Desktop 一次，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。Desktop 与 CLI 会共同发现所有已配置 Claude 服务商的模型：订阅的 Fable、Opus、Haiku 与三个 DeepSeek 真实名称可以同时出现。内部兼容路由 ID 可避免 CLI 过滤非 Claude 条目。选择 DeepSeek 条目时，重试保持该模型；也可在 API 条目中独立设置 **Fable／Opus／Sonnet／Haiku** 映射，例如 Fable → DeepSeek V4 Pro、Opus → DeepSeek V4.1 Flash、Haiku → DeepSeek V4 Flash，规则由你决定。系列请求会在备用服务商上应用其各自映射，订阅则使用原始 Claude 模型。仅显示官方菜单的客户端同样可使用这些映射。升级后请重启客户端刷新目录；内置条目和托管策略限制仍然生效。上游需支持 Anthropic Messages、流式响应与工具调用。配置、示例和测试范围见 [Claude 指南](claude-code.md)。
 
 ### 为什么 Codex 列出了我的 API 不支持的模型？
 

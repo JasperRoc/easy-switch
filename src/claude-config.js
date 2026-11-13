@@ -12,7 +12,7 @@ export function activateClaude(root, directory, port, token, modelEnv = {}) {
     const record = JSON.parse(read(recordFile)), current = read(record.file);
     const settings = current ? JSON.parse(current) : {}, before = record.original ? JSON.parse(record.original) : {};
     const next = { ...record.env };
-    for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME']) {
+    for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', 'CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS']) {
       if (Object.hasOwn(record.env, key) && settings.env?.[key] !== record.env[key]) continue;
       if (!Object.hasOwn(modelEnv, key) && !Object.hasOwn(record.env, key)) continue;
       settings.env ??= {};

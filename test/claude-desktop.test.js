@@ -119,7 +119,7 @@ test('CLI and Desktop share providers and failover while Desktop displays actual
   assert.deepEqual(calls.at(-1).body.messages, messages); assert.ok(!JSON.stringify(calls).includes(token));
 });
 
-test('Desktop discovers non-Claude models and maps health checks, chat, tools and helper requests without manual setup', async t => {
+test('Desktop discovers real models without configuration and requires a mapping for official family requests', async t => {
   const { root } = fixture(t), claude = path.join(root, 'claude'), { token } = init(claude), calls = [];
   addProvider('deepseek', { type: 'api', baseUrl: 'https://deepseek.test', apiKey: 'upstream-secret' }, claude);
   let discoveries = 0;
@@ -140,11 +140,14 @@ test('Desktop discovers non-Claude models and maps health checks, chat, tools an
   assert.ok(catalog.data.every(item => item.id.startsWith('claude-'))); assert.equal(discoveries, 1);
   const messages = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'file content' }] }];
   const tools = [{ name: 'Read', input_schema: { type: 'object', properties: {} } }];
-  for (const [model, expected] of [[catalog.data[0].id, 'deepseek-v4-pro'], [catalog.data[1].id, 'deepseek-v4-flash'], ['claude-haiku-4-5', 'deepseek-v4-pro']]) {
+  for (const [model, expected] of [[catalog.data[0].id, 'deepseek-v4-pro'], [catalog.data[1].id, 'deepseek-v4-flash']]) {
     const response = await fetch(base + '/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model, messages, tools, max_tokens: 1 }) });
     assert.equal(response.status, 200); await response.text();
     assert.equal(calls.at(-1).model, expected); assert.deepEqual(calls.at(-1).messages, messages); assert.deepEqual(calls.at(-1).tools, tools);
   }
+  const helper = await fetch(base + '/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model: 'claude-haiku-4-5', messages }) });
+  assert.equal(helper.status, 400); await helper.text();
+  assert.equal(calls.length, 2, 'no unrelated DeepSeek model is silently substituted for Haiku');
   assert.equal(discoveries, 1, 'catalogs are loaded on demand and cached; no request polling');
   assert.equal(readState(claude).providers.deepseek.claudeModels, undefined, 'automatic routing never overwrites saved preferences');
 });

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { addProvider, init, activate } from '../src/store.js';
+import { addProvider, init, activate, atomic } from '../src/store.js';
 import { createProxy } from '../src/proxy.js';
 import { activateClaude, restoreClaude } from '../src/claude-config.js';
 import { claudeModelEnvironment } from '../src/claude-models.js';
@@ -205,4 +205,67 @@ test('official Claude client keeps one Desktop conversation and gateway identity
   assert.equal(continuation.alias, 'second'); assert.equal(continuation.payload.model, ids[2]);
   for (const text of ['Turn 1', 'Turn 2', 'Turn 3', 'Turn 4']) assert.match(JSON.stringify(continuation.payload.messages), new RegExp(text));
   assert.equal(fs.readFileSync(path.join(directory, 'settings.json'), 'utf8'), settings);
+});
+
+test('official CLI menu lists subscription and DeepSeek models together and applies independent family mappings', { skip: !binary, timeout: 45000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-claude-family-client-')), directory = path.join(root, 'config'), claude = path.join(root, 'claude');
+  init(root); const { token } = init(claude);
+  const ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'], official = ['claude-fable-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
+  const accountHome = path.join(root, 'account'); atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'fixture-oauth', expiresAt: Date.now() + 3600000 });
+  addProvider('subscription', { type: 'account', accountHome }, claude);
+  const provider = { type: 'api', baseUrl: 'https://api.test', apiKey: 'fixture-api', claudeModels: { fable: ids[0], opus: ids[1], haiku: ids[2] } };
+  addProvider('api', provider, claude); activate('api', claude);
+  const calls = [];
+  const server = createProxy({ root, fetchImpl: async (url, options) => {
+    if (!options.body) return Response.json({ data: (url.includes('api.anthropic.com') ? official : ids).map(id => ({ id, display_name: id })) });
+    const payload = JSON.parse(options.body); calls.push({ url, payload });
+    if (!payload.stream) return Response.json({ id: 'msg_check', type: 'message', role: 'assistant', model: payload.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    const events = [
+      { type: 'message_start', message: { id: 'msg_' + calls.length, type: 'message', role: 'assistant', model: payload.model, content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'FAMILY_OK' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
+      { type: 'message_stop' },
+    ];
+    return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  activateClaude(root, directory, server.address().port, token, claudeModelEnvironment(provider));
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: directory, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
+  for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_CODE_(?:OAUTH_TOKEN|USE_|CUSTOM_HEADERS|SUBAGENT_MODEL|ENABLE_GATEWAY_MODEL_DISCOVERY|GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS))/.test(key)) delete env[key];
+  const child = spawn(binary, ['--print', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'opus', '--tools', '', '--setting-sources', 'user'], { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.resume();
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const send = record => child.stdin.write(JSON.stringify(record) + '\n');
+  async function waitFor(predicate) {
+    for (let index = 0; index < 600; index++) {
+      const records = output.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+      if (predicate(records)) return records;
+      if (child.exitCode !== null) throw new Error('Client exited: ' + output.slice(-1500));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('Client did not respond: ' + output.slice(-1500));
+  }
+  send({ type: 'control_request', request_id: 'initialize', request: { subtype: 'initialize' } });
+  const initialized = await waitFor(records => records.some(record => record.response?.request_id === 'initialize'));
+  const menu = initialized.find(record => record.response?.request_id === 'initialize').response.response.models;
+  for (const id of ids) assert.ok(menu.some(item => item.displayName === id && /-es-/.test(item.value)), 'missing real-name menu row: ' + id);
+  for (const id of official) assert.ok(menu.some(item => item.resolvedModel === id), 'missing subscription model: ' + id);
+  let turn = 0;
+  for (const [family, expected] of Object.entries(provider.claudeModels)) {
+    send({ type: 'control_request', request_id: family, request: { subtype: 'set_model', model: family } });
+    const records = await waitFor(records => records.some(record => record.response?.request_id === family));
+    assert.equal(records.find(record => record.response?.request_id === family).response.subtype, 'success');
+    send({ type: 'user', message: { role: 'user', content: 'Check family ' + family } }); turn++;
+    const completed = await waitFor(records => records.filter(record => record.type === 'result').length >= turn);
+    assert.equal(completed.filter(record => record.type === 'result').at(-1).is_error, false);
+    assert.equal(calls.at(-1).payload.model, expected); assert.match(calls.at(-1).url, /api.test/);
+  }
+  const selected = menu.find(item => item.displayName === ids[2]);
+  send({ type: 'control_request', request_id: 'real-id', request: { subtype: 'set_model', model: selected.value } });
+  await waitFor(records => records.some(record => record.response?.request_id === 'real-id'));
+  send({ type: 'user', message: { role: 'user', content: 'Keep the explicitly selected model.' } });
+  turn++; await waitFor(records => records.filter(record => record.type === 'result').length >= turn);
+  assert.equal(calls.at(-1).payload.model, ids[2]);
 });

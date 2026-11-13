@@ -5,7 +5,7 @@ import { init, readState, providerOrder, activateFallback } from './store.js';
 import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
 import { rejectionText, rejectionStatus, recoverable, atCapacity, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
-import { mappedClaudeModel } from './claude-models.js';
+import { claudeModelFamily, mappedClaudeModel } from './claude-models.js';
 import { claudeDesktopModels, claudeDesktopRoutes, mappedDesktopModel } from './claude-desktop.js';
 import { discoverClaudeModels } from './catalog.js';
 
@@ -61,7 +61,6 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
       if (models) {
         if (!catalog.models.length && [...catalog.providers.values()].every(entry => !entry.known)) return fail(503, 'easy-switch could not read any configured Claude model catalog. Check provider authentication and model-list permissions.');
         const result = claudeDesktopModels({}, 'easy-switch', catalog.models);
-        if (!desktop) result.data.forEach((entry, index) => { entry.id = catalog.models[index].id; });
         result.first_id = result.data[0]?.id || null; result.last_id = result.data.at(-1)?.id || null;
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-service': 'easy-switch' });
         return res.end(JSON.stringify(result));
@@ -73,10 +72,17 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
       if (manual !== (state.manualGeneration || 0)) { cooldown.clear(); manual = state.manualGeneration || 0; }
       for (const [key, until] of cooldown) if (until <= now()) cooldown.delete(key);
       const requested = typeof payload.model === 'string' ? payload.model.replace(/\[1m\]$/i, '') : payload.model;
-      const exact = desktop && claudeDesktopRoutes({}, catalog.models).find(route => route.id === requested || route.model === requested);
-      if (desktop && !exact && /-es-[a-f0-9]{16}$/.test(requested || '')) return fail(400, 'The selected easy-switch model is no longer in any configured catalog. Refresh the model list and select an available model.', { code: 'model_not_found' });
-      const explicitModel = exact?.model || (requested && !/^claude-|^(?:sonnet|opus|haiku|fable)$/.test(requested) ? requested : null);
+      const synthetic = /-es-[a-f0-9]{16}$/.test(requested || '');
+      if (synthetic && !catalog) catalog = await gatewayCatalog(state, abort.signal);
+      const exact = catalog && claudeDesktopRoutes({}, catalog.models).find(route => route.id === requested || route.model === requested);
+      if (synthetic && !exact) return fail(400, 'The selected easy-switch model is no longer in any configured catalog. Refresh the model list and select an available model.', { code: 'model_not_found' });
+      const explicitModel = synthetic ? exact.model : (requested && requested !== 'default' && !/^claude-/i.test(requested) && !claudeModelFamily(requested) ? requested : null);
       const attempted = new Set(), failures = []; let alias = state.active, routedModel = explicitModel;
+      const modelFor = name => {
+        const provider = state.providers[name];
+        const model = routedModel || (desktop ? mappedDesktopModel(provider, requested, catalog.providers.get(name)?.models || [], req.headers) : mappedClaudeModel(provider, requested, req.headers));
+        return typeof model === 'string' ? model.replace(/\[1m\]$/i, '') : model;
+      };
       const blocked = (name, model) => Math.max(cooldown.get(JSON.stringify([name, null])) || 0, cooldown.get(JSON.stringify([name, model])) || 0) > now();
       const supports = (name, model) => {
         const entry = catalog?.providers.get(name), provider = state.providers[name];
@@ -88,11 +94,11 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
       while (alias && !abort.signal.aborted) {
         attempted.add(alias);
         const provider = state.providers[alias];
-        const model = routedModel || (desktop ? mappedDesktopModel(provider, payload.model, catalog.providers.get(alias)?.models || [], req.headers) : mappedClaudeModel(provider, payload.model, req.headers));
-        if (desktop) routedModel = model;
+        const model = modelFor(alias);
+        if (desktop && (!requested || requested === 'default')) routedModel = model;
         let token;
         let upstream, stream, startup, message = '';
-        const unsupported = desktop && !supports(alias, model);
+        const unsupported = !supports(alias, model);
         if (unsupported) {
           upstream = Response.json({ error: { code: 'model_not_found', message: 'This provider does not list the selected model.' } }, { status: 400 });
         } else if (blocked(alias, model)) {
@@ -134,7 +140,7 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
             // Honor a manual switch that occurred while this request was rejected.
             const changed = latest.generation !== state.generation;
             const next = changed ? (latest.active !== alias && !attempted.has(latest.active) && latest.providers[latest.active] ? latest.active : null)
-              : providerOrder(state).find(name => !attempted.has(name) && !blocked(name, routedModel || payload.model) && state.providers[name]);
+              : providerOrder(state).find(name => !attempted.has(name) && state.providers[name] && !blocked(name, modelFor(name)));
             if (next) {
               await stream?.cancel(); state = latest; alias = next; continue;
             }

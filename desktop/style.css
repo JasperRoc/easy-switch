@@ -154,6 +154,9 @@ button.select-provider[aria-pressed="true"]:hover {transform:none;box-shadow:non
 #models-dialog .actions {justify-content:flex-end;margin-bottom:0;}
 #claude-mapping {margin:18px 0;}
 #claude-mapping summary {cursor:pointer;color:var(--muted);font-size:11px;}
+.family-mappings {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px;margin:14px 0;}
+.family-mappings label {min-width:0;}
+#claude-mapping>details {margin:14px 0;}
 #add-dialog {max-height:calc(100vh - 48px);overflow:auto;}
 footer {background:var(--field);}
 button.link {display:inline-flex;align-items:center;gap:6px;border-radius:99px;}

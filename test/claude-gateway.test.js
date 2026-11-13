@@ -28,7 +28,7 @@ async function setup(t, fetchImpl, extra = {}) {
 const provider = alias => ({ type: 'api', baseUrl: `https://${alias}.test`, apiKey: alias + '-secret' });
 const message = model => Response.json({ type: 'message', model, content: [{ type: 'text', text: 'OK' }] });
 
-test('gateway catalog is a stable deduplicated union, tolerates unavailable providers and refreshes edits', async t => {
+test('gateway catalog is a stable client-compatible union, tolerates unavailable providers and refreshes edits', async t => {
   let time = 0;
   const queries = [], catalogs = { a: ['deepseek-v4-pro', 'deepseek-v4-flash'], b: ['deepseek-v4-flash', 'claude-sonnet-test'] };
   const gateway = await setup(t, async url => {
@@ -41,7 +41,7 @@ test('gateway catalog is a stable deduplicated union, tolerates unavailable prov
   assert.ok(first.data.every(item => item.description.startsWith('easy-switch · ')));
   assert.equal(new Set(first.data.map(item => item.id)).size, 3);
   const raw = await gateway.catalog('/claude');
-  assert.deepEqual(raw.data.map(item => item.id), ['deepseek-v4-pro', 'deepseek-v4-flash', 'claude-sonnet-test']);
+  assert.deepEqual(raw, first, 'both clients need discoverable route IDs and the original display names');
   activate('b', gateway.root);
   assert.deepEqual(await gateway.catalog(), first, 'provider switches cannot alter the gateway model identity');
   assert.deepEqual(queries, ['a', 'b', 'broken'], 'failed discovery is cached without background polling');
@@ -81,6 +81,69 @@ test('all three selected models keep their IDs and history through rate limits a
     assert.equal(readState(gateway.root).active, 'b');
   }
   assert.equal(accountRefreshes, 0, 'a Claude-only subscription is not an inference candidate for DeepSeek');
+});
+
+test('both clients list three subscription models beside three API models and route all six', async t => {
+  const official = ['claude-fable-5', 'claude-opus-5', 'claude-haiku-5'], ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'];
+  const calls = [];
+  const gateway = await setup(t, async (url, options) => {
+    const account = url.includes('api.anthropic.com');
+    if (!options.body) return Response.json({ data: (account ? official : ids).map(id => ({ id })) });
+    calls.push({ account, payload: JSON.parse(options.body) }); return message(calls.at(-1).payload.model);
+  });
+  const accountHome = path.join(gateway.root, 'subscription'); atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'fixture-subscription', expiresAt: Date.now() + 3600000 });
+  addProvider('subscription', { type: 'account', accountHome }, gateway.root);
+  addProvider('api', provider('api'), gateway.root);
+  for (const prefix of ['/claude-desktop', '/claude']) {
+    const catalog = await gateway.catalog(prefix);
+    assert.deepEqual(catalog.data.map(item => item.display_name), [...official, ...ids]);
+    assert.ok(catalog.data.every(item => /claude|anthropic/i.test(item.id)), 'CLI filters IDs without either substring');
+    for (const [index, entry] of catalog.data.entries()) {
+      activate('subscription', gateway.root);
+      const response = await gateway.send(entry.id + '[1m]', prefix);
+      assert.equal(response.status, 200); assert.equal((await response.json()).model, entry.display_name);
+      assert.equal(calls.at(-1).account, index < 3);
+      assert.deepEqual(calls.at(-1).payload.messages, gateway.messages);
+    }
+  }
+});
+
+test('family mappings are independent and fallback reapplies each provider mapping or the original subscription model', async t => {
+  const ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'], calls = [];
+  const mapping = { fable: ids[0], opus: ids[1], haiku: ids[2] };
+  let reject = false;
+  const gateway = await setup(t, async (url, options) => {
+    const account = url.includes('api.anthropic.com'), alias = new URL(url).hostname.split('.')[0];
+    if (!options.body) return Response.json({ data: (account ? ['claude-fable-5', 'claude-opus-5', 'claude-haiku-5'] : ids).map(id => ({ id })) });
+    calls.push({ alias, payload: JSON.parse(options.body), key: options.headers['x-api-key'] });
+    if (reject && alias === 'a') return Response.json({ error: { type: 'rate_limit_error' } }, { status: 429 });
+    return message(calls.at(-1).payload.model);
+  });
+  addProvider('a', { ...provider('a'), claudeModels: mapping }, gateway.root);
+  const accountHome = path.join(gateway.root, 'subscription'); atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'fixture-account', expiresAt: Date.now() + 3600000 });
+  addProvider('subscription', { type: 'account', accountHome }, gateway.root);
+  for (const prefix of ['/claude-desktop', '/claude']) {
+    for (const [family, expected] of Object.entries(mapping)) {
+      activate('a', gateway.root); reject = false;
+      const response = await gateway.send(`claude-${family}-5[1m]`, prefix);
+      assert.equal(response.status, 200); assert.equal((await response.json()).model, expected);
+      assert.equal(calls.at(-1).alias, 'a');
+      reject = true; activate('a', gateway.root);
+      const before = calls.length, retried = await gateway.send(`claude-${family}-5[1m]`, prefix);
+      assert.equal(retried.status, 200); assert.equal((await retried.json()).model, `claude-${family}-5`);
+      assert.deepEqual(calls.slice(before).map(call => call.payload.model), [expected, `claude-${family}-5`]);
+      for (const call of calls.slice(before)) { assert.deepEqual(call.payload.messages, gateway.messages); assert.deepEqual(call.payload.tools, gateway.tools); }
+    }
+    const catalog = await gateway.catalog(prefix), real = catalog.data.find(item => item.display_name === ids[1]);
+    reject = false; activate('a', gateway.root);
+    const response = await gateway.send(real.id, prefix); assert.equal(response.status, 200); assert.equal((await response.json()).model, ids[1]);
+  }
+  addProvider('b', { ...provider('b'), claudeModels: { fable: ids[2] } }, gateway.root);
+  removeProvider('subscription', gateway.root);
+  reject = true; activate('a', gateway.root);
+  const before = calls.length, response = await gateway.send('claude-fable-5');
+  assert.equal(response.status, 200); assert.equal((await response.json()).model, ids[2]);
+  assert.deepEqual(calls.slice(before).map(call => [call.alias, call.payload.model]), [['a', ids[0]], ['b', ids[2]]]);
 });
 
 test('unavailable models fail over on HTTP, startup SSE and connection failures before accepting output', async t => {

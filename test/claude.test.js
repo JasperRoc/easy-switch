@@ -11,7 +11,7 @@ import { existingClaudeAuth, claudeToken, startClaudeLogin } from '../src/claude
 import { discoverClaudeModels } from '../src/catalog.js';
 import { createProxy } from '../src/proxy.js';
 import { DesktopController } from '../desktop/controller.js';
-import { claudeModelEnvironment } from '../src/claude-models.js';
+import { claudeModelEnvironment, claudeModelMapping, mappedClaudeModel } from '../src/claude-models.js';
 
 const oauth = { accessToken: 'subscription-secret', refreshToken: 'refresh-secret', expiresAt: Date.now() + 3600000, scopes: ['user:inference'] };
 const sse = 'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"done"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
@@ -210,6 +210,19 @@ test('provider mappings cover main, agent, Haiku and count-token requests withou
   await (await request(url, token, { model: 'claude-sonnet-test' })).text(); assert.equal(calls.at(-1).payload.model, 'claude-sonnet-test');
 });
 
+test('family mappings validate independently and take priority over legacy defaults and agent headers', () => {
+  const mapping = { fable: 'deepseek-v4-pro', opus: 'deepseek-v4-1-flash', haiku: 'deepseek-v4-flash', sonnet: 'another-model', default: 'legacy-main', subagent: 'legacy-agent' };
+  assert.deepEqual(claudeModelMapping(mapping), mapping);
+  for (const [family, expected] of Object.entries(mapping).slice(0, 4)) {
+    for (const id of [family, `claude-${family}-5`, `claude-${family}-5[1m]`]) {
+      assert.equal(mappedClaudeModel({ type: 'api', claudeModels: mapping }, id, { 'x-claude-code-agent-id': 'fixture' }), expected);
+      assert.equal(mappedClaudeModel({ type: 'account' }, id), id);
+    }
+  }
+  assert.equal(mappedClaudeModel({ type: 'api', claudeModels: mapping }, 'deepseek-v4-flash', { 'x-claude-code-agent-id': 'fixture' }), 'deepseek-v4-flash');
+  assert.throws(() => claudeModelMapping({ fable: 'invalid id' }), /Invalid Claude model mapping/);
+});
+
 test('custom Claude menu settings restore exactly after mapping switches and interrupted updates', t => {
   for (const interrupted of [false, true]) {
     const root = fixture(t), directory = path.join(root, 'settings'), file = path.join(directory, 'settings.json');
@@ -217,6 +230,7 @@ test('custom Claude menu settings restore exactly after mapping switches and int
     const provider = id => ({ type: 'api', claudeModels: { default: id } });
     activateClaude(root, directory, 12345, 'local-token', claudeModelEnvironment(provider('deepseek-a')));
     assert.equal(JSON.parse(fs.readFileSync(file)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'deepseek-a');
+    assert.equal(JSON.parse(fs.readFileSync(file)).env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, '1');
     const recordFile = path.join(root, 'claude-session.json');
     if (interrupted) {
       const record = JSON.parse(fs.readFileSync(recordFile));

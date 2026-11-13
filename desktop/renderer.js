@@ -1,6 +1,11 @@
 import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 import { releaseNotes } from './release-notes.js';
+import { claudeFamilies } from '../src/claude-models.js';
 const $ = id => document.getElementById(id);
+const mappingFields = { ...Object.fromEntries(claudeFamilies.map(role => [role, `claude-${role}-model`])), default: 'claude-main-model', subagent: 'claude-agent-model' };
+function showMapping(mapping = {}) {
+  for (const [role, id] of Object.entries(mappingFields)) $(id).value = mapping?.[role] || '';
+}
 let state, renderedProviders = '', refreshing = null;
 let language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
 let importLoading = false;
@@ -247,15 +252,18 @@ function renderProviderModels() {
   $('models-list').replaceChildren();
   const models = (catalogResult?.models || []).filter(entry => `${entry.id} ${entry.label}`.toLowerCase().includes(query));
   const provider = state.client === 'claude' && state.providers.find(item => item.alias === catalogProvider.alias && item.type === 'api');
+  $('claude-model-options').replaceChildren(...(catalogResult?.models || []).map(entry => {
+    const option = node('option', entry.label || entry.id); option.value = entry.id; return option;
+  }));
   for (const entry of models) {
     const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem');
     row.append(node('strong', entry.label || entry.id));
     if (entry.label && entry.label !== entry.id) row.append(node('small', entry.id));
     if (provider) {
       const actions = node('div', null, 'catalog-mapping');
-      for (const role of ['default', 'subagent']) {
+      for (const role of claudeFamilies) {
         const selected = provider.claudeModels?.[role] === entry.id;
-        const control = button(t(role === 'default' ? 'mapMainModel' : 'mapAgentModel'), async () => {
+        const control = button(t('mapFamilyModel', { family: role[0].toUpperCase() + role.slice(1) }), async () => {
           control.disabled = true;
           try {
             const current = state.providers.find(item => item.alias === catalogProvider?.alias);
@@ -263,8 +271,7 @@ function renderProviderModels() {
             await run('edit', { original: current.alias, alias: current.alias, claudeModels: { ...current.claudeModels, [role]: entry.id } });
             if (editingProvider?.alias === current.alias) {
               editingProvider = state.providers.find(item => item.alias === current.alias);
-              $('claude-main-model').value = editingProvider.claudeModels?.default || '';
-              $('claude-agent-model').value = editingProvider.claudeModels?.subagent || '';
+              showMapping(editingProvider.claudeModels);
             }
             renderProviderModels();
           } catch (error) { control.disabled = false; catalogError = error.message; renderProviderModels(); }
@@ -328,8 +335,7 @@ function openProvider(mode, alias = '') {
   const pending = state.login && ['starting', 'pending'].includes(state.login.phase);
   $('provider-alias').value = alias || (mode === 'account' && pending ? state.login.alias : '');
   $('base-url').value = editingProvider?.baseUrl || '';
-  $('claude-main-model').value = editingProvider?.claudeModels?.default || '';
-  $('claude-agent-model').value = editingProvider?.claudeModels?.subagent || '';
+  showMapping(editingProvider?.claudeModels);
   $('claude-mapping').open = state.client === 'claude';
   $('import-preview').hidden = true;
   providerType(); renderLogin(); $('add-dialog').showModal();
@@ -362,7 +368,7 @@ $('provider-form').addEventListener('submit', async event => {
   try {
     if (dialogLogin()?.phase === 'complete') { $('add-dialog').close(); return; }
     const alias = $('provider-alias').value.trim();
-    const mapping = state.client === 'claude' ? { claudeModels: { default: $('claude-main-model').value.trim(), subagent: $('claude-agent-model').value.trim() } } : {};
+    const mapping = state.client === 'claude' ? { claudeModels: Object.fromEntries(Object.entries(mappingFields).map(([role, id]) => [role, $(id).value.trim()])) } : {};
     if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }
     else if (dialogLogin()?.codeRequired) { await call('login-code', $('authorization-code').value.trim()); $('authorization-code').value = ''; }
     else if (providerMode === 'api') { await call('add-api', { alias, url: $('base-url').value.trim(), key: $('api-key').value, ...mapping }); $('api-key').value = ''; $('add-dialog').close(); }
