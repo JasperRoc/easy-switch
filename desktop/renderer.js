@@ -10,6 +10,7 @@ let state, renderedProviders = '', refreshing = null;
 let language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
 let importLoading = false;
 let catalogProvider = null, catalogResult = null, catalogLoading = false, catalogError = '', catalogRequest = 0;
+let catalogDraft = [], catalogMapping = {}, catalogCustom = false, catalogDirty = false, catalogDrag = null;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
 let renderedState = '';
 let editingProvider = null;
@@ -240,74 +241,124 @@ function refresh(nextState) {
   })().finally(() => { refreshing = null; });
   return refreshing;
 }
+function catalogChanged() {
+  catalogCustom = true; catalogDirty = true;
+  $('models-save').disabled = false;
+  $('models-mode').textContent = t('customCatalog');
+}
 function renderProviderModels() {
   if (!catalogProvider) return;
   $('models-provider').textContent = `${catalogProvider.client === 'claude' ? 'Claude' : 'Codex'} · ${catalogProvider.alias}`;
+  $('models-title').textContent = t('modelCatalog');
   $('models-refresh').disabled = catalogLoading;
   $('models-refresh').classList.toggle('loading', catalogLoading);
+  $('models-save').disabled = !catalogDirty || catalogLoading;
+  $('models-mode').textContent = t(catalogCustom ? 'customCatalog' : 'automaticCatalog');
   $('models-status').classList.toggle('failed', !!catalogError);
   $('models-status').textContent = catalogLoading ? t('catalogLoading') : catalogError ? localizeMessage(catalogError, language) : catalogResult
-    ? t('catalogRefreshed', { count: catalogResult.models.length, time: new Date(catalogResult.fetchedAt).toLocaleTimeString(language) }) : '';
+    ? t('catalogRefreshed', { count: catalogResult.discovered.length, time: new Date(catalogResult.fetchedAt).toLocaleTimeString(language) }) : '';
   const query = $('models-search').value.trim().toLowerCase();
   $('models-list').replaceChildren();
-  const models = (catalogResult?.models || []).filter(entry => `${entry.id} ${entry.label}`.toLowerCase().includes(query));
-  const provider = state.client === 'claude' && state.providers.find(item => item.alias === catalogProvider.alias && item.type === 'api');
-  $('claude-model-options').replaceChildren(...(catalogResult?.models || []).map(entry => {
+  const options = [...new Map([...(catalogResult?.discovered || []), ...catalogDraft].filter(entry => entry.id).map(entry => [entry.id, entry])).values()];
+  for (const id of ['claude-model-options', 'catalog-model-options']) $(id).replaceChildren(...options.map(entry => {
     const option = node('option', entry.label || entry.id); option.value = entry.id; return option;
   }));
-  for (const entry of models) {
-    const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem');
-    row.append(node('strong', entry.label || entry.id));
-    if (entry.label && entry.label !== entry.id) row.append(node('small', entry.id));
-    if (provider) {
-      const actions = node('div', null, 'catalog-mapping');
-      for (const role of claudeFamilies) {
-        const selected = provider.claudeModels?.[role] === entry.id;
-        const control = button(t('mapFamilyModel', { family: role[0].toUpperCase() + role.slice(1) }), async () => {
-          control.disabled = true;
-          try {
-            const current = state.providers.find(item => item.alias === catalogProvider?.alias);
-            if (!current) return;
-            await run('edit', { original: current.alias, alias: current.alias, claudeModels: { ...current.claudeModels, [role]: entry.id } });
-            if (editingProvider?.alias === current.alias) {
-              editingProvider = state.providers.find(item => item.alias === current.alias);
-              showMapping(editingProvider.claudeModels);
-            }
-            renderProviderModels();
-          } catch (error) { control.disabled = false; catalogError = error.message; renderProviderModels(); }
-        });
-        control.disabled = selected; control.setAttribute('aria-pressed', String(selected));
-        if (selected) control.prepend(icon('check'));
-        actions.append(control);
-      }
-      row.append(actions);
+  const reorder = (index, next) => {
+    if (next < 0 || next >= catalogDraft.length || index === next) return;
+    const before = new Map([...$('models-list').children].map(row => [row.dataset.index, row.getBoundingClientRect().top]));
+    const [entry] = catalogDraft.splice(index, 1); catalogDraft.splice(next, 0, entry);
+    catalogChanged(); renderProviderModels();
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const row of $('models-list').children) {
+      const old = Number(row.dataset.index) === next ? index : Number(row.dataset.index) + (index < next && Number(row.dataset.index) >= index && Number(row.dataset.index) < next ? 1 : index > next && Number(row.dataset.index) > next && Number(row.dataset.index) <= index ? -1 : 0);
+      const distance = before.get(String(old)) - row.getBoundingClientRect().top;
+      if (distance) row.animate([{ transform: `translateY(${distance}px)` }, { transform: 'none' }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' });
     }
+  };
+  catalogDraft.forEach((entry, index) => {
+    if (query && !`${entry.id} ${entry.label}`.toLowerCase().includes(query)) return;
+    const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem'); row.dataset.index = index;
+    const grip = button('', () => {}, 'drag-handle'); grip.append(icon('grip')); grip.draggable = true;
+    grip.setAttribute('aria-label', t('reorderModel', { index: index + 1 }));
+    grip.addEventListener('dragstart', event => { catalogDrag = index; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); event.dataTransfer.setDragImage(row, 16, 16); row.classList.add('dragging'); });
+    grip.addEventListener('dragend', () => { catalogDrag = null; row.classList.remove('dragging'); });
+    grip.addEventListener('keydown', event => { if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return; event.preventDefault(); reorder(index, index + (event.key === 'ArrowUp' ? -1 : 1)); });
+    row.addEventListener('dragover', event => { if (catalogDrag !== null) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+    row.addEventListener('drop', event => { event.preventDefault(); if (catalogDrag !== null) reorder(catalogDrag, index); catalogDrag = null; });
+    row.append(grip);
+    for (const [field, key] of [['id', 'modelID'], ['label', 'modelDisplayName']]) {
+      const input = node('input'); input.value = entry[field] || ''; input.placeholder = t(key); input.autocomplete = 'off';
+      input.className = field === 'id' ? 'catalog-id' : 'catalog-label';
+      input.setAttribute('aria-label', `${t(key)} ${index + 1}`); input.maxLength = field === 'id' ? 200 : 120;
+      input.addEventListener('input', () => { entry[field] = input.value; catalogChanged(); }); row.append(input);
+    }
+    const remove = button('', () => { catalogDraft.splice(index, 1); catalogChanged(); renderProviderModels(); }, 'icon-button delete-model');
+    remove.append(icon('trash')); remove.setAttribute('aria-label', t('removeModel', { index: index + 1 })); row.append(remove);
     $('models-list').append(row);
+  });
+  const mappings = catalogProvider.client === 'claude' && catalogProvider.type === 'api';
+  $('catalog-mappings').hidden = !mappings;
+  $('catalog-family-fields').replaceChildren();
+  if (mappings) for (const role of claudeFamilies) {
+    const label = node('label'), input = node('input');
+    label.append(node('span', `${role[0].toUpperCase() + role.slice(1)} →`));
+    input.id = `catalog-${role}`; input.setAttribute('list', 'catalog-model-options'); input.value = catalogMapping[role] || '';
+    input.placeholder = t('familyMappingHint'); input.autocomplete = 'off';
+    input.addEventListener('input', () => { catalogMapping[role] = input.value.trim(); catalogDirty = true; $('models-save').disabled = false; });
+    label.append(input); $('catalog-family-fields').append(label);
   }
-  $('models-empty').hidden = catalogLoading || !!catalogError || !catalogResult || !!models.length;
+  $('models-empty').hidden = catalogLoading || !!$('models-list').children.length;
   $('models-empty').textContent = t(query ? 'noMatchingModels' : 'noModelsReported');
-  $('models-notice').textContent = catalogResult ? localizeMessage(catalogResult.notice, language) : t('modelQueryHelp');
+  $('models-notice').textContent = t('catalogEditorHelp') + (catalogResult ? ' ' + localizeMessage(catalogResult.notice, language) : '');
 }
-async function loadProviderModels() {
+async function loadProviderModels(importModels = false) {
   if (!catalogProvider) return;
   const request = ++catalogRequest, provider = catalogProvider;
-  catalogLoading = true; catalogError = ''; catalogResult = null; renderProviderModels();
+  catalogLoading = true; catalogError = ''; renderProviderModels();
   try {
     const result = await call('models', provider.alias);
     if (request !== catalogRequest) return;
     catalogResult = result;
+    if (importModels && catalogCustom) {
+      const ids = new Set(catalogDraft.map(entry => entry.id));
+      catalogDraft.push(...result.discovered.filter(entry => !ids.has(entry.id)).map(({ id, label }) => ({ id, label })));
+      catalogDirty = true;
+    } else if (!catalogDirty || importModels) catalogDraft = result.models.map(({ id, label }) => ({ id, label }));
   } catch (error) { if (request === catalogRequest) catalogError = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); }
   finally { if (request === catalogRequest) { catalogLoading = false; renderProviderModels(); } }
 }
 async function openProviderModels(alias) {
-  catalogProvider = { alias, client: state.client };
-  catalogResult = null; catalogError = ''; $('models-search').value = '';
-  $('models-dialog').showModal(); await loadProviderModels();
+  const provider = state.providers.find(item => item.alias === alias);
+  catalogProvider = { ...provider, client: state.client };
+  catalogDraft = (provider.modelCatalog || []).map(entry => ({ ...entry }));
+  catalogMapping = { ...provider.claudeModels }; catalogCustom = Array.isArray(provider.modelCatalog); catalogDirty = false;
+  catalogResult = null; catalogError = ''; $('models-search').value = ''; $('catalog-mappings').open = false;
+  renderProviderModels(); $('models-dialog').showModal(); await loadProviderModels();
 }
 $('close-models').addEventListener('click', () => $('models-dialog').close());
-$('models-dialog').addEventListener('close', () => { catalogProvider = null; catalogRequest++; catalogLoading = false; });
-$('models-refresh').addEventListener('click', loadProviderModels);
+$('models-cancel').addEventListener('click', () => $('models-dialog').close());
+$('models-dialog').addEventListener('close', () => { catalogProvider = null; catalogRequest++; catalogLoading = false; catalogDrag = null; });
+$('models-refresh').addEventListener('click', () => loadProviderModels(true));
 $('models-search').addEventListener('input', renderProviderModels);
+$('models-add').addEventListener('click', () => { catalogDraft.push({ id: '', label: '' }); $('models-search').value = ''; catalogChanged(); renderProviderModels(); $('models-list').lastElementChild?.querySelector('input')?.focus(); });
+$('models-reset').addEventListener('click', async () => {
+  catalogCustom = false; catalogDirty = true;
+  if (!catalogResult) await loadProviderModels();
+  catalogDraft = (catalogResult?.discovered || []).map(({ id, label }) => ({ id, label })); renderProviderModels();
+});
+$('models-save').addEventListener('click', async () => {
+  const provider = catalogProvider; if (!provider) return;
+  $('models-save').disabled = true; catalogError = '';
+  try {
+    await run('edit', { original: provider.alias, alias: provider.alias, expectedRevision: provider.revision,
+      modelCatalog: catalogCustom ? catalogDraft.map(({ id, label }) => ({ id: id.trim(), label: label.trim() })) : null,
+      ...(provider.client === 'claude' && provider.type === 'api' ? { claudeModels: catalogMapping } : {}) });
+    if (editingProvider?.alias === provider.alias) {
+      editingProvider = state.providers.find(item => item.alias === provider.alias); showMapping(editingProvider.claudeModels);
+    }
+    $('models-dialog').close();
+  } catch (error) { catalogError = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); renderProviderModels(); }
+});
 async function startLogin(alias) {
   if (!$('add-dialog').open) openProvider('account', alias);
   const result = await run('login', alias);

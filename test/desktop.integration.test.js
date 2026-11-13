@@ -32,6 +32,8 @@ async function launch(t, extraEnv = {}, initialConfig, prepare) {
     await app.close().catch(() => {}); fs.rmSync(directory, { recursive: true, force: true });
   });
   const page = await app.firstWindow();
+  await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus(); });
+  await page.bringToFront();
   await page.locator('#status').filter({ hasText: /Routing active|路由已启用/ }).waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
   return { app, page, file, original, root, home, options };
@@ -78,7 +80,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   await page.locator('.query-models').click();
   await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
   await page.fill('#models-search', 'relay-only'); assert.equal(await page.locator('.catalog-model').count(), 1);
-  assert.equal(await page.locator('.catalog-model').innerText(), 'relay-only-model');
+  assert.equal(await page.locator('.catalog-id').inputValue(), 'relay-only-model');
   await page.click('#close-models');
   await page.evaluate(url => window.easySwitch.call('add-api', { alias: 'inactive', url, key: 'fixture-inactive' }), `http://127.0.0.1:${upstream.address().port}/v1`);
   await page.locator('.provider[data-alias="inactive"] .query-models').click();
@@ -206,13 +208,13 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}`); await page.click('#save-provider');
   await page.locator('.edit-provider').click(); await page.click('#claude-choose-model');
   const rows = page.locator('.catalog-model'); await rows.first().waitFor();
-  await rows.first().getByRole('button', { name: 'Map to Fable', exact: true }).click();
-  await rows.first().locator('button[aria-pressed="true"]').waitFor();
-  await rows.nth(1).getByRole('button', { name: 'Map to Opus', exact: true }).click();
-  await rows.nth(1).locator('button[aria-pressed="true"]').waitFor();
-  await rows.nth(2).getByRole('button', { name: 'Map to Haiku', exact: true }).click();
-  await rows.nth(2).locator('button[aria-pressed="true"]').waitFor();
-  await page.click('#close-models');
+  await rows.first().locator('.catalog-label').fill('DeepSeek V4 Pro');
+  await page.locator('#catalog-mappings summary').click();
+  await page.fill('#catalog-fable', 'deepseek-v4-pro');
+  await page.fill('#catalog-opus', 'deepseek-v4-1-flash');
+  await page.fill('#catalog-haiku', 'deepseek-v4-flash');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude/state.json'))).providers.deepseek.claudeModels, undefined, 'mapping is a draft until Save');
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
   assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
   assert.equal(await page.locator('#claude-opus-model').inputValue(), 'deepseek-v4-1-flash');
   assert.equal(await page.locator('#claude-haiku-model').inputValue(), 'deepseek-v4-flash');
@@ -221,6 +223,7 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   await page.click('#save-provider'); await page.locator('#add-dialog').waitFor({ state: 'hidden' });
   const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude/state.json'))).providers.deepseek;
   assert.deepEqual(saved.claudeModels, { fable: 'deepseek-v4-pro', opus: 'deepseek-v4-1-flash', haiku: 'deepseek-v4-flash' });
+  assert.deepEqual(saved.modelCatalog, [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }, { id: 'deepseek-v4-1-flash', label: 'deepseek-v4-1-flash' }, { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' }]);
   assert.equal(saved.apiKey, 'private-catalog-key');
   await page.locator('.edit-provider').click();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-en.png') });
@@ -228,8 +231,35 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await page.locator('.edit-provider').click();
   assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
-  assert.match(await page.locator('[data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
+  assert.match(await page.locator('#claude-mapping [data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-zh.png') });
+});
+
+test('model catalog edits support cancel, ordering, explicit IDs and returning to automatic discovery', { skip: !enabled, timeout: 30000 }, async t => {
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => upstream.close());
+  const { page, root } = await launch(t);
+  await page.click('#add-api'); await page.fill('#provider-alias', 'catalog'); await page.fill('#api-key', 'private-key');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/v1`); await page.click('#save-provider');
+  const saved = () => JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.catalog;
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-label').first().fill('Unsaved'); await page.click('#models-cancel');
+  assert.equal(saved().modelCatalog, undefined);
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-model .drag-handle').first().press('ArrowDown');
+  assert.equal(await page.locator('.catalog-id').first().inputValue(), 'model-b');
+  await page.locator('.catalog-label').first().fill('Model B');
+  await page.click('#models-add'); await page.locator('.catalog-id').last().fill('manual-model');
+  await page.locator('.catalog-label').last().fill('Manual model');
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual(saved().modelCatalog, [{ id: 'model-b', label: 'Model B' }, { id: 'model-a', label: 'model-a' }, { id: 'manual-model', label: 'Manual model' }]);
+  assert.equal(saved().apiKey, 'private-key');
+  await page.locator('.query-models').click(); await page.locator('#models-status').filter({ hasText: 'Catalog refreshed' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'model-catalog-editor-en.png') });
+  await page.click('#models-reset'); assert.equal(await page.locator('.catalog-id').count(), 2);
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.equal(saved().modelCatalog, undefined);
 });
 test('Claude subscription can be deleted and added again, with authorization codes confined to the dialog', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');

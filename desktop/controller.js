@@ -4,6 +4,7 @@ import { init, aliasName, addProvider, editProvider, removeProvider, activate, r
 import { createReauth, expired } from '../src/auth.js';
 import { codexModels, discoverModels, discoverClaudeModels } from '../src/catalog.js';
 import { claudeModelMapping } from '../src/claude-models.js';
+import { providerModels } from '../src/provider-models.js';
 import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin } from '../src/claude-auth.js';
 import { randomUUID } from 'node:crypto';
 import { imageEligible } from '../src/images.js';
@@ -109,6 +110,7 @@ export class DesktopController {
         catch { needsLogin = true; }
       }
       return { alias, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null,
+        modelCatalog: provider.modelCatalog ?? null,
         ...(client === 'claude' && provider.type === 'api' ? { claudeModels: provider.claudeModels || null } : {}) };
     });
     const login = this.currentLogin;
@@ -119,10 +121,10 @@ export class DesktopController {
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.runtime.syncClaude(); return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }
-  edit({ original, alias, url, key, claudeModels }) {
+  edit({ original, alias, url, key, claudeModels, modelCatalog, expectedRevision }) {
     const provider = readState(this.providerRoot).providers[original];
     if (!provider) throw new Error('Unknown provider.');
-    const patch = { alias };
+    const patch = { alias, modelCatalog, expectedRevision };
     if (provider.type === 'api') {
       if (url !== undefined && this.apiURL(url) !== provider.baseUrl) patch.baseUrl = this.apiURL(url);
       if (key?.trim()) patch.apiKey = key;
@@ -270,10 +272,10 @@ export class DesktopController {
     const client = this.client, root = this.providerRoot;
     const state = readState(root), name = aliasName(alias), provider = state.providers[name];
     if (!provider) throw new Error('Unknown provider.');
-    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root, { catalogImpl: account => codexModels({ binary: this.binary, provider: account }) });
+    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root);
     const current = readState(root).providers[name];
     if (this.providerRoot !== root || !current || JSON.stringify(current) !== JSON.stringify(provider)) throw new Error('The provider changed while loading models. Refresh the catalog again.');
-    return { alias: name, client, ...result, fetchedAt: Date.now() };
+    return { alias: name, client, ...result, models: providerModels(provider, result.models), discovered: result.models, fetchedAt: Date.now() };
   }
   async configureNetwork() {
     this.detectedProxy = await this.detectProxy();

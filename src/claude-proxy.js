@@ -8,6 +8,7 @@ import { inspectStartup } from './sse.js';
 import { claudeModelFamily, mappedClaudeModel } from './claude-models.js';
 import { claudeDesktopModels, claudeDesktopRoutes, mappedDesktopModel } from './claude-desktop.js';
 import { discoverClaudeModels } from './catalog.js';
+import { providerModels } from './provider-models.js';
 
 export { claudeHeaders, claudeEndpoint } from './claude-auth.js';
 function upstreamMessage(message, secrets) {
@@ -24,9 +25,9 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
     const key = JSON.stringify(provider), cached = catalogs.get(alias);
     if (cached?.key === key && cached.until > now()) return cached.pending;
     const entry = { key, until: now() + 60000 };
-    entry.pending = discoverClaudeModels(provider, root, { fetchImpl, signal }).then(result => ({ models: result.models, known: true })).catch(error => {
+    entry.pending = discoverClaudeModels(provider, root, { fetchImpl, signal }).then(result => ({ models: providerModels(provider, result.models), known: true })).catch(error => {
       if (signal.aborted) { if (catalogs.get(alias) === entry) catalogs.delete(alias); throw error; }
-      return { models: cached?.key === key ? cached.models || [] : [], known: false };
+      return { models: providerModels(provider, cached?.key === key ? cached.models || [] : []), known: Array.isArray(provider.modelCatalog) };
     }).then(result => {
       entry.models = result.models;
       return { ...result, models: claudeDesktopRoutes(provider, result.models).map(route => ({ id: route.model, label: route.label })) };

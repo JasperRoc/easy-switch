@@ -15,7 +15,24 @@ test('global configuration keeps comments and unrelated settings, needs no shell
   assert.equal(parsed.mcp_servers.example.command, 'tool');
   assert.equal(parsed.model_providers.easy_switch.http_headers.Authorization, 'Bearer local-token');
   assert.equal(parsed.model_providers.easy_switch.env_key, undefined);
+  assert.equal(parsed.model_providers.easy_switch.model_catalog_url, 'http://127.0.0.1:18345/v1/models');
   assert.throws(() => patchedConfig(output, 18345, 'token'));
+});
+
+test('updating a legacy installation enables authenticated model discovery without losing settings or restoration', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-legacy-catalog-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
+  const file = path.join(codexHome, 'config.toml'), original = '# My settings\nmodel="selected-model"\n';
+  fs.writeFileSync(file, original); prepareConfig(root, codexHome, 18345, 'token').apply();
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^model_catalog_url.*\n/m, '').replace(/^experimental_bearer_token.*\n/m, ''));
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const installed = fs.readFileSync(file, 'utf8'), config = parse(installed);
+  assert.equal(config.model, 'selected-model'); assert.match(installed, /# My settings/);
+  assert.equal(config.model_providers.easy_switch.model_catalog_url, 'http://127.0.0.1:18345/v1/models');
+  assert.equal(config.model_providers.easy_switch.experimental_bearer_token, 'token');
+  prepareConfig(root, codexHome, 18345, 'token').apply(); assert.equal(fs.readFileSync(file, 'utf8'), installed);
+  restoreConfig(root); assert.equal(fs.readFileSync(file, 'utf8'), original);
 });
 test('installation is idempotent, restores exact original, refuses unsafe restoration', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-install-'));

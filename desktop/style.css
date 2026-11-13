@@ -140,16 +140,23 @@ button.select-provider {width:32px;height:32px;padding:7px;color:var(--muted);ba
 button.select-provider:hover {color:var(--accent);background:var(--notice);border-color:var(--line);}
 button.select-provider[aria-pressed="true"] {color:var(--accent);background:var(--notice);border-color:var(--line);cursor:default;}
 button.select-provider[aria-pressed="true"]:hover {transform:none;box-shadow:none;}
-#models-dialog {width:520px;max-height:calc(100vh - 48px);overflow:auto;}
+#models-dialog {width:650px;max-height:calc(100vh - 48px);overflow:auto;}
 #models-provider {display:block;margin-bottom:8px;letter-spacing:.5px;}
 #models-search {margin:14px 0;}
 .model-catalog {display:grid;gap:8px;max-height:290px;overflow:auto;scrollbar-width:thin;}
-.catalog-model {padding:12px 14px;border:1px solid var(--line);border-radius:13px;background:var(--field);overflow-wrap:anywhere;}
-.catalog-model strong {font-size:12px;font-weight:550;}
-.catalog-model small {display:block;font-size:10px;color:var(--muted);margin-top:5px;}
-.catalog-mapping {display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
-.catalog-mapping button {font-size:10px;padding:6px 10px;display:inline-flex;align-items:center;gap:5px;}
-.catalog-mapping svg {width:12px;height:12px;}
+.catalog-toolbar {display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.catalog-toolbar .help {margin:0;flex:1;}
+.catalog-toolbar button {font-size:11px;}
+.catalog-columns {display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);padding:0 49px 8px;font-size:10px;color:var(--muted);gap:10px;}
+.catalog-model {display:grid;grid-template-columns:24px minmax(0,1.2fr) minmax(0,1fr) 28px;align-items:center;gap:8px;padding:9px;border:1px solid var(--line);border-radius:15px;background:var(--field);}
+.catalog-model input {min-width:0;margin:0;padding:10px;font-size:12px;}
+.catalog-id {font-family:ui-monospace,SFMono-Regular,Consolas,monospace;}
+.catalog-model .drag-handle {width:24px;}
+.catalog-model.dragging {opacity:.45;}
+.catalog-model .delete-model {width:28px;height:28px;padding:6px;color:var(--muted);}
+#models-add {margin-top:12px;font-size:11px;}
+#catalog-mappings {margin-top:20px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;}
+#catalog-mappings summary {cursor:pointer;font-weight:550;}
 #models-notice,#models-empty {margin-top:16px;}
 #models-dialog .actions {justify-content:flex-end;margin-bottom:0;}
 #claude-mapping {margin:18px 0;}

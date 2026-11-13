@@ -39,7 +39,7 @@ The first `add` connects Claude Code to the running local service. Repeating `sw
 
 **Model discovery:** click the magnifying glass on any Claude provider row, including inactive rows. Discovery reads that provider’s `/v1/models`, with pagination. On HTTP 404/405 for API entries, it also tries same-host `/models` variants, including stripping a terminal `/anthropic`. It never falls back to another provider’s catalog, sends generation requests to test access or changes the selected route. Missing discovery support is shown as an error.
 
-**Family model mapping:** each API can independently map Fable, Opus, Sonnet and Haiku. Click its magnifying glass and use **Map to Fable**, **Map to Opus**, etc., or enter exact IDs in the edit dialog. CLI `switch claude add api` and `switch claude edit` offer the same fields; blank input preserves an existing value and `-` clears it. No mapping is inferred from model position or name.
+**Family model mapping:** each API can independently map Fable, Opus, Sonnet and Haiku. Click its magnifying glass, expand **Claude model mapping**, enter or choose the exact target ID for each family, then Save; the edit dialog also accepts these IDs. The catalog editor separately supports actual model IDs, display names, add/delete/reorder, fetching and returning to automatic discovery. Cancel discards the draft; display names never replace the actual inference ID. CLI `switch claude add api` and `switch claude edit` offer the same fields; blank input preserves an existing value and `-` clears it. No mapping is inferred from model position or name.
 
 | Client selection | Example API mapping | Subscription request |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Linux 复用现有 systemd 服务，上面的命令示例同样适用。首次 `
 
 **模型查询：**点击任意 Claude 服务商行的放大镜，读取该条目自身的 `/v1/models`，支持分页，未选中的条目也可查询。API 查询返回 404/405 时，可继续尝试同主机的 `/models` 及去掉末尾 `/anthropic` 的地址。查询不改变路由，不发送推理请求，也不使用其他服务商目录替代；不支持查询时明确显示错误。
 
-**按系列映射：**每个 API 可独立配置 Fable、Opus、Sonnet、Haiku。点击放大镜中的**映射到 Fable**、**映射到 Opus**等按钮，或在编辑框直接填写真实模型 ID。`switch claude add api` 和 `switch claude edit` 提供相同字段；留空保留已有值，`-` 清除。软件不会按模型顺序或名称擅自推断映射。
+**按系列映射：**每个 API 可独立配置 Fable、Opus、Sonnet、Haiku。点击放大镜，展开 **Claude 模型映射**，为各系列填写或选择实际调用 ID，点击保存生效；编辑框也可填写这些 ID。模型目录另行支持 ID、显示名称、添加、删除、排序、获取及恢复自动目录。取消会放弃草稿，显示名称不会替代真实调用 ID。`switch claude add api` 和 `switch claude edit` 提供相同字段；留空保留已有值，`-` 清除。软件不会按模型顺序或名称擅自推断映射。
 
 | 客户端选择 | API 映射示例 | 订阅实际请求 |
 | --- | --- | --- |

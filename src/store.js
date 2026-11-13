@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { claudeModelMapping } from './claude-models.js';
+import { modelCatalog } from './provider-models.js';
 
 export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
 const reserved = new Set(['add', 'edit', 'list', 'current', 'help', 'service', 'order', 'update', 'model', 'claude']);
@@ -54,11 +55,12 @@ export function addProvider(alias, provider, root = home()) {
 export function providerOrder(state) {
   return state.order || Object.keys(state.providers);
 }
-export function editProvider(alias, { alias: renamed = alias, baseUrl, apiKey, claudeModels } = {}, root = home()) {
+export function editProvider(alias, { alias: renamed = alias, baseUrl, apiKey, claudeModels, modelCatalog: models, expectedRevision } = {}, root = home()) {
   aliasName(renamed);
   return update(s => {
     const provider = Object.hasOwn(s.providers, alias) ? s.providers[alias] : null;
     if (!provider) throw new Error('Unknown provider.');
+    if (expectedRevision !== undefined && (provider.revision || 0) !== expectedRevision) throw new Error('The provider changed. Reopen the model catalog before saving.');
     if (renamed !== alias && Object.hasOwn(s.providers, renamed)) throw new Error('That alias already exists.');
     if (provider.type !== 'api' && (baseUrl !== undefined || apiKey !== undefined || claudeModels !== undefined)) throw new Error('Only API providers have a Base URL, API key or model mapping.');
     if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 8192)) throw new Error('Enter a valid API key.');
@@ -68,6 +70,10 @@ export function editProvider(alias, { alias: renamed = alias, baseUrl, apiKey, c
     if (claudeModels !== undefined) {
       const mapping = claudeModelMapping(claudeModels);
       if (mapping) next.claudeModels = mapping; else delete next.claudeModels;
+    }
+    if (models !== undefined) {
+      const catalog = modelCatalog(models);
+      if (catalog) next.modelCatalog = catalog; else delete next.modelCatalog;
     }
     s.order = providerOrder(s).map(name => name === alias ? renamed : name);
     delete s.providers[alias]; s.providers[renamed] = next;

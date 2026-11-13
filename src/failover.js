@@ -13,8 +13,9 @@ export function recoverable(status, message = '') {
 }
 export function rejectionStatus(error) {
   const status = Number(error?.status || error?.status_code);
-  if ([401, 402, 403, 429].includes(status)) return status;
-  const statuses = { __proto__: null, authentication_error: 401, invalid_api_key: 401, permission_error: 403, forbidden: 403, access_denied: 403, rate_limit_error: 429 };
+  if ([401, 402, 403, 429, 500, 502, 503, 504, 529].includes(status)) return status;
+  const statuses = { __proto__: null, authentication_error: 401, invalid_api_key: 401, permission_error: 403, forbidden: 403, access_denied: 403, rate_limit_error: 429,
+    server_error: 500, internal_server_error: 500, service_unavailable: 503 };
   return statuses[error?.code] || statuses[error?.type];
 }
 export function modelUnavailable(status, message = '') {
@@ -63,5 +64,5 @@ function usable(provider) {
 }
 export function alternate(state, failed, cooldown, now, attempted = new Set(), accepts = () => true) {
   return providerOrder(state).find(alias => alias !== failed && !attempted.has(alias) &&
-    (cooldown.get(alias) || 0) <= now && accepts(state.providers[alias]) && usable(state.providers[alias]));
+    (cooldown.get(alias) || 0) <= now && accepts(state.providers[alias], alias) && usable(state.providers[alias]));
 }

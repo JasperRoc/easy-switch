@@ -59,6 +59,24 @@ test('provider model lookup uses the requested inactive row and rejects results 
   }
   await assert.rejects(controller.models('inactive'), /Unknown provider/);
 });
+
+test('model catalog saves validate IDs and revisions, retain labels, and preserve credentials on failure', t => {
+  const controller = setup(t);
+  controller.addAPI({ alias: 'relay', key: 'private-key' });
+  const root = controller.root, original = readState(root);
+  for (const catalog of [[{ id: '' }], [{ id: 'duplicate' }, { id: 'duplicate' }], [{ id: 'good', label: {} }], [{ id: 'bad\nmodel' }]]) {
+    assert.throws(() => controller.edit({ original: 'relay', alias: 'relay', modelCatalog: catalog }), /model IDs/);
+    assert.deepEqual(readState(root), original);
+  }
+  const catalog = [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }];
+  controller.edit({ original: 'relay', alias: 'relay', modelCatalog: catalog, expectedRevision: 0 });
+  assert.deepEqual(controller.snapshot().providers[0].modelCatalog, catalog);
+  assert.equal(readState(root).providers.relay.apiKey, 'private-key');
+  assert.throws(() => controller.edit({ original: 'relay', alias: 'relay', modelCatalog: [], expectedRevision: 0 }), /provider changed/);
+  assert.deepEqual(readState(root).providers.relay.modelCatalog, catalog);
+  controller.edit({ original: 'relay', alias: 'relay', modelCatalog: null, expectedRevision: 1 });
+  assert.equal(readState(root).providers.relay.modelCatalog, undefined);
+});
 test('desktop appearance preferences persist and invalid choices never replace them', t => {
   const controller = setup(t);
   controller.setPreferences({language:'zh-CN',theme:'dark'});

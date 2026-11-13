@@ -31,6 +31,8 @@ test('server policy retries provider-level access failures but preserves explici
   for (const status of [400,408,500,503]) assert.equal(recoverable(status, 'access denied'), false);
   assert.equal(rejectionStatus({ status: '403' }), 403);
   assert.equal(rejectionStatus({ type: 'permission_error' }), 403);
+  assert.equal(rejectionStatus({ status_code: 503 }), 503);
+  assert.equal(rejectionStatus({ type: 'server_error' }), 500);
   assert.equal(rejectionStatus({ code: '__proto__' }), undefined);
   assert.equal(rejectionStatus({ code: 'invalid_request_error' }), undefined);
 });

@@ -11,6 +11,7 @@ import { createUpstreamFetch } from './network.js';
 import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
 import { imageEligible, imageUnavailable } from './images.js';
+import { createCodexCatalog } from './catalog.js';
 
 function authorized(req, token) {
   // Native subscription auth replaces Authorization inside Codex. The dedicated
@@ -85,6 +86,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
+  const catalog = createCodexCatalog({ root, fetchImpl });
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
@@ -97,6 +99,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ service: 'easy-switch', active: state.active }));
+      }
+      const target = new URL(req.url, 'http://localhost');
+      if (req.method === 'GET' && target.pathname === '/v1/models') {
+        const result = await catalog.union(state, target.searchParams.get('client_version') || '0.165.0', abort.signal);
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-service': 'easy-switch' });
+        return res.end(JSON.stringify(result));
       }
       const image = ['/v1/images/generations', '/v1/images/edits'].includes(req.url);
       if (req.method !== 'POST' || (!image && req.url !== '/v1/responses')) return error(res, 404, '仅支持 Responses 和图片生成/编辑请求');
@@ -129,12 +137,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         try { return imageEligible(accountAuth(provider)); } catch { return true; }
       };
       const accountsOnly = image && Object.values(state.providers).some(imageAccount);
-      const accepts = provider => !!provider && (!image || imageAccount(provider) || !accountsOnly && provider.type === 'api');
+      const accepts = (provider, name) => !!provider && (image ? imageAccount(provider) || !accountsOnly && provider.type === 'api' : catalog.supports(name, provider, requestedModel));
       const cooling = image ? imageCooldown : new Map(Object.keys(state.providers).map(name => [name, Math.max(cooldown.get(name) || 0, modelCooldown.get(modelKey(name)) || 0)]));
-      if (!image && (modelCooldown.get(modelKey(alias)) || 0) > now()) {
+      if (!image && ((modelCooldown.get(modelKey(alias)) || 0) > now() || !catalog.supports(alias, state.providers[alias], requestedModel))) {
         modelRouting = true; rejectedModel = requestedModel;
-        alias = alternate(state, null, cooling, now());
-        if (!alias) return error(res, 400, '已配置的服务商暂无法使用此模型；请添加有权限的服务商或选择其他模型。');
+        alias = alternate(state, null, cooling, now(), new Set(), accepts);
+        if (!alias) return error(res, 400, `已配置的服务商均未提供模型 ${requestedModel}；请刷新 Codex 模型列表并选择可用模型。`);
       }
       if (accountsOnly || image && !accepts(state.providers[alias])) {
         const first = alternate(state, null, cooling, now(), new Set(), accepts);
@@ -148,7 +156,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         alias = first;
       }
       const attempted = new Set();
-      const maxAttempts = Object.values(state.providers).filter(accepts).length + 2;
+      const maxAttempts = Object.entries(state.providers).filter(([name, provider]) => accepts(provider, name)).length + 2;
       let capacityRetries = 0;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         attempted.add(alias);
@@ -174,15 +182,28 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (!image) {
           if (rejectedModel) outgoing.model = rejectedModel;
         }
-        const upstream = credentialsUnavailable ? new Response('', { status: 401 }) : await fetchImpl(url, {
-          method: 'POST', headers, body: image ? raw : JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
-        });
+        let upstream;
+        try {
+          upstream = !image && !catalog.supports(alias, provider, requestedModel)
+            ? Response.json({ error: { code: 'model_not_found' } }, { status: 400 })
+            : credentialsUnavailable ? new Response('', { status: 401 }) : await fetchImpl(url, {
+            method: 'POST', headers, body: image ? raw : JSON.stringify(outgoing), signal: abort.signal, redirect: 'error',
+          });
+        } catch (failure) {
+          if (abort.signal.aborted) throw failure;
+          upstream = new Response('', { status: 502 });
+        }
         let stream, startup, message = '';
-        if (!upstream.ok) message = await rejectionText(upstream);
-        else if (!image || upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
-          stream = await sseBody(upstream);
-          if (!stream) return error(res, 502, '上游未返回 Responses SSE 流');
-          startup = await inspectStartup(stream); stream = startup.stream;
+        try {
+          if (!upstream.ok) message = await rejectionText(upstream);
+          else if (!image || upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
+            stream = await sseBody(upstream);
+            if (!stream) return error(res, 502, '上游未返回 Responses SSE 流');
+            startup = await inspectStartup(stream); stream = startup.stream;
+          }
+        } catch (failure) {
+          if (abort.signal.aborted) throw failure;
+          upstream = new Response('', { status: 502 }); stream = null;
         }
         const capacity = !upstream.ok ? atCapacity(message) : startup?.capacity;
         const streamStatus = rejectionStatus(startup?.error);
@@ -191,7 +212,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
         if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied) {
           const status = capacity ? 503 : !upstream.ok ? upstream.status : streamStatus || (imageDenied ? 403 : 400);
-          if (capacity || recoverable(status, failureMessage) || imageDenied || modelDenied) {
+          const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
+          if (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied) {
             if (modelDenied) {
               modelRouting = true; rejectedModel ??= outgoing.model;
               modelCooldown.set(modelKey(alias), now() + 60000);
@@ -203,7 +225,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               const current = readState(root);
               if (current.generation !== state.generation) {
                 state = current;
-                next = attempt + 1 < maxAttempts && !abort.signal.aborted && current.active !== alias && !attempted.has(current.active) && accepts(current.providers[current.active]) ? current.active : null;
+                next = attempt + 1 < maxAttempts && !abort.signal.aborted && current.active !== alias && !attempted.has(current.active) && accepts(current.providers[current.active], current.active) ? current.active : null;
               }
             }
             let selected = false;
@@ -220,7 +242,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             const latest = readState(root);
             if (attempt + 1 < maxAttempts && !abort.signal.aborted &&
                 latest.generation !== state.generation && latest.active !== alias &&
-                latest.providers[latest.active] && accepts(latest.providers[latest.active]) && !attempted.has(latest.active)) {
+                latest.providers[latest.active] && accepts(latest.providers[latest.active], latest.active) && !attempted.has(latest.active)) {
               await stream?.cancel();
               state = latest;
               alias = latest.active; continue;
@@ -230,7 +252,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               await stream?.cancel();
               await wait(retryAfter, abort.signal); abort.signal.throwIfAborted();
               const current = readState(root);
-              if (current.generation !== state.generation && accepts(current.providers[current.active])) { state = current; alias = current.active; }
+              if (current.generation !== state.generation && accepts(current.providers[current.active], current.active)) { state = current; alias = current.active; }
               capacityRetries++; continue;
             }
           }

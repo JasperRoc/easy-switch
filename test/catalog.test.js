@@ -60,8 +60,23 @@ test('API models retain provider-only IDs; unavailable discovery has an explicit
   assert.deepEqual(result.models.map(model => model.id), ['model-b', 'unrecognized']);
   assert.deepEqual(result.models[1].efforts, []);
   await assert.rejects(discoverModels(provider, '/unused', { catalogImpl, fetchImpl: async () => new Response('SECRET', { status: 401 }) }), error => /无法读取/.test(error.message) && !error.message.includes('SECRET'));
-  const account = await discoverModels({ type: 'account' }, '/unused', { catalogImpl, fetchImpl: async () => { throw Error('must not fetch'); } });
-  assert.equal(account.models.length, 2);
+});
+
+test('subscription discovery reads only the authenticated live catalog and retains native capabilities', async t => {
+  const accountHome = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-live-catalog-'));
+  t.after(() => fs.rmSync(accountHome, { recursive: true, force: true }));
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-subscription', account_id: 'subscription-id' } });
+  const metadata = { slug: 'subscription-only', display_name: 'Subscription model', supported_reasoning_levels: [{ effort: 'high' }], context_window: 120000 };
+  const provider = { type: 'account', accountHome };
+  const result = await discoverModels(provider, '/unused', { clientVersion: '0.165.0', fetchImpl: async (url, options) => {
+    assert.equal(url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.165.0');
+    assert.equal(options.headers.authorization, 'Bearer private-subscription');
+    assert.equal(options.headers['ChatGPT-Account-ID'], 'subscription-id');
+    return Response.json({ models: [metadata] });
+  } });
+  assert.deepEqual(result.models.map(model => model.id), ['subscription-only']);
+  assert.deepEqual(result.models[0].metadata, metadata);
+  await assert.rejects(discoverModels(provider, '/unused', { fetchImpl: async () => new Response('', { status: 401 }) }), /live Codex model catalog/);
 });
 
 test('API discovery works without Codex metadata and reports empty catalogs', async () => {

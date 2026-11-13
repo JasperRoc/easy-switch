@@ -34,6 +34,10 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     return `http://127.0.0.1:${server.address().port}`;
   }
   const upstream = label => http.createServer(async (req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ data: [{ id: 'gpt-5.1-codex' }, { id: `provider-${label}-only` }] }));
+    }
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw);
@@ -146,6 +150,8 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   }
   await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+  const models = await call('model/list', { includeHidden: false });
+  assert.deepEqual(models.data.map(model => model.model).sort(), ['gpt-5.1-codex', 'provider-A-only', 'provider-B-only'].sort(), 'official Codex reads the provider union without adding bundled models: ' + stderr);
   const { thread } = await call('thread/start', { cwd: dir, approvalPolicy: 'never', sandbox: 'read-only' });
   for (const [alias, text] of [['a', 'First turn'], ['b', 'Second turn']]) {
     activate(alias, root);

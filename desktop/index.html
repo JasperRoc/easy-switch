@@ -37,10 +37,14 @@
   <dialog id="models-dialog" aria-labelledby="models-title">
     <div class="section-heading"><div><span id="models-provider" class="eyebrow"></span><h2 id="models-title" data-i18n="availableModels">Available models</h2></div><button id="close-models" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
     <p id="models-status" class="catalog-status" role="status" aria-live="polite"></p>
+    <div class="catalog-toolbar"><span id="models-mode" class="help"></span><button id="models-reset" class="link" data-i18n="resetModels">Use automatic catalog</button><button id="models-refresh" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="fetchModels">Fetch available models</span></button></div>
     <input id="models-search" type="search" data-i18n-placeholder="searchModels" data-i18n-aria="searchModels">
+    <div id="models-columns" class="catalog-columns"><span data-i18n="modelID">Model ID</span><span data-i18n="modelDisplayName">Display name</span></div>
     <div id="models-list" class="model-catalog" role="list"></div>
+    <button id="models-add" class="secondary" data-i18n="addModel">Add model</button>
+    <details id="catalog-mappings" hidden><summary data-i18n="claudeMapping">Claude model mapping</summary><p class="help" data-i18n="claudeMappingHelp"></p><div id="catalog-family-fields" class="family-mappings"></div><datalist id="catalog-model-options"></datalist></details>
     <p id="models-empty" class="help" hidden></p><p id="models-notice" class="help"></p>
-    <div class="actions"><button id="models-refresh" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="refreshCatalog">Refresh catalog</span></button></div>
+    <div class="actions"><button id="models-cancel" class="secondary" data-i18n="cancel">Cancel</button><button id="models-save" data-i18n="saveChanges">Save changes</button></div>
   </dialog>
   <dialog id="update-dialog" aria-labelledby="update-title">
     <div class="update-top"><span class="eyebrow" id="update-current"></span><button id="close-update" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>

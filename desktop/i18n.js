@@ -1,5 +1,9 @@
 export const messages = {
   en: {
+    modelCatalog: 'Model catalog', modelID: 'Model ID', modelDisplayName: 'Display name',
+    fetchModels: 'Fetch available models', resetModels: 'Use automatic catalog', addModel: 'Add model', cancel: 'Cancel',
+    automaticCatalog: 'From provider', customCatalog: 'Customized catalog', reorderModel: 'Reorder model {index}', removeModel: 'Remove model {index}',
+    catalogEditorHelp: 'The model ID is sent to the provider. The display name only changes the menu label. Changes apply after Save; refresh or reopen the client to reload its model menu.',
     queryModels: 'Query available models', availableModels: 'Available models', noModelsReported: 'This provider returned no models.',
     modelQueryHelp: 'Reads this provider’s catalog without changing your current route or sending a generation request. Model listing does not verify access or tool compatibility.',
     creditsNotProvided: 'Purchased credits were not reported by this account.',
@@ -71,6 +75,10 @@ export const messages = {
     loginPermission: 'The operating system did not apply the login startup setting. Check login-item permissions in system settings.',
   },
   'zh-CN': {
+    modelCatalog: '模型目录', modelID: '模型 ID', modelDisplayName: '显示名称',
+    fetchModels: '获取可用模型', resetModels: '恢复自动目录', addModel: '添加模型', cancel: '取消',
+    automaticCatalog: '来自服务商', customCatalog: '已自定义目录', reorderModel: '调整第 {index} 个模型的顺序', removeModel: '删除第 {index} 个模型',
+    catalogEditorHelp: '模型 ID 用于实际调用，显示名称仅用于菜单。修改后点击保存生效；请刷新或重新打开客户端以加载模型菜单。',
     queryModels: '查询可用模型', availableModels: '可用模型', noModelsReported: '该服务商未返回任何模型。',
     modelQueryHelp: '读取此服务商的模型目录，不切换当前路由、不发送生成请求。目录不代表已经验证访问权限或工具兼容性。',
     creditsNotProvided: '账号未返回购买额度。',
@@ -148,6 +156,11 @@ export function translate(language, key, values = {}) {
   return text.replace(/\{(\w+)\}/g, (match, name) => String(values[name] ?? match));
 }
 const notices = [
+  ['模型目录最多可包含 256 个模型。', 'A model catalog must contain at most 256 models.'],
+  ['请填写不重复的模型 ID，显示名称不能超过 120 个字符。', 'Enter unique model IDs and display names of at most 120 characters.'],
+  ['服务商配置已变更，请重新打开模型目录后保存。', 'The provider changed. Reopen the model catalog before saving.'],
+  ['目录来自此订阅的实时 Codex 接口；实际权限由账号决定，不添加内置模型。', 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.'],
+  ['无法读取此订阅的实时 Codex 模型目录。请检查连接与登录，不会以内置模型替代。', 'Unable to read this subscription’s live Codex model catalog. Check the connection and sign-in; no bundled models were substituted.'],
   ['目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。', 'Catalog from this provider’s /models. Listing a model does not verify account access, Responses or tool support.'],
   ['Claude 模型映射无效，请填写服务商的准确模型 ID。', 'Invalid Claude model mapping.'],
   ['Claude Desktop 配置无效，原文件已保留。', 'Invalid Claude Desktop configuration; the original file was preserved.'],

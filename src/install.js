@@ -22,6 +22,8 @@ export function writeText(file, text) {
 function providerConfig(port, token, nativeAuth = false) {
   return {
     name: 'easy-switch', base_url: `http://127.0.0.1:${port}/v1`,
+    model_catalog_url: `http://127.0.0.1:${port}/v1/models`,
+    ...(!nativeAuth ? { experimental_bearer_token: token } : {}),
     wire_api: 'responses', requires_openai_auth: nativeAuth, supports_websockets: false,
     http_headers: { Authorization: `Bearer ${token}`, ...(nativeAuth ? { 'X-Easy-Switch-Token': token } : {}) },
   };
@@ -37,7 +39,7 @@ export function patchedConfig(original, port, token, nativeAuth = false) {
     source = source.replace(pattern, '');
   }
   const provider = providerConfig(port, token, nativeAuth);
-  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = ${nativeAuth}\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}"` : ''} }\n`;
+  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\n${!nativeAuth ? `experimental_bearer_token = "${token}"\n` : ''}wire_api = "responses"\nrequires_openai_auth = ${nativeAuth}\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}"` : ''} }\n`;
   const expected = { ...before, model_provider: providerName, model_providers: { ...before.model_providers, [providerName]: provider } };
   if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), JSON.parse(JSON.stringify(expected)))) throw new Error('TOML 结构复杂，无法只修改代理设置；未写入配置');
   return result;
@@ -51,12 +53,22 @@ export function prepareConfig(root, codexHome, port, token) {
     const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
     if (record.file !== file || record.port !== port) throw new Error('安装路径或端口发生变化，请先恢复原路径/端口；未修改配置');
     const current = parse(original);
-    if (current.model_provider !== providerName || !isDeepStrictEqual(JSON.parse(JSON.stringify(current.model_providers?.[providerName] ?? null)), providerConfig(port, token))) {
+    const expected = providerConfig(port, token), legacy = { ...expected }; delete legacy.model_catalog_url; delete legacy.experimental_bearer_token;
+    const managed = JSON.parse(JSON.stringify(current.model_providers?.[providerName] ?? null));
+    const upgrade = isDeepStrictEqual(managed, legacy);
+    if (current.model_provider !== providerName || !isDeepStrictEqual(managed, expected) && !upgrade) {
       throw new Error('easy-switch 代理接入配置发生变化，请检查 model_provider、代理地址与本地令牌；未覆盖你的修改');
     }
     // Model preferences, project settings, and comments belong to the user.
     return { apply() {
       if (fs.readFileSync(file, 'utf8') !== original) throw new Error('安装期间配置被修改，停止写入');
+      if (upgrade) {
+        const installed = original.replace(/^(\s*\[model_providers\.easy_switch\][^\r\n]*\r?\n)/m, `$1model_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\n`);
+        const parsed = parse(installed);
+        if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parsed)), JSON.parse(JSON.stringify({ ...current, model_providers: { ...current.model_providers, [providerName]: expected } })))) throw new Error('无法安全升级模型目录配置；未写入配置');
+        atomic(recordFile, { ...record, installedHash: digest(installed) });
+        writeText(file, installed);
+      }
     } };
   }
   const installed = patchedConfig(original, port, token);

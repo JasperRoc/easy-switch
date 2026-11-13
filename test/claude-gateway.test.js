@@ -53,6 +53,23 @@ test('gateway catalog is a stable client-compatible union, tolerates unavailable
   assert.deepEqual((await gateway.catalog()).data.map(item => item.display_name), ['new-model']);
 });
 
+test('edited catalog labels never replace Claude upstream IDs and resetting restores provider discovery', async t => {
+  const requests = [];
+  const gateway = await setup(t, async (url, options) => {
+    if (!options.method) return Response.json({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-v4-flash' }] });
+    requests.push(JSON.parse(options.body)); return message(requests.at(-1).model);
+  });
+  addProvider('api', provider('api'), gateway.root);
+  editProvider('api', { modelCatalog: [{ id: 'deepseek-v4-pro', label: 'DeepSeek Pro' }] }, gateway.root);
+  const result = await gateway.catalog();
+  assert.deepEqual(result.data.map(model => model.display_name), ['DeepSeek Pro']);
+  const response = await gateway.send(result.data[0].id); await response.text();
+  assert.equal(requests[0].model, 'deepseek-v4-pro');
+  assert.deepEqual(requests[0].messages, gateway.messages);
+  editProvider('api', { modelCatalog: null }, gateway.root);
+  assert.deepEqual((await gateway.catalog()).data.map(model => model.display_name), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+});
+
 test('all three selected models keep their IDs and history through rate limits and unsupported subscriptions', async t => {
   const ids = ['deepseek-v4-pro', 'deepseek-v4-1-flash', 'deepseek-v4-flash'];
   const calls = []; let rejected = false, accountRefreshes = 0;

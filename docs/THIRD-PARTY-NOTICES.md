@@ -10,4 +10,6 @@ Claude subscription login invokes the user's separately installed official Claud
 
 The Claude Desktop adapter was informed by [CC Switch's Desktop integration](https://github.com/farion1231/cc-switch/blob/5a3d7f92ab696b9d35c08ac9bc81e4067de6f9bc/src-tauri/src/claude_desktop_config.rs) (MIT, Copyright (c) 2025 Jason Young) and the installed Desktop configuration schema. easy-switch implements its own JavaScript adapter and shared route. Its independent Fable / Opus / Sonnet / Haiku mapping was also informed by [CC Switch’s model mapper](https://github.com/farion1231/cc-switch/blob/main/src-tauri/src/proxy/model_mapper.rs). The upstream MIT notice is retained in [CC-SWITCH-LICENSE](CC-SWITCH-LICENSE).
 
+The model catalog editor was informed by [DeepSeek Harness’s model list editor](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/client/ui-settings-models) (MIT, Copyright (c) 2026 DeepSeek): separate upstream IDs and display names, draft/save behavior and model ordering. easy-switch uses its own JavaScript DOM implementation; the upstream notice is retained in [DEEPSEEK-HARNESS-LICENSE](DEEPSEEK-HARNESS-LICENSE).
+
 OpenAI, ChatGPT, Codex, Anthropic, Claude, Windows and macOS are trademarks of their respective owners. This independent project does not imply sponsorship or endorsement.
