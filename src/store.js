@@ -6,7 +6,7 @@ import { claudeModelMapping } from './claude-models.js';
 import { modelCatalog } from './provider-models.js';
 
 export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.codex-switch'));
-const reserved = new Set(['add', 'edit', 'list', 'current', 'help', 'service', 'order', 'update', 'model', 'claude']);
+const reserved = new Set(['add', 'edit', 'remove', 'list', 'current', 'help', 'service', 'order', 'update', 'model', 'codex', 'claude']);
 export function aliasName(value) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) || reserved.has(value)) throw new Error('别名须为 1–64 位字母、数字、_、-，且不能是命令名');
   return value;

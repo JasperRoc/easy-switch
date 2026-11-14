@@ -211,11 +211,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         }
         const capacity = !upstream.ok ? atCapacity(message) : startup?.capacity;
         const streamStatus = rejectionStatus(startup?.error);
+        const quotaStatus = [400, 422].includes(upstream.status) && rejectionStatus(message);
         const failureMessage = message || JSON.stringify(startup?.error);
         const imageDenied = image && imageUnavailable(upstream.ok && startup?.error ? 403 : upstream.status, message || JSON.stringify(startup?.error));
         const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
         if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied) {
-          const status = capacity ? 503 : !upstream.ok ? upstream.status : streamStatus || (imageDenied ? 403 : 400);
+          const status = capacity ? 503 : !upstream.ok ? quotaStatus || upstream.status : streamStatus || (imageDenied ? 403 : 400);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
           if (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied) {
             if (modelDenied) {

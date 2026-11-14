@@ -23,9 +23,9 @@ function providerConfig(port, token, nativeAuth = false) {
   return {
     name: 'easy-switch', base_url: `http://127.0.0.1:${port}/v1`,
     model_catalog_url: `http://127.0.0.1:${port}/v1/models`,
-    ...(!nativeAuth ? { experimental_bearer_token: token } : {}),
-    wire_api: 'responses', requires_openai_auth: nativeAuth, supports_websockets: false,
-    http_headers: { Authorization: `Bearer ${token}`, ...(nativeAuth ? { 'X-Easy-Switch-Token': token } : {}) },
+    experimental_bearer_token: token,
+    wire_api: 'responses', requires_openai_auth: false, supports_websockets: false,
+    http_headers: { Authorization: `Bearer ${token}`, ...(nativeAuth ? { 'X-Easy-Switch-Token': token, 'x-openai-actor-authorization': `Bearer ${token}` } : {}) },
   };
 }
 export function patchedConfig(original, port, token, nativeAuth = false) {
@@ -39,7 +39,9 @@ export function patchedConfig(original, port, token, nativeAuth = false) {
     source = source.replace(pattern, '');
   }
   const provider = providerConfig(port, token, nativeAuth);
-  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\n${!nativeAuth ? `experimental_bearer_token = "${token}"\n` : ''}wire_api = "responses"\nrequires_openai_auth = ${nativeAuth}\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}"` : ''} }\n`;
+  // Local actor auth exposes native images without tying the client's send gate
+  // or text identity to the quota of a particular subscription account.
+  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}", "x-openai-actor-authorization" = "Bearer ${token}"` : ''} }\n`;
   const expected = { ...before, model_provider: providerName, model_providers: { ...before.model_providers, [providerName]: provider } };
   if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), JSON.parse(JSON.stringify(expected)))) throw new Error('TOML 结构复杂，无法只修改代理设置；未写入配置');
   return result;

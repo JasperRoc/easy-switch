@@ -197,6 +197,35 @@ test('quota rejection transparently retries subscription, preserves input, isola
   assert.match(calls[2].url, /chatgpt.com/);
 });
 
+test('selected API is tried first and exhausted subscription SSE or billing errors continue on that API', async t => {
+  for (const [status, code] of [[200, 'usage_limit_reached'], [200, 'insufficient_quota'], [400, 'insufficient_quota'], [422, 'billing_hard_limit_reached']]) {
+    const { root, token } = fixture(t), requests = [];
+    addProvider('aos', { type: 'api', baseUrl: 'https://aos.example/v1', apiKey: 'api-fixture' }, root);
+    const accountHome = path.join(root, 'accounts', 'elias');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'subscription-fixture', account_id: 'fixture' } });
+    addProvider('elias', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      requests.push({ url, ...options });
+      assert.equal(options.headers['x-openai-actor-authorization'], undefined, 'local actor authentication must never reach upstreams');
+      if (url.includes('chatgpt.com')) return status === 200
+        ? new Response(`data: {"type":"response.created","response":{"output":[]}}\n\ndata: ${JSON.stringify({ type: 'response.failed', response: { error: { code } } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+        : Response.json({ error: { code } }, { status });
+      return new Response('data: API completed\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const selected = await send(proxy, token); assert.equal(await selected.text(), 'data: API completed\n\n');
+    assert.equal(selected.headers.get('x-switch-alias'), 'aos'); assert.equal(requests.length, 1);
+    activate('elias', root);
+    const response = await send(proxy, token, payload, { 'x-openai-actor-authorization': `Bearer ${token}` });
+    assert.equal(response.status, 200); assert.equal(await response.text(), 'data: API completed\n\n');
+    assert.equal(response.headers.get('x-switch-alias'), 'aos'); assert.equal(readState(root).active, 'aos');
+    assert.equal(requests[1].headers.authorization, 'Bearer subscription-fixture');
+    assert.equal(requests[2].headers.authorization, 'Bearer api-fixture');
+    assert.deepEqual(JSON.parse(requests[1].body).input, JSON.parse(requests[2].body).input);
+    await (await send(proxy, token)).text();
+    assert.match(requests.at(-1).url, /aos\.example/);
+  }
+});
+
 test('validation errors never switch', async t => {
   for (const status of [400, 422]) {
     const { root, token } = fixture(t);
@@ -404,17 +433,18 @@ test('late rejection cannot override a newer manual choice, even the same alias'
   assert.equal(readState(root).reason, 'manual');
 });
 
-test('HTTP 200 SSE errors are delivered without a fallback', async t => {
+test('HTTP 200 startup quota errors retry the backup without exposing the exhausted subscription error', async t => {
   const { root, token } = fixture(t);
   for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
   let calls = 0;
   const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
-    calls++; return new Response('data: {"type":"response.failed","error":{"code":"insufficient_quota"}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    calls++; return new Response(calls === 1 ? 'data: {"type":"response.failed","error":{"code":"insufficient_quota"}}\n\n' : 'data: backup completed\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } }));
   const response = await send(proxy, token);
-  assert.match(await response.text(), /response.failed/);
-  assert.equal(calls, 1);
-  assert.equal(readState(root).active, 'a');
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'data: backup completed\n\n');
+  assert.equal(calls, 2);
+  assert.equal(readState(root).active, 'b');
 });
 
 test('quota failover exhausts the available queue without revisiting aliases', async t => {

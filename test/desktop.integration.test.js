@@ -672,24 +672,34 @@ test('sidebar switches each client independently, remembers routing choices and 
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-providers-0.5.16-en.png'), animations: 'disabled' });
 });
 
-test('zero quota renders empty rings and zero credits normally; plan tiers and unknown values are distinct', { skip: !enabled, timeout: 30000 }, async t => {
+test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credits and unknown values remain distinct', { skip: !enabled, timeout: 30000 }, async t => {
   const { app, page } = await launch(t);
   const window = { remaining: 0, resetsAt: Date.now() + 100000 };
-  const accounts = ['plus', 'prolite', 'pro', 'promax', 'free'].map(plan => ({ alias: plan, type: 'account', plan, usage: { status: 'ready', fetchedAt: Date.now(), data: { plan, fiveHour: window, weekly: window, credits: 0, unlimited: false } } }));
+  const accounts = ['plus', 'prolite', 'pro', 'promax', 'free', 'go'].map(plan => ({ alias: plan, type: 'account', plan, usage: { status: 'ready', fetchedAt: Date.now(), data: { plan, fiveHour: window, weekly: window, credits: 0, unlimited: false } } }));
   accounts.push({ alias: 'unknown', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: null, weekly: null, credits: null } } });
+  accounts.push({ alias: 'go-short', type: 'account', plan: 'go', usage: { status: 'ready', data: { plan: 'go', fiveHour: { remaining: 60 }, weekly: null, credits: 0 } } });
+  accounts.push({ alias: 'purchased', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: window, weekly: window, credits: 12 } } });
   await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
     powerMonitor.emit('lock-screen');
     const state = { client: 'codex', running: true, active: 'plus', providers, language: 'en', theme: 'light', dark: false, update: { phase: 'idle' } };
     ipcMain.removeHandler('easy-switch:call'); ipcMain.handle('easy-switch:call', (_event, action, payload) => { if (action === 'preferences') { Object.assign(state, payload); state.dark = state.theme === 'dark'; } return state; });
     BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed', state);
   }, accounts);
-  for (const [alias, label] of [['plus','Plus'], ['prolite','Pro 100'], ['pro','Pro 200'], ['promax','Pro 500'], ['free','Free']]) {
+  for (const [alias, label] of [['plus','Plus'], ['prolite','Pro 100'], ['pro','Pro 200'], ['promax','Pro 500'], ['free','Free'], ['go','Go']]) {
     const row = page.locator(`.provider[data-alias="${alias}"]`);
     await row.locator('.identity small').filter({ hasText: 'ChatGPT ' + label }).waitFor();
     assert.equal(await row.locator('.quota.stale, .quota-message').count(), 0);
     assert.match(await row.locator('.quota-center').getAttribute('aria-label'), /Remaining credits\n0$/);
-    assert.equal(await row.locator('.quota-progress[visibility="hidden"]').count(), ['plus', 'free'].includes(alias) ? 2 : 1);
+    assert.equal(await row.locator('.quota-exhausted-outline').count(), 1);
+    assert.equal(await row.locator('.quota-exhausted-mark').count(), 1);
+    assert.equal(await row.locator('.quota-center rect').count(), 0);
+    assert.equal(await row.locator('.quota-progress[visibility="hidden"]').count(), ['plus', 'free', 'go'].includes(alias) ? 2 : 1);
   }
+  const short = page.locator('[data-alias="go-short"]');
+  assert.equal(await short.locator('.quota-segment').count(), 1);
+  assert.match(await short.locator('.quota-segment').getAttribute('aria-label'), /5h: 60% remaining/);
+  assert.equal(await short.locator('.quota-segment.unknown').count(), 0);
+  assert.equal(await page.locator('[data-alias="purchased"] .quota-exhausted-mark').count(), 0, 'purchased credits can remain usable after included quota is exhausted');
   const plus = page.locator('[data-alias="plus"]');
   assert.equal(await plus.locator('.quota-segment').count(), 2);
   await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: 'Remaining credits\n0' }).waitFor();
@@ -697,9 +707,13 @@ test('zero quota renders empty rings and zero credits normally; plan tiers and u
   const unknown = page.locator('[data-alias="unknown"]');
   assert.equal(await unknown.locator('.quota-segment.unknown').count(), 2);
   assert.match(await unknown.locator('.quota-center').getAttribute('aria-label'), /does not mean.*failed/);
-  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.16-en.png'), animations: 'disabled' });
+  const client = page.locator('[data-client="codex"]'); await client.hover();
+  assert.deepEqual(await client.evaluate(element => ({ shadow: getComputedStyle(element).boxShadow, transform: getComputedStyle(element).transform, backdrop: getComputedStyle(element).backdropFilter })), { shadow: 'none', transform: 'none', backdrop: 'none' });
+  for (const name of ['codex', 'claude']) assert.match(await page.locator(`.${name}-logo`).evaluate(element => getComputedStyle(element).maskImage), new RegExp(`${name}-mark\\.png`));
+  await page.mouse.move(450, 100);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-en.png'), animations: 'disabled' });
   await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
-  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.16-zh-dark.png'), animations: 'disabled' });
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-zh-dark.png'), animations: 'disabled' });
 });

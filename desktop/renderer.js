@@ -58,11 +58,22 @@ function quotaRing(data, tooltip) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
   const plus = data.plan === 'plus' || !!data.fiveHour && !!data.weekly && !['pro', 'prolite', 'promax'].includes(data.plan);
-  for (const weekly of plus ? [false, true] : [true]) {
+  const depleted = !data.unlimited && data.credits === 0 && [data.fiveHour, data.weekly].some(window => window?.remaining === 0);
+  if (depleted) {
+    svg.classList.add('depleted');
+    const outline = document.createElementNS(svg.namespaceURI, 'circle');
+    for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 20, class: 'quota-exhausted-outline' })) outline.setAttribute(key, value);
+    svg.append(outline);
+  }
+  const windows = plus ? ['fiveHour', 'weekly'] : [data.weekly ? 'weekly' : data.fiveHour ? 'fiveHour' : 'weekly'];
+  const descriptions = [];
+  for (const name of windows) {
+    const weekly = name === 'weekly';
     const value = weekly ? data.weekly : data.fiveHour, label = t(weekly ? 'quotaWeek' : 'quotaFiveHour');
     const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
     let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
     if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
+    descriptions.push(description);
     const group = document.createElementNS(svg.namespaceURI, 'g');
     group.setAttribute('class', `quota-segment${value ? value.remaining === 0 ? ' exhausted' : '' : ' unknown'}${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
     group.setAttribute('role', 'img'); group.setAttribute('aria-label', description); group.setAttribute('tabindex', '0');
@@ -82,14 +93,16 @@ function quotaRing(data, tooltip) {
   }
   const center = document.createElementNS(svg.namespaceURI, 'g');
   const balance = data.unlimited ? '∞' : Number.isFinite(data.credits) ? new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits) : null;
-  const description = balance === null ? t('creditsNotProvided') : `${t('quotaCredits')}\n${balance}`;
+  const creditDescription = balance === null ? t('creditsNotProvided') : `${t('quotaCredits')}\n${balance}`;
+  const description = depleted ? [t('quotaExhausted'), ...descriptions, creditDescription].join('\n') : creditDescription;
   center.setAttribute('class', 'quota-center'); center.setAttribute('tabindex', '0');
   center.setAttribute('role', 'img'); center.setAttribute('aria-label', description);
-  const diamond = document.createElementNS(svg.namespaceURI, 'rect');
-  for (const [key, value] of Object.entries({ x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)' })) diamond.setAttribute(key, value);
+  const mark = document.createElementNS(svg.namespaceURI, depleted ? 'path' : 'rect');
+  const attributes = depleted ? { d: 'M24 16v9m0 6v.1', class: 'quota-exhausted-mark' } : { x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)' };
+  for (const [key, value] of Object.entries(attributes)) mark.setAttribute(key, value);
   const hit = document.createElementNS(svg.namespaceURI, 'circle');
   for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 10, class: 'quota-center-hit' })) hit.setAttribute(key, value);
-  center.append(diamond, hit);
+  center.append(mark, hit);
   center.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
   center.addEventListener('mouseleave', () => { tooltip.hidden = true; });
   center.addEventListener('focus', () => { tooltip.textContent = description; tooltip.hidden = false; });

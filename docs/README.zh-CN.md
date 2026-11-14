@@ -63,26 +63,31 @@ cd easy-switch
 
 | 命令 | 作用 |
 | --- | --- |
-| `switch add account <alias>` | 添加订阅账号 |
-| `switch add api <alias>` | 添加官方或第三方 API |
-| `switch edit <alias>` | 修改别名、Base URL 或密钥，密钥留空保留 |
-| `switch <alias>` | 切换后续请求使用的上游 |
-| `switch list` | 查看备用优先级及当前上游（`*`） |
+| `switch codex add account <alias>` | 添加 ChatGPT 订阅账号 |
+| `switch codex add api <alias>` | 添加官方或第三方 Responses API |
+| `switch codex edit <alias>` | 修改别名、Base URL 或密钥，密钥留空保留 |
+| `switch codex remove <alias>` | 删除 Codex 服务商及其独立保存的登录 |
+| `switch codex <alias>` | 切换 Codex 后续请求使用的服务商 |
+| `switch codex list` | 查看 Codex 备用优先级及当前上游（`*`） |
 | `switch claude add api <alias>` | 为 Claude Code 添加 Anthropic Messages API |
 | `switch claude add account <alias>` | 通过官方认证添加或重新认证 Claude 订阅 |
 | `switch claude <alias>` | 切换 Claude Code 的服务商，不影响 Codex |
+| `switch claude edit / remove <alias>` | 修改或删除 Claude 服务商 |
 | `switch claude list / order` | 管理 Claude 独立的服务商和优先级 |
-| `switch order` | 用键盘调整切换优先级 |
+| `switch codex order` | 用键盘调整 Codex 切换优先级 |
 | `switch update` | 更新至官方仓库 main 分支并重启服务 |
-| `switch current` | 查看当前别名 |
+| `switch current` | 分别显示 Codex、Claude 当前服务商 |
+| `switch codex current / switch claude current` | 仅查看指定客户端的当前别名 |
 | `switch service status` | 查看后台服务状态 |
 | `switch service restart` | 重启服务，会中断进行中的请求 |
 | `switch service uninstall` | 恢复配置并移除服务 |
 | `switch help` | 查看命令帮助 |
 
+Codex 与 Claude 的服务商、凭据、当前选择和备用队列相互独立，允许使用同名别名。原有无前缀的 `add`、`edit`、`remove`、`list`、`order` 和别名切换继续管理 Codex。删除当前服务商后会选择队列中第一个剩余条目；删除账号仅清理 easy-switch 独立保存且未被其他条目共用的登录，不删除外部客户端凭据和会话。删除最后一个 Claude 服务商会恢复其客户端配置。
+
 添加 API 时，**Base URL 留空即使用 OpenAI 官方 API**（`https://api.openai.com/v1`），并填写对应的 OpenAI API Key；接入第三方服务时，填写其 Base URL 与 API Key。第三方地址不应附加 `/responses`，且需支持 Responses API、SSE 与 Codex 工具调用。
 
-进入 `switch order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
+进入 `switch codex order` 或 `switch claude order` 后，用 **↑/↓** 选择，**Shift+↑/↓**（或大写 **K/J**）移动，**Enter** 保存，**Esc** 或 **Ctrl+C** 取消。优先级从上到下递减，保存顺序不会改变当前上游。
 
 模型及推理强度由 Codex 或 Claude Code 自身管理。桌面版每行的放大镜独立查询该服务商，包括未选中的服务商，并提供目录编辑、搜索、刷新状态与读取时间，修改在点击保存前仅为草稿。两个客户端分别接入各自所有服务商的模型并集，实际请求保留所选模型 ID。Codex 按版本系列从新到旧集中排列，系列内沿用官方顺序，对话菜单排除图片专用模型与隐藏模型。模型 ID 仅来自服务商或用户手动条目，不设置默认模型集；推理强度使用订阅实时信息或本地官方客户端对同名模型的元数据。目录中的模型仍需具备实际推理和工具调用权限。详见[服务商模型查询](usage.md#provider-model-lookup)及 [Claude 模型映射](claude-code.md)。
 
@@ -132,7 +137,7 @@ Codex 上游明确拒绝模型不存在、不支持或无权使用时，easy-swi
 
 ### 能否查看订阅额度？
 
-桌面版 Codex 账号行直接读取账号额度接口：Plus 使用同一个环，上方小段弧线显示 5 小时剩余额度、下方大段弧线显示周剩余额度；Pro 显示周额度整环。悬停某段弧线，会轻微浮起并显示对应的剩余百分比和重置时间。额度圈采用中性灰色弧线与中心菱形。购买额度独立于时间窗口，悬停或键盘聚焦中心菱形即可查看余额，不再另设余额展示块，也无需等周额度耗尽。窗口显示时每分钟刷新额度，隐藏或最小化后暂停自动查询；读取失败后逐步延长重试间隔。点击不再展开全部信息。缺失数据和读取失败会明确提示，不估算余额，也不会自动使用重置卡。
+桌面版 Codex 账号行直接读取账号额度接口：Plus 使用同一个环，上方小段弧线显示 5 小时剩余额度、下方大段弧线显示周剩余额度；Pro 显示周额度整环。悬停某段弧线，会轻微浮起并显示对应的剩余百分比和重置时间。额度圈采用中性灰色弧线与中心菱形。购买额度独立于时间窗口，悬停或键盘聚焦中心菱形即可查看余额，不再另设余额展示块，也无需等周额度耗尽。窗口显示时每分钟刷新额度，隐藏或最小化后暂停自动查询；读取失败后逐步延长重试间隔。点击不再展开全部信息。时间窗口耗尽且购买余额为 0 时，显示浅灰描边圆圈与感叹号；有购买余额时继续独立显示。套餐名称支持 Free、Go、Plus、Pro 100／200／500，Go 按接口实际返回的窗口显示，只有 5 小时窗口时不会误画成缺失的周额度。缺失数据和读取失败会明确提示，不估算余额，也不会自动使用重置卡。
 
 ### 能否使用额度重置卡？
 
@@ -140,7 +145,7 @@ Codex 上游明确拒绝模型不存在、不支持或无权使用时，easy-swi
 
 ### 文字使用 API 时，可以借用订阅生成图片吗？
 
-可以。经过 easy-switch 的内置图片生成、编辑请求会按优先级选择可用订阅，不改变当前文字服务商和模型。前提是 Codex 已提供内置图片工具。桌面版添加订阅后会配置原生图片工具；Codex 原先使用 API 认证时，会临时接入已添加的订阅登录。首次配置后，已打开的 Codex 需要重载一次，之后切换服务商仍保留图片工具；退出 easy-switch 会恢复原始连接及临时接入前的登录。详见[图片路由](usage.md#image-generation-routing)。
+可以。经过 easy-switch 的内置图片生成、编辑请求会按优先级选择可用订阅，不改变当前文字服务商和模型。前提是 Codex 已提供内置图片工具。桌面版通过本地 actor 认证启用图片工具，文字接入保持本地 API 网关身份，避免某个订阅额度耗尽时阻止向其他服务商发送消息；真实图片权限仍由上游决定。添加订阅后会配置原生图片工具；Codex 原先使用 API 认证时，会临时接入已添加的订阅登录。首次配置后，已打开的 Codex 需要重载一次，之后切换服务商仍保留图片工具；退出 easy-switch 会恢复原始连接及临时接入前的登录。详见[图片路由](usage.md#image-generation-routing)。
 
 Free 账号不提供 Codex 图片生成。easy-switch 会跳过已识别的 Free 图片上游；原生登录为 Free 时，可临时接入已添加且有权限的付费账号来启用工具，随后需要重载 Codex 一次。没有可用订阅时，图片 API 可处理到达代理的请求，但不能启用被 Free 客户端禁用的工具。输出前的计划或模型权限拒绝可尝试其他账号；内容安全拒绝不会通过其他服务商重试。
 

@@ -37,7 +37,8 @@ test('desktop preserves native subscription tools and leaves native auth untouch
   fs.writeFileSync(authFile, auth);
   await runtime.start();
   const provider = parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch;
-  assert.equal(provider.requires_openai_auth, true);
+  assert.equal(provider.requires_openai_auth, false);
+  assert.equal(provider.http_headers['x-openai-actor-authorization'], `Bearer ${provider.experimental_bearer_token}`);
   assert.equal(provider.http_headers['X-Easy-Switch-Token'], JSON.parse(fs.readFileSync(path.join(runtime.root, 'state.json'))).token);
   await runtime.stop();
   assert.equal(fs.readFileSync(authFile, 'utf8'), auth); assert.equal(fs.readFileSync(file, 'utf8'), original);
@@ -77,7 +78,7 @@ test('an easy-switch subscription enables native images over an original API/key
   const config = parse(fs.readFileSync(file, 'utf8'));
   assert.equal(config.cli_auth_credentials_store, 'file'); assert.equal(config.forced_login_method, 'chatgpt');
   assert.equal(config.features.image_generation, true); assert.equal(config.features.shell_tool, true);
-  assert.equal(config.model_providers.easy_switch.requires_openai_auth, true);
+  assert.equal(config.model_providers.easy_switch.requires_openai_auth, false);
   assert.equal(JSON.parse(fs.readFileSync(authFile)).auth_mode, 'chatgpt');
   assert.equal(JSON.parse(fs.readFileSync(authFile)).OPENAI_API_KEY, null);
   assert.equal(runtime.imageTools, true);

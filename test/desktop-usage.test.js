@@ -113,7 +113,14 @@ test('quota windows use their actual duration instead of treating monthly Free q
 });
 
 
-test('account plan identifiers preserve Free, Plus and the three Pro tiers', () => {
-  for (const [id, label] of [['free', 'Free'], ['plus', 'Plus'], ['prolite', 'Pro 100'], ['pro', 'Pro 200'], ['promax', 'Pro 500']]) assert.equal(planLabel(id), label);
+test('account plan identifiers preserve Free, Go, Plus and the three Pro tiers', () => {
+  for (const [id, label] of [['free', 'Free'], ['go', 'Go'], ['plus', 'Plus'], ['prolite', 'Pro 100'], ['pro', 'Pro 200'], ['promax', 'Pro 500']]) assert.equal(planLabel(id), label);
   assert.equal(planLabel(null), null); assert.equal(planLabel('unknown'), null);
+});
+
+test('Go preserves its reported five-hour window and zero credits without inventing weekly quota', () => {
+  const input = payload('go'); input.rate_limit.secondary_window = null; input.credits = { has_credits: false, balance: '0' };
+  const result = normalizeUsage(input);
+  assert.equal(result.plan, 'go'); assert.equal(result.fiveHour.remaining, 75);
+  assert.equal(result.weekly, null); assert.equal(result.credits, 0);
 });

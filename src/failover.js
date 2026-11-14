@@ -12,11 +12,18 @@ export function recoverable(status, message = '') {
   return status === 403;
 }
 export function rejectionStatus(error) {
+  if (typeof error === 'string') { try { error = JSON.parse(error); } catch { error = { message: error }; } }
+  error = error?.response?.error || error?.error || error;
   const status = Number(error?.status || error?.status_code);
   if ([401, 402, 403, 429, 500, 502, 503, 504, 529].includes(status)) return status;
   const statuses = { __proto__: null, authentication_error: 401, invalid_api_key: 401, permission_error: 403, forbidden: 403, access_denied: 403, rate_limit_error: 429,
+    rate_limit_exceeded: 429, rate_limit_reached: 429, usage_limit_reached: 429, insufficient_quota: 429,
+    insufficient_credits: 402, insufficient_balance: 402, credits_exhausted: 402, billing_hard_limit_reached: 402,
     server_error: 500, internal_server_error: 500, service_unavailable: 503 };
-  return statuses[error?.code] || statuses[error?.type];
+  const known = statuses[error?.code?.toLowerCase?.()] || statuses[error?.type?.toLowerCase?.()];
+  if (known) return known;
+  const message = typeof error === 'string' ? error : error?.message || '';
+  if (/\b(?:usage|rate)[ _-]?limit (?:reached|exceeded)|\b(?:hit|reached|exceeded) (?:your |the )?(?:usage |rate )?limit\b|\b(?:quota|credits?|balance) (?:exhausted|depleted|exceeded)|\binsufficient (?:quota|credits?|balance)\b|额度.{0,20}(?:耗尽|用尽|用完|不足)|余额不足/i.test(message)) return 429;
 }
 export function modelUnavailable(status, message = '') {
   if (![400, 403, 404, 422].includes(status)) return false;

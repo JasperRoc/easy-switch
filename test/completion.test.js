@@ -19,6 +19,12 @@ test('completion exposes commands and aliases, excludes used order aliases and s
   assert.deepEqual(candidates(['service', 're'], root), ['restart']);
   assert.deepEqual(candidates(['order', 'personal', ''], root), ['relay']);
   assert.deepEqual(candidates(['add', 'api', ''], root), []);
+  addProvider('claude-only', { type: 'api', baseUrl: 'https://example.com', apiKey: 'SECRET' }, path.join(root, 'claude'));
+  assert.deepEqual(candidates(['cod'], root), ['codex']);
+  assert.deepEqual(candidates(['codex', 'add', 'a'], root), ['api', 'account']);
+  assert.deepEqual(candidates(['codex', 'remove', ''], root), ['personal', 'relay']);
+  assert.deepEqual(candidates(['claude', 'remove', ''], root), ['claude-only']);
+  assert.deepEqual(candidates(['claude', 'cod'], root), []);
   assert.ok(!candidates([''], root).join().includes('SECRET'));
 });
 test('completion installation preserves shell configuration and is idempotent', t => {

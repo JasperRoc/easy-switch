@@ -16,7 +16,5 @@
 <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
 <symbol id="chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
 <symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
-<symbol id="codex" viewBox="0 0 24 24"><path d="M12 2.5 20.2 7.2v9.6L12 21.5l-8.2-4.7V7.2Z"/><path d="m12 7 4.3 2.5v5L12 17l-4.3-2.5v-5ZM3.8 7.2 12 12l8.2-4.8M12 12v9.5"/></symbol>
-<symbol id="claude" viewBox="0 0 24 24"><path d="m12 2 .8 7.1L17 3.8l-2.5 6.7 7-2.5-5.6 4.4 6.4 2.9-7.3-.6 2.5 6.7-5.1-5.4-2.7 6.5.2-7.3-6.7 2.8 5-5.3-6.8-2.5 7.3.1L6 3.9l5 5.4Z"/></symbol>
 <symbol id="settings" viewBox="0 0 24 24"><path d="m9.5 3-.7 2.5-2 .9L4.5 6 3 8.6l1.8 1.8v2.3L3 14.5l1.5 2.6 2.3-.4 2 1 .7 2.4h3l.8-2.4 2-1 2.2.4 1.5-2.6-1.7-1.8v-2.3L19 8.6 17.5 6l-2.2.4-2-.9-.8-2.5Z"/><circle cx="11" cy="11.5" r="3"/></symbol>
 </svg>

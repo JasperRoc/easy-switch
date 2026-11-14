@@ -43,6 +43,10 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     const body = JSON.parse(raw);
     requests.push({ label, body, authorization: req.headers.authorization, accountID: req.headers['chatgpt-account-id'] });
     if (label === 'A' && rejectA) {
+      if (nativeAuth === true) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        return res.end('data: {"type":"response.failed","response":{"error":{"code":"usage_limit_reached","message":"You have hit your usage limit"}}}\n\n');
+      }
       res.writeHead(403, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: { message: 'Forbidden' } }));
     }
@@ -154,6 +158,9 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   }
   await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+  const account = await call('account/read', { refreshToken: false });
+  assert.equal(account.requiresOpenaiAuth, false, 'local routing must not inherit a subscription-only send gate');
+  assert.equal(account.account, null, 'the selected API must not be represented as the native subscription account');
   const models = await call('model/list', { includeHidden: false });
   assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-sol', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
   assert.equal(models.data[0].displayName, 'GPT-6.1-Sol');

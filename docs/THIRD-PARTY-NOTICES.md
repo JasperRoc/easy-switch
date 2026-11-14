@@ -12,4 +12,4 @@ The Claude Desktop adapter was informed by [CC Switch's Desktop integration](htt
 
 The model catalog editor was informed by [DeepSeek Harness’s model list editor](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/client/ui-settings-models) (MIT, Copyright (c) 2026 DeepSeek): separate upstream IDs and display names, draft/save behavior and model ordering. easy-switch uses its own JavaScript DOM implementation; the upstream notice is retained in [DEEPSEEK-HARNESS-LICENSE](DEEPSEEK-HARNESS-LICENSE).
 
-OpenAI, ChatGPT, Codex, Anthropic, Claude, Windows and macOS are trademarks of their respective owners. This independent project does not imply sponsorship or endorsement.
+The transparent ChatGPT and Claude client marks are extracted from the user-supplied official product icon references and remain the property of their respective owners. OpenAI, ChatGPT, Codex, Anthropic, Claude, Windows and macOS are trademarks of their respective owners. This independent project does not imply sponsorship or endorsement.

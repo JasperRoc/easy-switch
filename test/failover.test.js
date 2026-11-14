@@ -43,6 +43,17 @@ test('error classification reads no more than 64 KiB and cancels remaining body'
   assert.equal(cancelled, true);
 });
 
+test('quota errors are recognized in subscription, API and nested SSE formats without matching input or policy refusals', () => {
+  for (const code of ['usage_limit_reached', 'insufficient_quota', 'rate_limit_exceeded', 'rate_limit_reached']) {
+    assert.equal(rejectionStatus({ code }), 429);
+    assert.equal(rejectionStatus(JSON.stringify({ response: { error: { type: code } } })), 429);
+  }
+  for (const code of ['insufficient_balance', 'insufficient_credits', 'credits_exhausted', 'billing_hard_limit_reached']) assert.equal(rejectionStatus({ code }), 402);
+  for (const message of ["You've hit your usage limit", 'Your usage limit reached', 'credit balance exhausted', '额度已用尽', '余额不足']) assert.equal(rejectionStatus({ message }), 429, message);
+  assert.equal(rejectionStatus('{"error":{"code":"invalid_request_error"},"input":"quota exhausted"}'), undefined);
+  assert.equal(recoverable(429, 'content_policy_violation'), false);
+});
+
 test('priority order skips failed, cooling, attempted, and unavailable providers', async () => {
   const { alternate } = await import('../src/failover.js');
   const api = { type: 'api', apiKey: 'key', baseUrl: 'https://example.com/v1' };

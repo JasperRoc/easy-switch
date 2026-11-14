@@ -136,7 +136,7 @@ test('Claude model discovery paginates actual provider IDs and never borrows the
 
 test('one proxy isolates Codex and Claude credentials; quota failover preserves Messages tools and original fallback model', async t => {
   const root = fixture(t), claude = path.join(root, 'claude'), token = readState(claude).token;
-  addProvider('codex', { type: 'api', baseUrl: 'https://codex.test/v1', apiKey: 'CODEX_SECRET' }, root);
+  addProvider('codex-api', { type: 'api', baseUrl: 'https://codex.test/v1', apiKey: 'CODEX_SECRET' }, root);
   addProvider('relay', { type: 'api', baseUrl: 'https://relay.test/anthropic', apiKey: 'CLAUDE_API_SECRET', claudeModels: { default: 'deepseek-flash' } }, claude);
   const accountHome = path.join(claude, 'accounts', 'sub'); atomic(path.join(accountHome, 'oauth.json'), oauth);
   addProvider('sub', { type: 'account', accountHome }, claude);
@@ -155,7 +155,7 @@ test('one proxy isolates Codex and Claude credentials; quota failover preserves 
   assert.match(calls[1].headers['anthropic-beta'], /tools-2026,oauth-2025-04-20/);
   assert.ok(!JSON.stringify(calls).includes('CODEX_SECRET')); assert.ok(!JSON.stringify(calls).includes('NATIVE_SECRET'));
   assert.equal(JSON.parse(calls[0].body).model, 'deepseek-flash'); assert.equal(JSON.parse(calls[1].body).model, 'claude-client');
-  assert.deepEqual(JSON.parse(calls[1].body).messages, messages); assert.equal(readState(root).active, 'codex'); assert.equal(readState(claude).active, 'sub');
+  assert.deepEqual(JSON.parse(calls[1].body).messages, messages); assert.equal(readState(root).active, 'codex-api'); assert.equal(readState(claude).active, 'sub');
 });
 
 test('manual Claude switching applies to the next request while accepted output is never replayed', async t => {

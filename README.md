@@ -63,26 +63,31 @@ The installer registers `switch`, starts the systemd background service, enables
 
 | Command | Purpose |
 | --- | --- |
-| `switch add account <alias>` | Add a subscription account |
-| `switch add api <alias>` | Add an official or third-party API |
-| `switch edit <alias>` | Edit alias, Base URL or key; a blank key preserves it |
-| `switch <alias>` | Select the provider for subsequent requests |
-| `switch list` | Show fallback priority and the active provider (`*`) |
+| `switch codex add account <alias>` | Add a ChatGPT subscription account |
+| `switch codex add api <alias>` | Add an official or third-party Responses API |
+| `switch codex edit <alias>` | Edit alias, Base URL or key; a blank key preserves it |
+| `switch codex remove <alias>` | Remove a Codex provider and its saved isolated login |
+| `switch codex <alias>` | Select Codex’s provider for subsequent requests |
+| `switch codex list` | Show Codex’s fallback priority and active provider (`*`) |
 | `switch claude add api <alias>` | Add an Anthropic Messages API for Claude Code |
 | `switch claude add account <alias>` | Add or renew a Claude subscription through official sign-in |
 | `switch claude <alias>` | Switch Claude Code without changing Codex |
+| `switch claude edit / remove <alias>` | Edit or remove a Claude provider |
 | `switch claude list / order` | Manage Claude’s independent providers and priorities |
-| `switch order` | Adjust priority with the keyboard |
+| `switch codex order` | Adjust Codex priority with the keyboard |
 | `switch update` | Update from the official main branch and restart the service |
-| `switch current` | Show the active alias |
+| `switch current` | Show both current providers, labeled Codex and Claude |
+| `switch codex current / switch claude current` | Show only the specified client’s alias |
 | `switch service status` | Inspect the background service |
 | `switch service restart` | Restart the service; interrupts in-flight requests |
 | `switch service uninstall` | Restore configuration and remove the service |
 | `switch help` | Show command help |
 
+Codex and Claude have separate providers, credentials, selections and fallback queues; the same alias can exist in both. Legacy unprefixed `add`, `edit`, `remove`, `list`, `order` and alias commands still manage Codex. Removing the active provider selects the first remaining provider; deleting an account removes only easy-switch’s own unshared login copy, preserving external client credentials and conversations. Removing the final Claude provider restores its client settings.
+
 When adding an API, **leave Base URL blank to use the official OpenAI API** (`https://api.openai.com/v1`) and enter the corresponding OpenAI API key. For a third-party service, enter its Base URL and API key. Third-party URLs should omit `/responses`, and the service must support Responses API, SSE, and Codex tool calls.
 
-In `switch order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
+In `switch codex order` or `switch claude order`, use **↑/↓** to select, **Shift+↑/↓** (or uppercase **K/J**) to move, **Enter** to save, and **Esc** or **Ctrl+C** to cancel. Priority runs from top to bottom. Saving the order does not change the active provider.
 
 Model and reasoning-effort selection stays in Codex or Claude Code. The desktop magnifying glass queries the selected row’s provider, including inactive providers, and shows an editable catalog with search and refresh status. Changes remain drafts until Save. Both clients receive the deduplicated union of their configured providers’ catalogs; actual requests retain the selected model ID. Codex groups GPT models by version series (newest first), retains the official order inside each series, and excludes image-only and hidden models from the text-model menu. Model IDs come only from providers or explicit user entries; there is no fallback default model set. Effort choices are read from live subscription or local official-client metadata for matching IDs. A listed model does not prove inference or tool permissions. See [provider model lookup](docs/usage.md#provider-model-lookup) and [Claude model mappings](docs/claude-code.md).
 
@@ -132,7 +137,7 @@ Windows x64 and macOS Apple silicon/Intel desktop installers are available along
 
 ### Can I see my subscription quota?
 
-Desktop Codex account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Hover or focus the center diamond to see purchased credits, independently of time-window limits; the separate balance block is removed. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
+Desktop Codex account rows show remaining quota from the account’s usage endpoint: Plus uses one ring with a smaller upper arc for 5-hour quota and a larger lower arc for weekly quota; Pro shows a full weekly ring. Hover an arc to lift it and reveal its remaining percentage and reset time. The compact ring uses a neutral arc design with a center diamond. Hover or focus the center diamond to see purchased credits, independently of time-window limits; the separate balance block is removed. Quota refreshes every minute while the window is visible; hiding or minimizing pauses automatic reads, and failures use increasing retry delays. Clicking no longer expands all details. A depleted time window with zero purchased credits uses a light outlined circle and exclamation mark; positive purchased credits remain separate. Plan labels support Free, Go, Plus and Pro 100/200/500. Go uses the windows actually returned by the service, including a single 5-hour ring when no weekly window is supplied. Missing data and failed reads are shown explicitly; balances are not estimated and reset cards are never redeemed automatically.
 
 ### Can I use an earned quota-reset card?
 
@@ -140,7 +145,7 @@ Desktop subscription rows include a reset button. Open it to see individual card
 
 ### Can a subscription handle image generation while text uses an API?
 
-Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. On desktop, adding a subscription also configures native image tools and temporarily connects its sign-in when Codex was using API authentication. Reload an already-open Codex client once after this setup; later provider switches keep these tools available. Quitting restores the original connection and any temporary sign-in. See [image routing](docs/usage.md#image-generation-routing).
+Yes. Native image generation/edit requests sent through easy-switch prefer available subscription accounts in priority order and leave the selected text provider and model unchanged. Codex must already expose its built-in image tool. Desktop image tools use authenticated local actor routing while text keeps a local API gateway identity, so an exhausted subscription cannot block sending through another provider. Actual image permissions still belong to the upstream. Adding a subscription also configures native image tools and temporarily connects its sign-in when Codex was using API authentication. Reload an already-open Codex client once after this setup; later provider switches keep these tools available. Quitting restores the original connection and any temporary sign-in. See [image routing](docs/usage.md#image-generation-routing).
 
 Free accounts do not provide Codex image generation. easy-switch skips known Free accounts for image requests and can temporarily use an added, eligible paid account to enable the tool when the native login is Free. Reload Codex once afterward. An image API can handle requests reaching the proxy when no eligible subscription exists, but cannot enable a tool that the Free client has disabled. Plan/model access rejections before output can try another account; safety refusals are not retried through alternatives.
 
