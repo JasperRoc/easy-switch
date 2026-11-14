@@ -31,6 +31,20 @@ test('desktop routing exists only while the app runs; repeated start does not re
   assert.equal(fs.readFileSync(file, 'utf8'), original);
   assert.equal(fs.existsSync(runtime.recordFile), false);
 });
+test('desktop pins API model discovery and restores the original setting after unrelated edits', async t => {
+  for (const discovery of [undefined, false, true]) {
+    const original = 'model="original"\n[features]\nshell_tool=true\n' + (discovery === undefined ? '' : `api_key_model_discovery=${discovery}\n`);
+    const { runtime, file } = await setup(t, original);
+    await runtime.start();
+    assert.equal(parse(fs.readFileSync(file, 'utf8')).features.api_key_model_discovery, true);
+    fs.appendFileSync(file, '\n# Keep my MCP server\n[mcp_servers.example]\ncommand="tool"\n');
+    await runtime.stop();
+    const restored = parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(restored.features.api_key_model_discovery, discovery);
+    assert.equal(restored.features.shell_tool, true);
+    assert.equal(restored.mcp_servers.example.command, 'tool');
+  }
+});
 test('desktop preserves native subscription tools and leaves native auth untouched', async t => {
   const { runtime, codexHome, file, original } = await setup(t);
   const authFile = path.join(codexHome, 'auth.json'), auth = '{"tokens":{"access_token":"native-fixture","account_id":"account-fixture"}}\n';
@@ -38,6 +52,7 @@ test('desktop preserves native subscription tools and leaves native auth untouch
   await runtime.start();
   const provider = parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch;
   assert.equal(provider.requires_openai_auth, false);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).features.api_key_model_discovery, true);
   assert.equal(provider.http_headers['x-openai-actor-authorization'], `Bearer ${provider.experimental_bearer_token}`);
   assert.equal(provider.http_headers['X-Easy-Switch-Token'], JSON.parse(fs.readFileSync(path.join(runtime.root, 'state.json'))).token);
   await runtime.stop();
@@ -120,6 +135,7 @@ test('removing the subscription deletes the temporary native sign-in and disable
   removeProvider('account', runtime.root); runtime.syncTools();
   assert.equal(fs.existsSync(path.join(codexHome, 'auth.json')), false);
   assert.equal(runtime.imageTools, false); assert.equal(runtime.active, true);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).features.api_key_model_discovery, true);
   assert.equal(parse(fs.readFileSync(file, 'utf8')).model_providers.easy_switch.requires_openai_auth, false);
   await runtime.stop(); assert.equal(fs.readFileSync(file, 'utf8'), original);
 });

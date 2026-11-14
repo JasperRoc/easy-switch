@@ -37,6 +37,7 @@ async function launch(t, extraEnv = {}, initialConfig, prepare) {
   await page.bringToFront();
   await page.locator('#status').filter({ hasText: /Routing active|路由已启用/ }).waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
+  assert.equal(parse(fs.readFileSync(file,'utf8')).features.api_key_model_discovery, true);
   return { app, page, file, original, root, home, options };
 }
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
 import { init, addProvider, removeProvider, activate, readState, atomic } from '../src/store.js';
@@ -21,6 +21,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   fs.mkdirSync(codexHome);
   const { token } = init(root);
   const requests = [];
+  const codexVersion = spawnSync(process.env.SWITCH_TEST_CODEX, ['--version'], { encoding: 'utf8' }).stdout.trim().split(' ').at(-1);
   let rejectA = false;
   let toolTurn = false, toolIssued = false, finishToolResponse, signalTool;
   const toolReady = new Promise(resolve => { signalTool = resolve; });
@@ -102,7 +103,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/images/generations');
       assert.equal(JSON.parse(options.body).model, 'gpt-image-2');
       assert.equal(typeof options.headers.originator, 'string');
-      assert.match(options.headers['user-agent'], /0\.165\.0/);
+      assert.ok(options.headers['user-agent'].includes(codexVersion), 'the native image request preserves the installed Codex version');
       assert.equal(typeof options.headers['x-codex-image-turn-id'], 'string');
       assert.ok(options.headers['x-codex-image-turn-id'].length > 0, 'native image turn context survives subscription routing');
       return Response.json({ created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] });
@@ -156,11 +157,12 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
       child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
     });
   }
-  await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' } });
+  await call('initialize', { clientInfo: { name: 'switch_test', version: '0.1.0' }, capabilities: { experimentalApi: true } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
   const account = await call('account/read', { refreshToken: false });
   assert.equal(account.requiresOpenaiAuth, false, 'local routing must not inherit a subscription-only send gate');
   assert.equal(account.account, null, 'the selected API must not be represented as the native subscription account');
+  if (nativeAuth) await call('experimentalFeature/enablement/set', { enablement: { api_key_model_discovery: false } });
   const models = await call('model/list', { includeHidden: false });
   assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-sol', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
   assert.equal(models.data[0].displayName, 'GPT-6.1-Sol');

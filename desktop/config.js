@@ -39,6 +39,11 @@ function setting(text, table, key, value) {
   return result;
 }
 
+function sessionConfig(original, port, token, nativeAuth = false) {
+  // Desktop rollout defaults must not disable our explicitly configured catalog.
+  return setting(patchedConfig(original, port, token, nativeAuth), 'features', 'api_key_model_discovery', true);
+}
+
 function withNativeSettings(text) {
   for (const [table, key, value] of nativeSettings) text = setting(text, table, key, value);
   return text;
@@ -50,9 +55,10 @@ export function restoredText(current, record) {
   if (record.previous && same(parse(current).model_providers?.[provider] ?? null,
     parse(record.previous.installed).model_providers?.[provider] ?? null))
     return restoredText(current, { ...record, ...record.previous, previous: null });
-  if (record.nativeTools) {
+  if (record.nativeTools || record.modelDiscovery) {
     const before = parse(record.original), installed = parse(record.installed);
-    for (const [table, key] of nativeSettings) {
+    const managed = [...(record.modelDiscovery ? [['features', 'api_key_model_discovery']] : []), ...(record.nativeTools ? nativeSettings : [])];
+    for (const [table, key] of managed) {
       const now = parse(current), value = table ? now[table]?.[key] : now[key];
       if (same(value ?? null, (table ? installed[table]?.[key] : installed[key]) ?? null))
         current = setting(current, table, key, table ? before[table]?.[key] : before[key]);
@@ -165,9 +171,9 @@ export function syncSession(root, codexHome) {
     provider.type === 'account' && path.join(provider.accountHome, 'auth.json') === record.auth.sourceFile)) {
     const current = read(record.file), config = parse(record.installed).model_providers.easy_switch;
     const port = Number(new URL(config.base_url).port), token = config.http_headers['X-Easy-Switch-Token'];
-    const next = patchedConfig(restoredText(current, record), port, token);
+    const next = sessionConfig(restoredText(current, record), port, token);
     restoreAuth(record.auth);
-    const replacement = { ...record, installed: patchedConfig(record.original, port, token), nativeTools: false,
+    const replacement = { ...record, installed: sessionConfig(record.original, port, token), nativeTools: false,
       previous: { installed: record.installed, nativeTools: record.nativeTools } };
     delete replacement.auth;
     atomic(recordFile, replacement); writeText(record.file, next);
@@ -183,8 +189,8 @@ export function syncSession(root, codexHome) {
   const current = read(record.file), authFile = path.join(codexHome, 'auth.json');
   const config = parse(record.installed).model_providers.easy_switch;
   const port = Number(new URL(config.base_url).port), token = readState(root).token;
-  const installed = withNativeSettings(patchedConfig(record.original, port, token, true));
-  const next = withNativeSettings(patchedConfig(restoredText(current, record), port, token, true));
+  const installed = withNativeSettings(sessionConfig(record.original, port, token, true));
+  const next = withNativeSettings(sessionConfig(restoredText(current, record), port, token, true));
   const originalAuth = read(authFile);
   const auth = { ...selected.auth, auth_mode: 'chatgpt', OPENAI_API_KEY: null };
   const authRecord = { file: authFile, exists: fs.existsSync(authFile), original: originalAuth,
@@ -211,8 +217,8 @@ export function activateSession(root, codexHome, port, token) {
     const auth = JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'), 'utf8'));
     nativeAuth = auth.auth_mode !== 'apikey' && !auth.OPENAI_API_KEY && !!(auth.tokens?.access_token && auth.tokens?.account_id);
   } catch {}
-  const installed = nativeAuth ? withNativeSettings(patchedConfig(original, port, token, true)) : patchedConfig(original, port, token);
-  atomic(recordFile, { file, exists, original, installed, nativeTools: nativeAuth });
+  const installed = nativeAuth ? withNativeSettings(sessionConfig(original, port, token, true)) : sessionConfig(original, port, token);
+  atomic(recordFile, { file, exists, original, installed, nativeTools: nativeAuth, modelDiscovery: true });
   if ((fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '') !== original) {
     fs.rmSync(recordFile, { force: true });
     throw new Error('Codex configuration changed during startup. Retry.');
