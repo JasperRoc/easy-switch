@@ -82,7 +82,7 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, clientEnabled = () => true, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
@@ -90,7 +90,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
   const server = http.createServer(async (req, res) => {
-    if (req.url.startsWith('/claude/') || req.url.startsWith('/claude-desktop/')) return claude(req, res);
+    if (req.url.startsWith('/claude/') || req.url.startsWith('/claude-desktop/')) return clientEnabled('claude') ? claude(req, res) : error(res, 503, 'Claude routing is stopped. Reload the client to use its restored connection.');
     const abort = new AbortController();
     res.on('close', () => { if (!res.writableFinished) abort.abort(); });
     try {
@@ -100,6 +100,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ service: 'easy-switch', active: state.active }));
       }
+      if (!clientEnabled('codex')) return error(res, 503, 'Codex routing is stopped. Reload the client to use its restored connection.');
       const target = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && target.pathname === '/v1/models') {
         const result = await catalog.union(state, target.searchParams.get('client_version') || '0.165.0', abort.signal);

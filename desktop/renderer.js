@@ -1,6 +1,7 @@
 import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 import { releaseNotes } from './release-notes.js';
 import { claudeFamilies } from '../src/claude-models.js';
+import { planLabel } from '../src/plans.js';
 const $ = id => document.getElementById(id);
 const mappingFields = { ...Object.fromEntries(claudeFamilies.map(role => [role, `claude-${role}-model`])), default: 'claude-main-model', subagent: 'claude-agent-model' };
 function showMapping(mapping = {}) {
@@ -13,7 +14,7 @@ let catalogProvider = null, catalogResult = null, catalogLoading = false, catalo
 let catalogDraft = [], catalogMapping = {}, catalogCustom = false, catalogDirty = false, catalogDrag = null;
 let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
 let renderedState = '';
-let editingProvider = null;
+let editingProvider = null, settingsOpen = false;
 const resetAttempts = new Map();
 const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'clientHelp'].includes(key) ? 'claude_' + key : key, values)
   .replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
@@ -56,20 +57,20 @@ function icon(name) { const svg=document.createElementNS('http://www.w3.org/2000
 function quotaRing(data, tooltip) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
-  const plus = data.plan === 'plus';
+  const plus = data.plan === 'plus' || !!data.fiveHour && !!data.weekly && !['pro', 'prolite', 'promax'].includes(data.plan);
   for (const weekly of plus ? [false, true] : [true]) {
     const value = weekly ? data.weekly : data.fiveHour, label = t(weekly ? 'quotaWeek' : 'quotaFiveHour');
     const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
     let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
     if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
     const group = document.createElementNS(svg.namespaceURI, 'g');
-    group.setAttribute('class', `quota-segment${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
+    group.setAttribute('class', `quota-segment${value ? value.remaining === 0 ? ' exhausted' : '' : ' unknown'}${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
     group.setAttribute('role', 'img'); group.setAttribute('aria-label', description); group.setAttribute('tabindex', '0');
     for (const progress of [false, true]) {
       const shape = document.createElementNS(svg.namespaceURI, plus ? 'path' : 'circle');
       const attributes = plus ? { d: weekly ? 'M42.271 15.865 A20 20 0 1 1 5.729 15.865' : 'M7.820 12.244 A20 20 0 0 1 40.180 12.244' } : { cx: 24, cy: 24, r: 20, transform: 'rotate(-90 24 24)' };
       for (const [key, val] of Object.entries({ ...attributes, pathLength: 100, class: progress ? 'quota-progress' : 'quota-track' })) shape.setAttribute(key, val);
-      if (progress) { shape.setAttribute('stroke-dasharray', '100'); shape.setAttribute('stroke-dashoffset', value ? 100 - value.remaining : 100); }
+      if (progress) { if (!value || value.remaining === 0) shape.setAttribute('visibility', 'hidden'); shape.setAttribute('stroke-dasharray', '100'); shape.setAttribute('stroke-dashoffset', value ? 100 - value.remaining : 100); }
       group.append(shape);
     }
     const hit = group.firstChild.cloneNode(); hit.setAttribute('class', 'quota-hit'); group.append(hit);
@@ -80,7 +81,7 @@ function quotaRing(data, tooltip) {
     svg.append(group);
   }
   const center = document.createElementNS(svg.namespaceURI, 'g');
-  const balance = data.unlimited ? '∞' : data.credits !== null ? new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits) : null;
+  const balance = data.unlimited ? '∞' : Number.isFinite(data.credits) ? new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits) : null;
   const description = balance === null ? t('creditsNotProvided') : `${t('quotaCredits')}\n${balance}`;
   center.setAttribute('class', 'quota-center'); center.setAttribute('tabindex', '0');
   center.setAttribute('role', 'img'); center.setAttribute('aria-label', description);
@@ -141,8 +142,11 @@ function renderProviders() {
     handle.addEventListener('keydown', event => { if (!['ArrowUp','ArrowDown'].includes(event.key)) return; event.preventDefault(); const names = state.providers.map(item=>item.alias), next=index+(event.key==='ArrowUp'?-1:1); if(next<0 || next>=names.length)return; [names[index],names[next]]=[names[next],names[index]]; run('order',names).catch(()=>{}); });
     row.append(handle);
     const identity = node('div', null, 'identity');
-    const plan = provider.usage?.data?.plan;
-    identity.append(node('strong', provider.alias), node('small', provider.type === 'account' ? ['plus', 'pro'].includes(plan) ? `ChatGPT ${plan === 'plus' ? 'Plus' : 'Pro'}` : t('account') : provider.baseUrl)); row.append(identity);
+    const plan = provider.usage?.data?.plan || provider.plan, label = planLabel(plan);
+    const detail = node('small', provider.type === 'account' ? state.client !== 'claude' && label ? `ChatGPT ${label}` : t('account') : provider.baseUrl);
+    if (provider.type === 'account' && label) detail.title = t(provider.usage?.data?.plan ? 'planLive' : 'planCached');
+    if (provider.plan && provider.usage?.data?.plan && provider.plan !== provider.usage.data.plan) detail.title = t('planMismatch', { cached: planLabel(provider.plan), live: label });
+    identity.append(node('strong', provider.alias), detail); row.append(identity);
     if (provider.type === 'account' && state.client !== 'claude') {
       row.append(quotaDisplay(provider));
       const reset = button('', () => openResetCards(provider.alias), 'icon-button reset-quota'); reset.append(icon('refresh'));
@@ -217,13 +221,19 @@ function refresh(nextState) {
     state = nextState || await call('state');
     const signature = JSON.stringify(state);
     if (signature === renderedState) return;
-    renderedState = signature; appearance();
-    for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(item.dataset.client === (state.client || 'codex')));
+    renderedState = signature; appearance(); showSettings(settingsOpen);
+    for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(!settingsOpen && item.dataset.client === (state.client || 'codex')));
+    for (const name of ['codex', 'claude']) {
+      const route = state.clients?.[name] || { running: state.running, active: name === (state.client || 'codex') ? state.active : null };
+      const item = document.querySelector(`[data-client-item="${name}"]`), control = document.querySelector(`[data-routing-client="${name}"]`);
+      item.classList.toggle('selected', !settingsOpen && name === (state.client || 'codex'));
+      const provider = item.querySelector('.client-provider'); provider.textContent = route.active || '—'; provider.title = route.active || t('noProvider');
+      control.setAttribute('aria-checked', String(route.running));
+      control.setAttribute('aria-label', `${name === 'codex' ? 'Codex' : 'Claude'} · ${t(route.running ? 'stopRouting' : 'startRouting')}`);
+      control.title = control.getAttribute('aria-label');
+    }
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
-    $('routing-toggle').setAttribute('aria-checked', String(state.running));
-    $('routing-toggle').setAttribute('aria-label', t(state.running ? 'stopRouting' : 'startRouting'));
-    $('routing-toggle').title = t(state.running ? 'stopRouting' : 'startRouting');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
@@ -432,7 +442,19 @@ $('provider-form').addEventListener('submit', async event => {
   finally { renderLogin(); }
 });
 $('provider-alias').addEventListener('input', renderLogin);
+function showSettings(open) {
+  settingsOpen = open;
+  document.querySelector('.workspace-title h1').textContent = t(open ? 'settings' : 'yourProviders');
+  document.querySelector('.workspace-title p').textContent = t(open ? 'settingsHelp' : 'clientHelp');
+  $('providers-page').hidden = open; $('settings-page').hidden = !open;
+  $('settings').setAttribute('aria-pressed', String(open));
+  document.querySelector('.workspace-route').hidden = open;
+  for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(!open && item.dataset.client === state.client));
+  for (const item of document.querySelectorAll('[data-client-item]')) item.classList.toggle('selected', !open && item.dataset.clientItem === state.client);
+}
+$('settings').addEventListener('click', () => showSettings(true));
 for (const item of document.querySelectorAll('[data-client]')) item.addEventListener('click', async () => {
+  showSettings(false);
   if (item.dataset.client === state.client) return;
   $('add-dialog').close(); $('reset-dialog').close(); editingProvider = null; providerMode = 'account';
   $('models-dialog').close(); catalogProvider = null; catalogRequest++;
@@ -461,9 +483,11 @@ for(const item of document.querySelectorAll('[data-language],button[data-theme]'
 document.addEventListener('click', event => { if (!event.target.closest('.icon-control')) closeMenus(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
 $('autostart').addEventListener('change', async event => { try { await run('autostart', event.target.checked); } catch {} });
-$('routing-toggle').addEventListener('click', async () => {
-  if (state.running && state.activeRequests && !confirm(t('stopConfirm'))) return;
-  try { await run(state.running ? 'stop' : 'start'); } catch {}
+for (const control of document.querySelectorAll('[data-routing-client]')) control.addEventListener('click', async () => {
+  const client = control.dataset.routingClient, route = state.clients?.[client] || { running: state.running, activeRequests: state.activeRequests };
+  if (route.running && route.activeRequests && !confirm(t('stopConfirm'))) return;
+  control.disabled = true;
+  try { await run('routing', { client, enabled: !route.running }); } catch {} finally { control.disabled = false; }
 });
 $('open-login').addEventListener('click', () => call('open-login').catch(showError));
 function formattedBytes(value) { return `${(value / 1024 ** 2).toLocaleString(language, { maximumFractionDigits: 1 })} MB`; }
@@ -521,5 +545,5 @@ $('update-action').addEventListener('click',async()=>{try{await call(state.updat
 $('star').addEventListener('click',()=>call('star').catch(showError));
 window.easySwitch.onChange(nextState => { if (!document.hidden) refresh(nextState); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-window.easySwitch.onTab(tab => { if (tab === 'updates') showUpdates(); });
+window.easySwitch.onTab(tab => { if (tab === 'updates') showUpdates(); else showSettings(tab === 'settings'); });
 refresh();

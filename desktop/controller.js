@@ -13,6 +13,8 @@ import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment } from './n
 import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
 import { existingProvider } from './import.js';
 import { SubscriptionUsage } from './usage.js';
+import { planLabel } from '../src/plans.js';
+import { syncNativeCredentials } from './config.js';
 import { codexResetCredits } from './reset-credits.js';
 
 export class DesktopController {
@@ -57,7 +59,7 @@ export class DesktopController {
   }
   setPreferences(patch) {
     for (const [key, value] of Object.entries(patch)) {
-      const valid = key === 'client' ? ['codex', 'claude'].includes(value) : key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : key === 'startAtLogin' && typeof value === 'boolean';
+      const valid = key === 'routing' ? value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(client => ['codex', 'claude'].includes(client) && typeof value[client] === 'boolean') : key === 'client' ? ['codex', 'claude'].includes(value) : key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : key === 'startAtLogin' && typeof value === 'boolean';
       if (!valid) throw new Error('Invalid desktop preference.');
     }
     const current = this.preferences();
@@ -68,6 +70,7 @@ export class DesktopController {
     process.env.SWITCH_CODEX_BIN = this.binary;
     await this.configureNetwork();
     this.usage.closed = false;
+    Object.assign(this.runtime.routes, { codex: true, claude: true }, this.preferences().routing);
     await this.runtime.start();
   }
   resetCards(alias) {
@@ -96,28 +99,52 @@ export class DesktopController {
       return { ...result, cards };
     } finally { this.resetPending.delete(alias); }
   }
+  async setRouting({ client, enabled }) {
+    if (!['codex', 'claude'].includes(client) || typeof enabled !== 'boolean') throw new Error('Invalid client routing state.');
+    const routing = { codex: true, claude: true, ...this.preferences().routing };
+    await this.runtime.setClientRouting(client, enabled);
+    try { this.setPreferences({ routing: { ...this.runtime.routes } }); }
+    catch (error) { await this.runtime.setClientRouting(client, routing[client]); throw error; }
+    if (client === 'codex') { this.usage.closed = !enabled; if (!enabled) this.usage.setPaused(true); else this.usage.setPaused(false); }
+    return this.snapshot();
+  }
   async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
   snapshot({ usage: includeUsage = true } = {}) {
     const preferences = this.preferences();
-    const client = this.client, state = init(this.providerRoot);
-    const usage = client === 'codex' && this.runtime.active && includeUsage ? this.usage.snapshot(state) : {};
+    const client = this.client;
+    if (includeUsage && client === 'codex' && this.runtime.clientEnabled('codex')) syncNativeCredentials(this.root, this.codexHome);
+    const state = init(this.providerRoot);
+    const usage = client === 'codex' && this.runtime.clientEnabled('codex') && includeUsage ? this.usage.snapshot(state) : {};
     let freeImages = false;
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
-      let needsLogin = false;
+      let needsLogin = false, plan = null;
       if (provider.type === 'account') {
         try { const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider); needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth); if (client === 'codex' && !imageEligible(auth)) freeImages = true; }
         catch { needsLogin = true; }
+        if (client === 'codex') try {
+          const auth = accountAuth(provider);
+          for (const token of [auth.tokens.id_token, auth.tokens.access_token]) {
+            try {
+              const value = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'))['https://api.openai.com/auth']?.chatgpt_plan_type;
+              if (planLabel(value)) { plan = value.toLowerCase(); break; }
+            } catch {}
+          }
+        } catch {}
       }
-      return { alias, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null,
+      return { alias, plan, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null,
         modelCatalog: provider.modelCatalog ?? null,
         ...(client === 'claude' && provider.type === 'api' ? { claudeModels: provider.claudeModels || null } : {}) };
     });
     const login = this.currentLogin;
-    return { client, running: !!this.runtime.server && this.runtime.active, providers, active: state.active,
+    const clients = Object.fromEntries(['codex', 'claude'].map(name => {
+      const saved = name === client ? state : init(name === 'claude' ? path.join(this.root, 'claude') : this.root);
+      return [name, { running: this.runtime.clientEnabled(name), active: saved.active, activeRequests: this.runtime.requests[name].size }];
+    }));
+    return { client, clients, running: this.runtime.clientEnabled(client), providers, active: state.active,
       claudeDesktop: client === 'claude' && fs.existsSync(path.join(this.root, 'claude-desktop-session.json')),
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.active && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.clientEnabled('codex') && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.runtime.syncClaude(); return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }

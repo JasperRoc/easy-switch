@@ -33,13 +33,13 @@ function snapshot(details = activity?.visible() ?? true) { const preferences = c
 function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
   uiClient = state.client || 'codex';
-  const signature = JSON.stringify([state.client, state.running, state.active, state.providers.map(({ alias, type, active, needsLogin, revision }) => ({ alias, type, active, needsLogin, revision })), state.loginItem, state.lastFailover, uiLanguage]);
+  const signature = JSON.stringify([state.client, state.running, Object.entries(state.clients || {}).map(([name, item]) => [name, item.running, item.active]), state.active, state.providers.map(({ alias, type, active, needsLogin, revision }) => ({ alias, type, active, needsLogin, revision })), state.loginItem, state.lastFailover, uiLanguage]);
   if (signature === trayState) return;
   trayState = signature;
   controller.runtime.syncClaude();
   tray.setToolTip(`easy-switch · ${state.client === 'claude' ? 'Claude' : 'Codex'} · ${state.active || t('addProvider')}`);
   trayMenu = Menu.buildFromTemplate([
-    ...['codex', 'claude'].map(client => ({ label: client === 'codex' ? 'Codex' : 'Claude', type: 'radio', checked: state.client === client,
+    ...['codex', 'claude'].map(client => ({ label: `${client === 'codex' ? 'Codex' : 'Claude'} · ${state.clients?.[client]?.active || t('noProvider')}`, type: 'radio', checked: state.client === client,
       click: () => { controller.clientSelection(client); updateTray(); window?.webContents.send('easy-switch:changed'); } })),
     { type: 'separator' },
     { label: state.running ? t('trayActive', { alias: state.active || t('noProvider') }) : t('trayStopped'), enabled: false },
@@ -48,6 +48,7 @@ function updateTray(state = snapshot(false)) {
       click: () => { try { controller.switchProvider(provider.alias); updateTray(); window?.webContents.send('easy-switch:changed'); } catch (error) { report(error); } } })),
     { type: 'separator' },
     { label: t('traySettings'), click: () => showWindow('providers') },
+    { label: t('settings'), click: () => showWindow('settings') },
     { label: t('autoStart'), type: 'checkbox', checked: state.loginItem, click: item => { try { setAutoStart(item.checked); } catch (error) { report(error); } } },
     { label: t('updates'), click: () => showWindow('updates') },
     { type: 'separator' }, { label: t('quit'), click: () => app.quit() },
@@ -124,6 +125,7 @@ async function boot() {
         case 'consume-reset': return await controller.consumeReset(payload);
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
         case 'stop': await controller.stop(); result = snapshot(); break;
+        case 'routing': await controller.setRouting(payload); startupError = ''; result = snapshot(); break;
         case 'preferences':
           controller.setPreferences(payload); uiLanguage = i18n.normalizeLanguage(controller.preferences().language || app.getLocale());
           nativeTheme.themeSource = controller.preferences().theme || 'system';
@@ -161,7 +163,7 @@ async function boot() {
   await window.loadFile(path.join(__dirname, 'index.html'));
   updateTray(); updater.confirmLaunch();
   nativeTheme.on('updated', () => { if (activity?.visible()) refreshDesktop(true); });
-  activity = desktopActivity({ window, powerMonitor, foreground: visible => controller.usage.setPaused(!visible), refresh: visible => {
+  activity = desktopActivity({ window, powerMonitor, foreground: visible => controller.usage.setPaused(!visible || !controller.runtime.clientEnabled('codex')), refresh: visible => {
     try { refreshDesktop(visible); } catch { /* A transient metadata read is retried on the next pass. */ }
   } });
   if (app.isPackaged && !process.env.SWITCH_TEST_DESKTOP) {

@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
 import { DesktopRuntime } from '../desktop/runtime.js';
-import { restoreSession, restoredText } from '../desktop/config.js';
+import { restoreSession, restoredText, syncNativeCredentials } from '../desktop/config.js';
 import { parse } from 'smol-toml';
 import { addProvider, removeProvider, atomic, init } from '../src/store.js';
 
@@ -192,4 +192,59 @@ test('an occupied port does not change Codex configuration', async t => {
   await assert.rejects(second.runtime.start(), { code:'EADDRINUSE' });
   assert.equal(fs.readFileSync(second.file, 'utf8'), second.original);
   assert.equal(fs.existsSync(second.runtime.recordFile), false);
+});
+
+
+test('client routing switches independently restore one client while preserving the other and block its stale route', async t => {
+  const { runtime, root, codexHome, file, original } = await setup(t);
+  const claudeHome = path.join(root, 'claude-home'); runtime.claudeHome = claudeHome;
+  init(path.join(root, 'claude')); addProvider('claude-api', { type: 'api', baseUrl: 'https://claude.example', apiKey: 'fixture' }, path.join(root, 'claude'));
+  await runtime.start();
+  const claudeFile = path.join(claudeHome, 'settings.json');
+  assert.ok(fs.existsSync(claudeFile));
+  const server = runtime.server, port = runtime.port;
+  await runtime.setClientRouting('codex', false);
+  assert.equal(runtime.server, server); assert.equal(runtime.clientEnabled('claude'), true);
+  assert.equal(fs.readFileSync(file, 'utf8'), original); assert.ok(fs.existsSync(claudeFile));
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const denied = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(denied.status, 503); await denied.text();
+  await runtime.setClientRouting('codex', true); assert.equal(runtime.server, server); assert.equal(runtime.clientEnabled('codex'), true);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).model_provider, 'easy_switch');
+  await runtime.setClientRouting('claude', false);
+  assert.equal(fs.existsSync(claudeFile), false); assert.equal(runtime.clientEnabled('codex'), true);
+  await runtime.setClientRouting('codex', false); assert.equal(runtime.server, null); assert.equal(runtime.active, false);
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+  await runtime.setClientRouting('claude', true); assert.equal(runtime.clientEnabled('claude'), true); assert.equal(runtime.clientEnabled('codex'), false);
+  assert.equal(fs.readFileSync(file, 'utf8'), original); assert.ok(fs.existsSync(claudeFile));
+});
+
+
+test('quota credential synchronization copies a newer native login only for the same account and subject', async t => {
+  const { root, codexHome } = await setup(t); init(root);
+  const auth = (person, account, timestamp, token) => ({ auth_mode: 'chatgpt', last_refresh: timestamp, tokens: { access_token: token,
+    id_token: 'fixture.' + Buffer.from(JSON.stringify({ sub: person })).toString('base64url') + '.fixture', account_id: account } });
+  const original = auth('person', 'account', '2026-01-01T00:00:00Z', 'old');
+  const accountHome = path.join(root, 'accounts', 'saved'); atomic(path.join(accountHome, 'auth.json'), original);
+  addProvider('saved', { type: 'account', accountHome }, root);
+  const file = path.join(codexHome, 'auth.json');
+  for (const candidate of [auth('other', 'account', '2026-01-03T00:00:00Z', 'other'), auth('person', 'other', '2026-01-03T00:00:00Z', 'other'), auth('person', 'account', '2025-01-01T00:00:00Z', 'older')]) {
+    atomic(file, candidate); syncNativeCredentials(root, codexHome);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountHome, 'auth.json'))), original);
+  }
+  const refreshed = auth('person', 'account', '2026-01-04T00:00:00Z', 'fresh');
+  atomic(file, refreshed); syncNativeCredentials(root, codexHome);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountHome, 'auth.json'))), refreshed);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), refreshed);
+});
+
+
+test('startup with both routes disabled still restores a recovery record without enabling a client', async t => {
+  const { runtime, root, codexHome, file, original } = await setup(t);
+  const { activateSession } = await import('../desktop/config.js');
+  const { token } = init(root); activateSession(root, codexHome, 12345, token);
+  runtime.routes = { codex: false, claude: false };
+  await runtime.start();
+  assert.equal(runtime.server, null); assert.equal(fs.readFileSync(file, 'utf8'), original);
+  assert.equal(fs.existsSync(runtime.recordFile), false);
 });

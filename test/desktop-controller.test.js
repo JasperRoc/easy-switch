@@ -199,3 +199,13 @@ test('desktop automatically applies detected system proxies and honors an explic
   await controller.configureNetwork();
   assert.equal(controller.network().httpsProxy, ''); assert.equal(process.env.HTTPS_PROXY, '');
 });
+
+
+test('account plan is visible from saved sign-in before quota succeeds, without exposing claims or tokens', t => {
+  const controller = setup(t), accountHome = path.join(controller.root, 'accounts', 'plus');
+  const id = 'fixture.' + Buffer.from(JSON.stringify({ sub: 'private-person', 'https://api.openai.com/auth': { chatgpt_plan_type: 'plus' } })).toString('base64url') + '.fixture';
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-token', id_token: id, account_id: 'private-account' } });
+  addProvider('plus', { type: 'account', accountHome }, controller.root);
+  const result = controller.snapshot({ usage: false });
+  assert.equal(result.providers[0].plan, 'plus'); assert.doesNotMatch(JSON.stringify(result), /private-|fixture/);
+});

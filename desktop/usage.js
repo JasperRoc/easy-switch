@@ -11,7 +11,7 @@ export function normalizeUsage(payload, now = Date.now()) {
   const window = weekly => {
     const item = windows.find(item => {
       const seconds = number(item.limit_window_seconds);
-      return seconds > 0 && (weekly ? seconds >= 86400 : seconds < 86400);
+      return seconds > 0 && (weekly ? seconds >= 6 * 86400 && seconds <= 8 * 86400 : seconds < 86400);
     });
     const used = number(item?.used_percent);
     if (!item || used === null) return null;
@@ -21,7 +21,7 @@ export function normalizeUsage(payload, now = Date.now()) {
   };
   const balance = number(payload.credits?.balance);
   return { plan: payload.plan_type.toLowerCase(), fiveHour: window(false), weekly: window(true),
-    credits: balance !== null && balance >= 0 ? balance : null, unlimited: payload.credits?.unlimited === true };
+    credits: balance !== null && balance >= 0 ? balance : payload.credits?.has_credits === false && payload.credits?.unlimited !== true ? 0 : null, unlimited: payload.credits?.unlimited === true };
 }
 
 // Poll independently of inference. Only normalized limits cross the renderer IPC.

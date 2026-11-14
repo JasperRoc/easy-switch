@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SubscriptionUsage, normalizeUsage } from '../desktop/usage.js';
+import { planLabel } from '../src/plans.js';
 import { atomic } from '../src/store.js';
 
 const payload = (plan = 'plus') => ({ plan_type: plan, rate_limit: {
@@ -92,4 +93,27 @@ test('repeated quota failures back off instead of launching authentication helpe
   clock = 120000; usage.snapshot(state); await done(usage); assert.equal(calls, 2);
   clock = 180000; usage.snapshot(state); await done(usage); assert.equal(calls, 2);
   clock = 360000; usage.snapshot(state); await done(usage); assert.equal(calls, 3);
+});
+
+
+test('zero quota and an explicit no-credits balance remain successful data, while missing fields stay unknown', async t => {
+  const input = payload(); input.rate_limit.primary_window.used_percent = 100; input.rate_limit.secondary_window.used_percent = 100;
+  input.credits = { has_credits: false, balance: null, unlimited: false };
+  const data = normalizeUsage(input);
+  assert.equal(data.fiveHour.remaining, 0); assert.equal(data.weekly.remaining, 0); assert.equal(data.credits, 0);
+  assert.equal(normalizeUsage({ plan_type: 'plus', credits: { has_credits: true, balance: null } }).credits, null);
+  const { usage, state } = setup(t, { fetchImpl: async () => Response.json(input) });
+  usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.status, 'ready'); assert.equal(usage.snapshot(state).account.data.credits, 0);
+});
+
+test('quota windows use their actual duration instead of treating monthly Free quota as weekly', () => {
+  const result = normalizeUsage({ plan_type: 'free', rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 2592000, reset_after_seconds: 60 } } });
+  assert.equal(result.weekly, null); assert.equal(result.fiveHour, null);
+});
+
+
+test('account plan identifiers preserve Free, Plus and the three Pro tiers', () => {
+  for (const [id, label] of [['free', 'Free'], ['plus', 'Plus'], ['prolite', 'Pro 100'], ['pro', 'Pro 200'], ['promax', 'Pro 500']]) assert.equal(planLabel(id), label);
+  assert.equal(planLabel(null), null); assert.equal(planLabel('unknown'), null);
 });

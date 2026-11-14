@@ -12,6 +12,7 @@ import { addProvider, init } from '../src/store.js';
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
 const project = fileURLToPath(new URL('..', import.meta.url));
 const executable = process.env.SWITCH_TEST_DESKTOP_EXE;
+async function providersPage(page) { const client = await page.evaluate(async () => (await window.easySwitch.call('state')).client || 'codex'); await page.click(`[data-client="${client}"]`); }
 async function launch(t, extraEnv = {}, initialConfig, prepare) {
   const { _electron } = await import('playwright-core');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-electron-'));
@@ -46,19 +47,19 @@ test('an unreadable desktop.json cannot block startup; the warning clears when f
   const file = path.join(root, 'desktop.json');
   await page.locator('#preferences-warning').filter({ hasText: 'EACCES' }).waitFor();
   await page.locator('.provider strong').filter({ hasText: 'saved' }).waitFor();
-  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await page.locator('#error').filter({ hasText: 'desktop.json' }).waitFor();
   assert.equal(fs.statSync(file).mode & 0o777, 0);
   fs.chmodSync(file, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'en', theme: 'light' });
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').waitFor({ state: 'hidden' });
-  await page.click('#language-button'); await page.click('[data-language="en"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
   fs.chmodSync(file, 0);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').filter({ hasText: 'Desktop preferences could not be read' }).waitFor();
   fs.chmodSync(file, 0o600);
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   fs.chmodSync(file, 0);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').filter({ hasText: '无法读取界面设置' }).waitFor();
@@ -79,7 +80,7 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(await page.locator('#routing-toggle').getAttribute('role'), 'switch');
   assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'true');
   const layout = await page.evaluate(() => {
-    const status = document.getElementById('status').getBoundingClientRect(), control = document.getElementById('routing-toggle').getBoundingClientRect();
+    const status = document.querySelector('[data-client-item=codex] .client-select').getBoundingClientRect(), control = document.getElementById('routing-toggle').getBoundingClientRect();
     return { statusCenter: status.y + status.height / 2, controlCenter: control.y + control.height / 2 };
   });
   assert.ok(Math.abs(layout.statusCenter - layout.controlCenter) < 1, 'route status and switch share a center line');
@@ -102,14 +103,14 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal((await page.evaluate(() => window.easySwitch.call('state'))).active, 'personal');
   assert.match(await page.locator('#models-provider').innerText(), /inactive/);
   await page.click('#close-models');
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
-  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await page.locator('.provider[data-alias="inactive"] .query-models').click();
   await page.locator('#models-status').filter({ hasText: '目录已刷新 · 5 个模型' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-models-dark-zh.png') });
   await page.click('#close-models');
-  await page.click('#language-button'); await page.click('[data-language="en"]');
-  await page.click('#theme-button'); await page.click('[data-theme="light"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="light"]'); await providersPage(page);
   const state = await page.evaluate(() => window.easySwitch.call('state'));
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
   assert.equal(await page.locator('nav, #network, #network-form').count(), 0);
@@ -206,10 +207,10 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.deepEqual(catalog.data.map(item => item.display_name), ['deepseek-first', 'deepseek-helper', 'deepseek-second']);
   assert.ok(catalog.data.every(item => item.description.startsWith('easy-switch · ')));
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('#claude-desktop-hint').filter({ hasText: '已接入 Claude Desktop' }).waitFor();
   await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-light.png') });
-  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-dark.png') });
   await page.evaluate(() => window.easySwitch.call('stop'));
@@ -247,7 +248,7 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   await page.locator('.edit-provider').click();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-en.png') });
   await page.click('#close-dialog');
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('.edit-provider').click();
   assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
   assert.match(await page.locator('#claude-mapping [data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
@@ -403,7 +404,7 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   await plus.locator('.quota-segment.weekly').focus();
   await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
   await plus.locator('.quota-segment.weekly').evaluate(element => element.blur());
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await credits.locator('.quota-center').focus(); await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
   await credits.locator('.quota-center').evaluate(element => element.blur());
   await credits.locator('.quota-center').hover();
@@ -423,7 +424,7 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
   await page.mouse.move(100, 100);
-  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await page.screenshot({ path: path.join(folder, 'quota-dark.png') });
   await app.evaluate(({ BrowserWindow }) => {
@@ -438,9 +439,9 @@ test('subscription quota rings, purchased credits, stale data and image setup no
     BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
   });
   await page.locator('#native-images').filter({ hasText: 'Free 账号无法启用' }).waitFor();
-  await page.click('#language-button'); await page.click('[data-language="en"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
   await page.locator('#native-images').filter({ hasText: 'Free accounts cannot enable' }).waitFor();
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await plus.locator('.reset-quota').click();
   await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();
   assert.equal(await page.locator('#reset-confirm').isDisabled(), true, 'a card must be chosen explicitly');
@@ -490,9 +491,9 @@ test('Electron recovery helper restores both clients after the main process is k
 
 test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {
   const { app, page, root, options } = await launch(t);
-  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('#add-subscription').filter({hasText:'添加订阅'}).waitFor();
-  await page.click('#theme-button'); await page.click('button[data-theme="dark"]');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
   await page.click('#add-subscription');
@@ -505,9 +506,9 @@ test('desktop language and glass themes update live and persist across applicati
   assert.match(await page.locator('.glass').first().evaluate(element=>getComputedStyle(element).backdropFilter), /blur/);
   const folder=path.join(project,'.desktop-test'); fs.mkdirSync(folder,{recursive:true});
   await page.screenshot({path:path.join(folder,'ocean-dark-zh.png')});
-  await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
   await page.screenshot({path:path.join(folder,'ocean-light-zh.png')});
-  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'desktop.json'))), {language:'zh-CN',theme:'dark'});
   await app.close();
   const {_electron}=await import('playwright-core'); const reopened=await _electron.launch(options);
@@ -516,7 +517,7 @@ test('desktop language and glass themes update live and persist across applicati
     await second.locator('#status').filter({hasText:'路由已启用'}).waitFor();
     assert.equal(await second.locator('html').getAttribute('lang'),'zh-CN');
     assert.equal(await second.locator('html').getAttribute('data-theme'),'dark');
-    await second.click('#language-button'); await second.click('[data-language="en"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
+    await second.click('#settings'); await second.click('#language-button'); await second.click('[data-language="en"]'); await second.click('[data-client="codex"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
   } finally {await reopened.close();}
 });
 test('grip dragging, deletion, explicit import and in-app release review work without opening Releases', {skip:!enabled,timeout:60000},async t=>{
@@ -548,10 +549,10 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
  await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import current/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
 
- await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
- await page.click('#close-update'); await page.click('#star');
+ await page.click('#settings'); await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
+ await page.click('#close-update'); await providersPage(page); await page.click('#settings'); await page.click('#star'); await providersPage(page);
  const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'liquid-light.png')});
- await page.click('#theme-button');await page.click('button[data-theme="dark"]');await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
+ await page.click('#settings'); await page.click('#theme-button');await page.click('button[data-theme="dark"]'); await providersPage(page);await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
 });
 
 test('subscription verification stays in its dialog and disappears after approval', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
@@ -604,7 +605,7 @@ test('API import previews its type, close icons center, and model refresh confir
   const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'provider-models.png') });
   await page.click('#close-models');
   assert.equal(await page.locator('[data-tab="network"], #proxy-url, #no-proxy').count(), 0);
-  await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
+  await page.click('#settings'); await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
 });
 
 test('desktop localizes structured update notes', { skip: !enabled, timeout: 30000 }, async t => {
@@ -624,11 +625,11 @@ test('desktop localizes structured update notes', { skip: !enabled, timeout: 300
   const uiState = { running: true, providers: [], active: 'demo', version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform,
     update: { phase: 'available', version: '0.4.4', date: '2026-10-31T00:00:00Z', size: 1024 ** 2 } };
   await app.evaluate((_electron, state) => { globalThis.easySwitchTestState = { ...state, update: { ...state.update, notes: globalThis.easySwitchTestNotes } }; }, uiState);
-  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
+  await page.click('#settings'); await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
   assert.equal(await page.locator('#update-notes li strong').innerText(), 'session');
   await page.screenshot({ path: path.join(folder, 'update-en.png') });
-  await page.click('#close-update'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
-  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
+  await page.click('#close-update'); await providersPage(page); await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#settings'); await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
   assert.equal((await page.locator('#update-notes').innerText()).includes('Switch a single'), false);
   assert.equal((await page.locator('#update-notes').innerText()).includes('<!--'), false);
   await page.screenshot({ path: path.join(folder, 'update-zh.png') });
@@ -637,4 +638,68 @@ test('desktop localizes structured update notes', { skip: !enabled, timeout: 300
   assert.equal(await page.locator('#update-warning').isVisible(), false); assert.equal(await page.locator('#update-changes').isVisible(), false);
   assert.equal((await page.locator('#update-status').innerText()).includes('最新版本'), false);
   await page.screenshot({ path: path.join(folder, 'update-current.png') });
+});
+
+
+test('sidebar switches each client independently, remembers routing choices and keeps only Settings at the bottom', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page, root, home, options } = await launch(t);
+  await page.evaluate(() => window.easySwitch.call('add-api', { alias: 'codex-main', url: 'https://codex.example/v1', key: 'fixture' }));
+  await page.click('[data-client="claude"]');
+  await page.evaluate(() => window.easySwitch.call('add-api', { alias: 'claude-main', url: 'https://claude.example', key: 'fixture' }));
+  await page.locator('[data-client-provider="claude"]').filter({ hasText: 'claude-main' }).waitFor();
+  assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'codex-main');
+  assert.equal(await page.locator('[data-client="codex"]').innerText(), 'codex-main');
+  assert.equal(await page.locator('[data-client="claude"]').innerText(), 'claude-main');
+  assert.equal(await page.locator('footer').count(), 0);
+  const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
+  assert.ok(fs.existsSync(claudeFile));
+  await page.click('#routing-toggle');
+  await page.locator('#routing-toggle[aria-checked="false"]').waitFor();
+  assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'true');
+  assert.equal(parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).model_provider, undefined);
+  assert.ok(fs.existsSync(claudeFile));
+  await page.click('#claude-routing-toggle');
+  await page.locator('#claude-routing-toggle[aria-checked="false"]').waitFor();
+  assert.equal(fs.existsSync(claudeFile), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'desktop.json'))).routing, { codex: false, claude: false });
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="true"]').waitFor();
+  assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
+  await page.click('#settings'); await page.locator('#settings-page').waitFor();
+  assert.equal(await page.locator('#providers-page').isVisible(), false);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-settings-0.5.16-en.png'), animations: 'disabled' });
+  await page.click('[data-client="codex"]'); await page.locator('#providers-page').waitFor();
+  await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-providers-0.5.16-en.png'), animations: 'disabled' });
+});
+
+test('zero quota renders empty rings and zero credits normally; plan tiers and unknown values are distinct', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page } = await launch(t);
+  const window = { remaining: 0, resetsAt: Date.now() + 100000 };
+  const accounts = ['plus', 'prolite', 'pro', 'promax', 'free'].map(plan => ({ alias: plan, type: 'account', plan, usage: { status: 'ready', fetchedAt: Date.now(), data: { plan, fiveHour: window, weekly: window, credits: 0, unlimited: false } } }));
+  accounts.push({ alias: 'unknown', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: null, weekly: null, credits: null } } });
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
+    powerMonitor.emit('lock-screen');
+    const state = { client: 'codex', running: true, active: 'plus', providers, language: 'en', theme: 'light', dark: false, update: { phase: 'idle' } };
+    ipcMain.removeHandler('easy-switch:call'); ipcMain.handle('easy-switch:call', (_event, action, payload) => { if (action === 'preferences') { Object.assign(state, payload); state.dark = state.theme === 'dark'; } return state; });
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed', state);
+  }, accounts);
+  for (const [alias, label] of [['plus','Plus'], ['prolite','Pro 100'], ['pro','Pro 200'], ['promax','Pro 500'], ['free','Free']]) {
+    const row = page.locator(`.provider[data-alias="${alias}"]`);
+    await row.locator('.identity small').filter({ hasText: 'ChatGPT ' + label }).waitFor();
+    assert.equal(await row.locator('.quota.stale, .quota-message').count(), 0);
+    assert.match(await row.locator('.quota-center').getAttribute('aria-label'), /Remaining credits\n0$/);
+    assert.equal(await row.locator('.quota-progress[visibility="hidden"]').count(), ['plus', 'free'].includes(alias) ? 2 : 1);
+  }
+  const plus = page.locator('[data-alias="plus"]');
+  assert.equal(await plus.locator('.quota-segment').count(), 2);
+  await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: 'Remaining credits\n0' }).waitFor();
+  await plus.locator('.quota-center').evaluate(element => element.blur());
+  const unknown = page.locator('[data-alias="unknown"]');
+  assert.equal(await unknown.locator('.quota-segment.unknown').count(), 2);
+  assert.match(await unknown.locator('.quota-center').getAttribute('aria-label'), /does not mean.*failed/);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.16-en.png'), animations: 'disabled' });
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.16-zh-dark.png'), animations: 'disabled' });
 });

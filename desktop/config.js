@@ -137,6 +137,24 @@ function subscription(root) {
   }
 }
 
+// Reuse a native refresh only for the same account and subject, and only when newer.
+export function syncNativeCredentials(root, codexHome) {
+  let native;
+  try { native = JSON.parse(read(path.join(codexHome, 'auth.json'))); } catch { return; }
+  if (native.auth_mode === 'apikey' || native.OPENAI_API_KEY || !native.tokens?.access_token || !native.tokens.account_id || !subject(native)) return;
+  const refreshedAt = Date.parse(native.last_refresh);
+  if (!Number.isFinite(refreshedAt)) return;
+  for (const provider of Object.values(readState(root).providers)) {
+    if (provider.type !== 'account') continue;
+    try {
+      const file = path.join(provider.accountHome, 'auth.json'), original = read(file), saved = JSON.parse(original);
+      if (saved.tokens?.account_id !== native.tokens.account_id || subject(saved) !== subject(native) ||
+          refreshedAt <= (Date.parse(saved.last_refresh) || 0) || native.tokens.access_token === saved.tokens.access_token) continue;
+      if (read(file) === original) atomic(file, native);
+    } catch { /* Incomplete and concurrently removed account copies remain untouched. */ }
+  }
+}
+
 // Adding the first subscription also enables client tools; provider switching
 // continues to happen inside the proxy and never replaces a running turn.
 export function syncSession(root, codexHome) {

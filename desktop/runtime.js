@@ -40,6 +40,8 @@ export class DesktopRuntime {
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
+    this.routes = { codex: true, claude: true };
+    this.requests = { codex: new Set(), claude: new Set() };
   }
   transition(action) {
     const result = this.pending.then(action);
@@ -48,9 +50,30 @@ export class DesktopRuntime {
   }
   start() { return this.transition(() => this.startRouting()); }
   stop() { return this.transition(() => this.stopRouting()); }
-  syncTools() { if (this.active) this.imageTools = syncSession(this.root, this.codexHome); }
+  clientEnabled(client) { return this.active && this.routes[client] !== false; }
+  setClientRouting(client, enabled) {
+    return this.transition(async () => {
+      if (!['codex', 'claude'].includes(client) || typeof enabled !== 'boolean') throw new Error('Invalid client routing state.');
+      if (enabled === this.clientEnabled(client) && (this.active || !enabled)) { this.routes[client] = enabled; return; }
+      if (!enabled) {
+        if (client === 'codex') { restoreSession(this.recordFile); this.imageTools = false; }
+        else { restoreClaude(path.join(this.root, 'claude-session.json')); restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json')); }
+        this.routes[client] = false;
+        for (const response of this.requests[client]) response.destroy();
+        if (!Object.values(this.routes).some(Boolean)) await this.stopRouting();
+        return;
+      }
+      this.routes[client] = true;
+      try {
+        if (!this.server) await this.startRouting();
+        else if (client === 'codex') { activateSession(this.root, this.codexHome, this.port, init(this.root).token); this.syncTools(); }
+        else this.syncClaude();
+      } catch (error) { this.routes[client] = false; throw error; }
+    });
+  }
+  syncTools() { if (this.clientEnabled('codex')) this.imageTools = syncSession(this.root, this.codexHome); }
   syncClaude() {
-    if (!this.active) return;
+    if (!this.clientEnabled('claude')) return;
     const state = init(path.join(this.root, 'claude'));
     if (Object.keys(state.providers).length) {
       if (this.claudeHome) activateClaude(this.root, this.claudeHome, this.port, state.token, claudeModelEnvironment(state.providers[state.active]));
@@ -62,11 +85,12 @@ export class DesktopRuntime {
   }
   restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json')); }
   async listen() {
-    const server = this.createServer({ root: this.root, binary: this.binary, reauth: this.reauth, claudeReauth: this.claudeReauth });
+    const server = this.createServer({ root: this.root, binary: this.binary, clientEnabled: client => this.clientEnabled(client), reauth: this.reauth, claudeReauth: this.claudeReauth });
     server.on('request', (req, res) => {
       if (req.method !== 'POST') return;
-      this.activeRequests++;
-      res.once('close', () => { this.activeRequests--; });
+      const client = req.url.startsWith('/claude/') || req.url.startsWith('/claude-desktop/') ? 'claude' : 'codex';
+      this.activeRequests++; this.requests[client].add(res);
+      res.once('close', () => { this.activeRequests--; this.requests[client].delete(res); });
     });
     const ready = once(server, 'listening');
     server.listen(this.port, '127.0.0.1');
@@ -92,12 +116,13 @@ export class DesktopRuntime {
     if (this.server) return;
     protectDirectory(this.root);
     this.restore();
+    if (!Object.values(this.routes).some(Boolean)) return;
     if (fs.existsSync(path.join(this.root, 'installation.json'))) throw new Error('A CLI service installation already owns the configuration. Uninstall that service before using desktop mode.');
     const { token } = init(this.root);
     try {
       await this.listen();
       await this.startGuard();
-      activateSession(this.root, this.codexHome, this.port, token);
+      if (this.routes.codex) activateSession(this.root, this.codexHome, this.port, token);
       this.active = true;
       this.syncTools();
       this.syncClaude();
