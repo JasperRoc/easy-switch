@@ -347,7 +347,7 @@ test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foregro
   await app.evaluate(({ powerMonitor }) => powerMonitor.emit('unlock-screen'));
   assert.ok(await app.evaluate(() => globalThis.energySends) > sent, 'unlock refreshes the visible window immediately');
 });
-test('subscription quota rings, purchased credits, stale data and image setup notices render in both languages and themes', { skip: !enabled, timeout: 30000 }, async t => {
+test('subscription quota rings, purchased credits, stale data and image access errors render in both languages and themes', { skip: !enabled, timeout: 30000 }, async t => {
   const { app, page } = await launch(t);
   const window = (remaining, hours) => ({ remaining, resetsAt: Date.now() + hours * 3600000 });
   const account = (alias, plan, weekly) => ({ alias, type: 'account', active: false, usage: { status: 'ready', fetchedAt: Date.now(),
@@ -399,7 +399,8 @@ test('subscription quota rings, purchased credits, stale data and image setup no
   }
   assert.equal(await credits.locator('.quota-segment').count(), 1);
   assert.equal(await plus.locator('.quota-center').count(), 1);
-  await page.locator('#native-images').filter({ hasText: 'Text route: api (Official / third-party API)' }).waitFor(); await page.mouse.move(100, 100);
+  assert.equal(await page.locator('#native-images').isVisible(), false, 'normal image routing does not add an informational banner');
+  assert.equal(await page.locator('[data-i18n="lifetime"], .footnote').count(), 0); await page.mouse.move(100, 100);
   assert.equal(await app.evaluate(() => globalThis.easySwitchQuotaRefreshes), 0);
   assert.equal(await plus.locator('.quota-tooltip').isVisible(), false, 'clicking the quota does not expand all details');
   await plus.locator('.quota-segment.weekly').focus();
@@ -550,8 +551,8 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
  await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import current/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
 
- await page.click('#settings'); await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
- await page.click('#close-update'); await providersPage(page); await page.click('#settings'); await page.click('#star'); await providersPage(page);
+ await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
+ await page.click('#close-update'); await providersPage(page); await page.click('#star'); await providersPage(page);
  const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'liquid-light.png')});
  await page.click('#settings'); await page.click('#theme-button');await page.click('button[data-theme="dark"]'); await providersPage(page);await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
 });
@@ -606,7 +607,7 @@ test('API import previews its type, close icons center, and model refresh confir
   const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'provider-models.png') });
   await page.click('#close-models');
   assert.equal(await page.locator('[data-tab="network"], #proxy-url, #no-proxy').count(), 0);
-  await page.click('#settings'); await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
+  await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
 });
 
 test('desktop localizes structured update notes', { skip: !enabled, timeout: 30000 }, async t => {
@@ -626,11 +627,11 @@ test('desktop localizes structured update notes', { skip: !enabled, timeout: 300
   const uiState = { running: true, providers: [], active: 'demo', version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform,
     update: { phase: 'available', version: '0.4.4', date: '2026-10-31T00:00:00Z', size: 1024 ** 2 } };
   await app.evaluate((_electron, state) => { globalThis.easySwitchTestState = { ...state, update: { ...state.update, notes: globalThis.easySwitchTestNotes } }; }, uiState);
-  await page.click('#settings'); await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
   assert.equal(await page.locator('#update-notes li strong').innerText(), 'session');
   await page.screenshot({ path: path.join(folder, 'update-en.png') });
   await page.click('#close-update'); await providersPage(page); await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
-  await page.click('#settings'); await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
   assert.equal((await page.locator('#update-notes').innerText()).includes('Switch a single'), false);
   assert.equal((await page.locator('#update-notes').innerText()).includes('<!--'), false);
   await page.screenshot({ path: path.join(folder, 'update-zh.png') });
@@ -642,7 +643,7 @@ test('desktop localizes structured update notes', { skip: !enabled, timeout: 300
 });
 
 
-test('sidebar switches each client independently, remembers routing choices and keeps only Settings at the bottom', { skip: !enabled, timeout: 30000 }, async t => {
+test('sidebar switches each client independently, remembers routing choices and keeps only Settings at the bottom', { skip: !enabled, timeout: 60000 }, async t => {
   const { app, page, root, home, options } = await launch(t);
   await page.evaluate(() => window.easySwitch.call('add-api', { alias: 'codex-main', url: 'https://codex.example/v1', key: 'fixture' }));
   await page.click('[data-client="claude"]');
@@ -651,7 +652,8 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'codex-main');
   assert.equal(await page.locator('[data-client="codex"]').innerText(), 'codex-main');
   assert.equal(await page.locator('[data-client="claude"]').innerText(), 'claude-main');
-  assert.equal(await page.locator('footer').count(), 0);
+  assert.equal(await page.locator('.sidebar footer').count(), 0);
+  assert.equal(await page.locator('.workspace-footer button').count(), 2);
   const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
   assert.ok(fs.existsSync(claudeFile));
   await page.click('#routing-toggle');
@@ -667,7 +669,42 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
   await page.click('#settings'); await page.locator('#settings-page').waitFor();
   assert.equal(await page.locator('#providers-page').isVisible(), false);
-  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-settings-0.5.16-en.png'), animations: 'disabled' });
+  assert.equal(await page.locator('#settings-page .settings-card').count(), 1);
+  // Exercise startup UI through a local IPC fixture; never change OS login items.
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('easy-switch:call');
+    globalThis.easySwitchStartupCalls = [];
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', async (event, action, payload) => {
+      if (action === 'autostart') { globalThis.easySwitchStartupCalls.push(payload); return {}; }
+      const result = await original(event, action, payload);
+      if (action === 'state' && globalThis.easySwitchStartupCalls.length) result.loginItem = globalThis.easySwitchStartupCalls.at(-1);
+      return result;
+    });
+  });
+  await page.click('#autostart'); await page.locator('#autostart[aria-checked="true"]:not([disabled])').waitFor();
+  await page.focus('#autostart'); await page.keyboard.press('Space');
+  await page.locator('#autostart[aria-checked="false"]:not([disabled])').waitFor();
+  assert.deepEqual(await app.evaluate(() => globalThis.easySwitchStartupCalls), [true, false]);
+  const folder = path.join(project, '.desktop-test');
+  for (const [language, theme, width, height] of [['en', 'light', 960, 780], ['zh-CN', 'dark', 780, 680]]) {
+    await page.click('#language-button'); await page.click(`[data-language="${language}"]`);
+    await page.click('#theme-button'); await page.click(`button[data-theme="${theme}"]`);
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), [width, height]);
+    const layout = await page.evaluate(() => {
+      const bounds = id => { const rect = document.getElementById(id).getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; };
+      const footer = document.querySelector('.workspace-footer').getBoundingClientRect(), star = document.getElementById('star').getBoundingClientRect();
+      return { controls: ['language-button', 'theme-button', 'autostart'].map(bounds), footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
+    });
+    assert.ok(layout.controls.every(control => Math.abs(control.x - layout.controls[0].x) < 1), 'settings controls share a vertical center line: ' + JSON.stringify(layout));
+    assert.ok(Math.abs(layout.footer.bottom - layout.height) < 1 && Math.abs(layout.footer.right - layout.width) < 1, 'footer stays at the window edge');
+    assert.ok(layout.star.bottom <= layout.height && layout.star.right <= layout.width && layout.scrollWidth === layout.width, 'footer fits without horizontal overflow');
+    assert.equal(await page.locator('#updates').getAttribute('title'), language === 'en' ? 'Check for updates' : '检查更新');
+    await page.screenshot({ path: path.join(folder, `settings-footer-${language}-${theme}.png`), animations: 'disabled' });
+    await providersPage(page); await page.locator('#updates').waitFor({ state: 'visible' }); await page.locator('#star').waitFor({ state: 'visible' });
+    await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });
+    await page.click('#settings');
+  }
   await page.click('[data-client="codex"]'); await page.locator('#providers-page').waitFor();
   await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-providers-0.5.16-en.png'), animations: 'disabled' });

@@ -32,6 +32,7 @@ function appearance() {
   for (const element of document.querySelectorAll('[data-i18n-placeholder]')) element.placeholder = t(element.dataset.i18nPlaceholder);
   for (const element of document.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
   $('language-button').title = t('language'); $('theme-button').title = t('appearance');
+  $('updates').title = t('updates'); $('star').title = t('star');
   renderProviderModels();
   for (const element of document.querySelectorAll('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
   providerType(); renderResetCards();
@@ -247,12 +248,10 @@ function refresh(nextState) {
     }
     $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
     $('current-provider').textContent = state.active || t('addProvider');
-    $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').checked = !!state.loginItem;
+    $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').setAttribute('aria-checked', String(!!state.loginItem));
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
-    $('native-images').hidden = !state.imageTools && !state.imageToolsBlocked;
-    const selected = state.providers.find(provider => provider.active);
-    $('native-images').textContent = t(state.imageToolsBlocked ? 'freeImagesHelp' : 'nativeImagesHelp', { alias: selected?.alias || '—', mode: t(selected?.type === 'account' ? 'account' : 'api') });
+    $('native-images').hidden = !state.imageToolsBlocked;
     $('claude-desktop-hint').hidden = !state.claudeDesktop;
     if (state.error) showError(state.error);
     renderProviders();
@@ -495,7 +494,10 @@ for(const id of ['language','theme']) $(id+'-button').addEventListener('click',(
 for(const item of document.querySelectorAll('[data-language],button[data-theme]')) item.addEventListener('click',async()=>{closeMenus();try{await run('preferences',item.dataset.language?{language:item.dataset.language}:{theme:item.dataset.theme});}catch{}});
 document.addEventListener('click', event => { if (!event.target.closest('.icon-control')) closeMenus(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
-$('autostart').addEventListener('change', async event => { try { await run('autostart', event.target.checked); } catch {} });
+$('autostart').addEventListener('click', async event => {
+  const control = event.currentTarget; control.disabled = true;
+  try { await run('autostart', !state.loginItem); } catch {} finally { control.disabled = false; }
+});
 for (const control of document.querySelectorAll('[data-routing-client]')) control.addEventListener('click', async () => {
   const client = control.dataset.routingClient, route = state.clients?.[client] || { running: state.running, activeRequests: state.activeRequests };
   if (route.running && route.activeRequests && !confirm(t('stopConfirm'))) return;

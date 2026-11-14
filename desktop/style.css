@@ -78,9 +78,6 @@ input, select { width: 100%; display: block; margin-top: 8px; padding: 11px 13px
 input::placeholder { color: var(--muted); opacity: .8; }
 select option { background: var(--background); color: var(--ink); }
 .actions { display: flex; gap: 9px; margin: 16px 0; flex-wrap: wrap; }
-.footnote { color: var(--muted); font-size: 10px; line-height: 1.8; padding: 0 4px 8px; }
-.checkbox { display: flex; align-items: center; gap: 8px; font-size: 11px; margin-right: auto; cursor: pointer; }
-.checkbox input { width: 14px; height: 14px; margin: 0; accent-color: var(--brand); }
 dialog { width: 480px; max-width: 90vw; padding: 26px; border-radius: 24px; color: var(--ink); box-shadow: 0 28px 90px rgba(0, 25, 60, .25); }
 dialog::backdrop { background: rgba(8, 28, 54, .25); backdrop-filter: blur(7px); }
 .login-code { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
@@ -147,7 +144,7 @@ button.client-select[aria-pressed="true"] {color:var(--ink);}
 .client-item .route-switch[aria-checked="true"] .route-switch-thumb {transform:translateX(12px);}
 button.settings-nav {display:flex;align-items:center;gap:10px;margin-top:auto;width:100%;padding:12px 13px;background:transparent;color:var(--muted);border:1px solid transparent;box-shadow:none;border-radius:13px;}
 button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--ink);border-color:var(--line);}
-.workspace {display:grid;grid-template-rows:auto auto minmax(0,1fr);min-width:0;min-height:0;}
+.workspace {display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;min-width:0;min-height:0;}
 .workspace-title h1 {font-size:21px;letter-spacing:-.5px;}
 .workspace-title p {margin-top:7px;}
 .workspace-route {display:grid;gap:6px;text-align:right;min-width:0;max-width:35%;}
@@ -162,10 +159,13 @@ button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--i
 .workspace-notices .notice {margin-top:0;}
 .settings-card {position:relative;border-radius:20px;padding:0 20px;margin:14px 0;}
 .settings-card:has(.control-popover:not([hidden])) {z-index:10;}
-.setting-row {display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:68px;font-size:12px;border-bottom:1px solid var(--line);}
+.setting-row {display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:18px;min-height:68px;font-size:12px;border-bottom:1px solid var(--line);}
 .setting-row:last-child {border-bottom:0;}
-.setting-row .checkbox {width:100%;justify-content:space-between;margin:0;}
+.setting-control {display:flex;align-items:center;justify-content:center;width:44px;}
 #settings-page .control-popover {top:calc(100% + 6px);}
+.workspace-footer {display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 28px 18px;}
+#version {color:var(--muted);font-size:11px;margin-right:4px;white-space:nowrap;}
+#updates {position:relative;}
 .quota-segment.unknown .quota-track {stroke-dasharray:4 6;}
 .quota-segment.exhausted .quota-track {stroke:color-mix(in srgb,var(--muted) 65%,transparent);}
 .quota-exhausted-outline {fill:var(--field);stroke:var(--line);stroke-width:3;pointer-events:none;}
@@ -205,7 +205,7 @@ button.select-provider[aria-pressed="true"]:hover {transform:none;box-shadow:non
 #claude-mapping>details {margin:14px 0;}
 #add-dialog {max-height:calc(100vh - 48px);overflow:auto;}
 button.link {display:inline-flex;align-items:center;gap:6px;border-radius:99px;}
-#update-dot {width:6px;height:6px;background:AccentColor;border-radius:50%;}
+#update-dot {position:absolute;top:2px;right:2px;width:6px;height:6px;background:AccentColor;border-radius:50%;box-shadow:0 0 0 2px var(--background);}
 #update-dialog {width:600px;}
 .release-notes {max-height:260px;overflow:auto;margin:18px 0;font-size:12px;line-height:1.7;overflow-wrap:anywhere;}
 .release-notes h3 {font-size:13px;margin:14px 0 5px;}
