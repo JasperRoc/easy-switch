@@ -124,3 +124,10 @@ test('Go preserves its reported five-hour window and zero credits without invent
   assert.equal(result.plan, 'go'); assert.equal(result.fiveHour.remaining, 75);
   assert.equal(result.weekly, null); assert.equal(result.credits, 0);
 });
+
+
+test('Claude plan labels use its own Free, Pro, Max and Ultra names without changing Codex Pro', () => {
+  for (const [id, label] of [['free', 'Free'], ['pro', 'Pro'], ['max', 'Max'], ['ultra', 'Ultra']]) assert.equal(planLabel(id, 'claude'), label);
+  assert.equal(planLabel('pro'), 'Pro 200');
+  assert.equal(planLabel('unknown', 'claude'), null); assert.equal(planLabel(null, 'claude'), null);
+});

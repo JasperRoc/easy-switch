@@ -16,7 +16,7 @@ let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false
 let renderedState = '';
 let editingProvider = null, settingsOpen = false;
 const resetAttempts = new Map();
-const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp', 'clientHelp'].includes(key) ? 'claude_' + key : key, values)
+const t = (key, values) => translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values)
   .replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -156,10 +156,10 @@ function renderProviders() {
     handle.addEventListener('keydown', event => { if (!['ArrowUp','ArrowDown'].includes(event.key)) return; event.preventDefault(); const names = state.providers.map(item=>item.alias), next=index+(event.key==='ArrowUp'?-1:1); if(next<0 || next>=names.length)return; [names[index],names[next]]=[names[next],names[index]]; run('order',names).catch(()=>{}); });
     row.append(handle);
     const identity = node('div', null, 'identity');
-    const plan = provider.usage?.data?.plan || provider.plan, label = planLabel(plan);
-    const detail = node('small', provider.type === 'account' ? state.client !== 'claude' && label ? `ChatGPT ${label}` : t('account') : provider.baseUrl);
-    if (provider.type === 'account' && label) detail.title = t(provider.usage?.data?.plan ? 'planLive' : 'planCached');
-    if (provider.plan && provider.usage?.data?.plan && provider.plan !== provider.usage.data.plan) detail.title = t('planMismatch', { cached: planLabel(provider.plan), live: label });
+    const plan = provider.usage?.data?.plan || provider.plan, label = planLabel(plan, state.client);
+    const detail = node('small', provider.type === 'account' ? label ? `${state.client === 'claude' ? 'Claude' : 'ChatGPT'} ${label}` : state.client === 'claude' ? t('claudePlanUnknown') : t('account') : provider.baseUrl);
+    if (provider.type === 'account') detail.title = state.client === 'claude' ? t(label ? 'claudePlanCached' : 'claudePlanUnknownHelp') : label ? t(provider.usage?.data?.plan ? 'planLive' : 'planCached') : '';
+    if (provider.plan && provider.usage?.data?.plan && provider.plan !== provider.usage.data.plan) detail.title = t('planMismatch', { cached: planLabel(provider.plan, state.client), live: label });
     identity.append(node('strong', provider.alias), detail); row.append(identity);
     if (provider.type === 'account' && state.client !== 'claude') {
       row.append(quotaDisplay(provider));
@@ -252,7 +252,6 @@ function refresh(nextState) {
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
     $('native-images').hidden = !state.imageToolsBlocked;
-    $('claude-desktop-hint').hidden = !state.claudeDesktop;
     if (state.error) showError(state.error);
     renderProviders();
     $('failover').hidden = !state.lastFailover;
@@ -559,6 +558,7 @@ $('close-update').addEventListener('click',()=>$('update-dialog').close());
 $('update-action').addEventListener('click',async()=>{try{await call(state.update.phase==='ready'?'update-install':'update-download');}catch(error){showError(error,'update-error');}finally{await refresh();}});
 $('star').addEventListener('click',()=>call('star').catch(showError));
 window.easySwitch.onChange(nextState => { if (!document.hidden) refresh(nextState); });
+window.easySwitch.onShow(() => { if (document.activeElement?.closest('.sidebar')) document.activeElement.blur(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 window.easySwitch.onTab(tab => { if (tab === 'updates') showUpdates(); else showSettings(tab === 'settings'); });
 refresh();

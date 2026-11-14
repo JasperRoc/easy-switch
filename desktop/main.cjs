@@ -19,9 +19,11 @@ const repository = 'https://github.com/JasperRoc/easy-switch';
 
 function showWindow(tab) {
   if (!window || window.isDestroyed()) return;
+  const reopening = !window.isVisible() || window.isMinimized();
   if (process.platform === 'darwin') { app.setActivationPolicy('regular'); app.dock.show(); }
   if (window.isMinimized()) window.restore();
   window.show(); window.focus();
+  if (reopening) window.webContents.send('easy-switch:shown');
   if (tab) window.webContents.send('easy-switch:tab', tab);
 }
 function report(error) {

@@ -120,11 +120,27 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal(fs.readFileSync(file,'utf8'),original);
   await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing active'}).waitFor();
   const image = path.join(project,'.desktop-test','settings.png'); fs.mkdirSync(path.dirname(image),{recursive:true}); await page.screenshot({path:image});
+  await page.locator('[data-client="codex"]').focus();
+  await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.locator('[data-client="codex"]').evaluate(element => element.matches(':focus-visible')), true);
+  const keyboardFocus = await page.locator('[data-client="codex"]').evaluate(element => ({ innerOutline: getComputedStyle(element).outlineStyle, outerBorder: getComputedStyle(element.closest('.client-item')).borderColor, idleBorder: getComputedStyle(document.querySelector('[data-client-item="claude"]')).borderColor }));
+  assert.equal(keyboardFocus.innerOutline, 'none', 'keyboard focus uses the complete client row instead of an inner ring');
+  assert.notEqual(keyboardFocus.outerBorder, keyboardFocus.idleBorder, 'keyboard navigation keeps a visible row focus cue');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-keyboard-focus.png') });
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].close());
   assert.equal(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].isVisible()), false);
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,'easy_switch');
   await app.evaluate(({ app }) => app.emit('activate'));
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true);
+  await page.waitForFunction(() => !document.activeElement?.closest('.sidebar'));
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-reopened-focus.png') });
+  await page.click('#add-api'); await page.fill('#provider-alias', 'unfinished');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await app.evaluate(({ app }) => app.emit('activate'));
+  await page.locator('#provider-alias').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#provider-alias').inputValue(), 'unfinished', 'reopening preserves an unfinished dialog');
+  await page.waitForFunction(() => document.activeElement?.id === 'provider-alias');
+  await page.click('#close-dialog');
   await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
     const window = BrowserWindow.getAllWindows()[0]; window.once('minimize', resolve); window.minimize();
   }));
@@ -150,7 +166,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
-  assert.match(await page.locator('[data-i18n="clientHelp"]').innerText(), /Claude Code CLI and Claude Desktop/);
+  assert.equal(await page.locator('[data-i18n="clientHelp"]').innerText(), 'Manage providers and automatic fallback priority.');
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   assert.equal(await page.locator('#claude-mapping').isVisible(), false, 'adding a Claude API starts with the same simple fields as Codex');
   assert.equal(await page.locator('#claude-fable-model').isVisible(), false);
@@ -187,7 +203,8 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
     await window.easySwitch.call('add-api', { alias: 'first', key: 'first-key', url, claudeModels: { default: 'deepseek-first', subagent: 'deepseek-helper' } });
     await window.easySwitch.call('add-api', { alias: 'second', key: 'second-key', url, claudeModels: { default: 'deepseek-second' } });
   }, `http://127.0.0.1:${upstream.address().port}/anthropic`);
-  await page.locator('#claude-desktop-hint').waitFor();
+  await page.locator('.provider[data-alias="second"]').waitFor();
+  assert.equal(await page.locator('#claude-desktop-hint').count(), 0);
   const library = path.join(options.env.SWITCH_CLAUDE_DESKTOP_HOME, 'Claude-3p', 'configLibrary');
   const meta = JSON.parse(fs.readFileSync(path.join(library, '_meta.json'))), file = path.join(library, `${meta.appliedId}.json`);
   const original = fs.readFileSync(file, 'utf8'), profile = JSON.parse(original);
@@ -209,7 +226,7 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.ok(catalog.data.every(item => item.description.startsWith('easy-switch · ')));
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
   await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
-  await page.locator('#claude-desktop-hint').filter({ hasText: '已接入 Claude Desktop' }).waitFor();
+  await page.locator('html[lang="zh-CN"]').waitFor();
   await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-light.png') });
   await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
@@ -687,21 +704,42 @@ test('sidebar switches each client independently, remembers routing choices and 
   await page.locator('#autostart[aria-checked="false"]:not([disabled])').waitFor();
   assert.deepEqual(await app.evaluate(() => globalThis.easySwitchStartupCalls), [true, false]);
   const folder = path.join(project, '.desktop-test');
-  for (const [language, theme, width, height] of [['en', 'light', 960, 780], ['zh-CN', 'dark', 780, 680]]) {
+  for (const [language, theme, width, height] of [['en', 'light', 960, 780], ['zh-CN', 'dark', 780, 680], ['en', 'light', 780, 680], ['zh-CN', 'dark', 960, 780]]) {
     await page.click('#language-button'); await page.click(`[data-language="${language}"]`);
     await page.click('#theme-button'); await page.click(`button[data-theme="${theme}"]`);
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), [width, height]);
+    await page.mouse.move(400, 90);
     const layout = await page.evaluate(() => {
       const bounds = id => { const rect = document.getElementById(id).getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; };
       const footer = document.querySelector('.workspace-footer').getBoundingClientRect(), star = document.getElementById('star').getBoundingClientRect();
-      return { controls: ['language-button', 'theme-button', 'autostart'].map(bounds), footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
+      const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect(), title = document.querySelector('.workspace-title h1').getBoundingClientRect();
+      return { controls: ['language-button', 'theme-button', 'autostart'].map(bounds), settings: bounds('settings'), starCenter: bounds('star'), brandTop: brand.top, titleTop: title.top, footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
     });
     assert.ok(layout.controls.every(control => Math.abs(control.x - layout.controls[0].x) < 1), 'settings controls share a vertical center line: ' + JSON.stringify(layout));
+    assert.ok(Math.abs(layout.brandTop - layout.titleTop) < 1, 'sidebar brand and page title share a top baseline');
+    assert.ok(Math.abs(layout.settings.y - layout.starCenter.y) < 1, 'sidebar settings and footer actions share a bottom baseline');
     assert.ok(Math.abs(layout.footer.bottom - layout.height) < 1 && Math.abs(layout.footer.right - layout.width) < 1, 'footer stays at the window edge');
     assert.ok(layout.star.bottom <= layout.height && layout.star.right <= layout.width && layout.scrollWidth === layout.width, 'footer fits without horizontal overflow');
     assert.equal(await page.locator('#updates').getAttribute('title'), language === 'en' ? 'Check for updates' : '检查更新');
     await page.screenshot({ path: path.join(folder, `settings-footer-${language}-${theme}.png`), animations: 'disabled' });
     await providersPage(page); await page.locator('#updates').waitFor({ state: 'visible' }); await page.locator('#star').waitFor({ state: 'visible' });
+    const descriptions = [];
+    for (const client of ['codex', 'claude']) {
+      await page.click(`[data-client="${client}"]`);
+      await page.locator('.provider').filter({ hasText: `${client}-main` }).waitFor();
+      await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+      descriptions.push(await page.locator('[data-i18n="clientHelp"]').innerText());
+      const alignment = await page.evaluate(() => {
+        const header = document.querySelector('.workspace>header'), title = document.querySelector('.workspace-title').getBoundingClientRect();
+        const first = document.querySelector('.client-item').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
+        return { firstTop: first.top, panelTop: panel.top, titleLeft: title.left, panelLeft: panel.left, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(header).paddingRight), panelRightInset: innerWidth - panel.right, titleBottom: title.bottom, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
+      });
+      assert.ok(Math.abs(alignment.firstTop - alignment.panelTop) < 1, 'client navigation and provider panel share a top baseline: ' + JSON.stringify(alignment));
+      assert.ok(alignment.titleBottom + 12 <= alignment.panelTop, 'description stays clear of the provider panel: ' + JSON.stringify(alignment));
+      assert.ok(Math.abs(alignment.titleLeft - alignment.panelLeft) < 1 && Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
+    }
+    assert.equal(descriptions[0], descriptions[1]);
+    assert.equal(descriptions[0], language === 'en' ? 'Manage providers and automatic fallback priority.' : '管理服务商与自动切换优先级。');
     await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });
     await page.click('#settings');
   }
@@ -754,4 +792,31 @@ test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credit
   await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-zh-dark.png'), animations: 'disabled' });
+});
+
+test('Claude account rows display Free, Pro, Max and Ultra while missing plans stay unknown', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page } = await launch(t);
+  const providers = ['free', 'pro', 'max', 'ultra', 'unknown'].map(plan => ({ alias: plan, type: 'account', plan: plan === 'unknown' ? null : plan, active: plan === 'free' }));
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
+    powerMonitor.emit('lock-screen');
+    const state = { client: 'claude', running: true, active: 'free', providers, language: 'en', theme: 'light', dark: false, version: '0.5.20', update: { phase: 'idle' } };
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', (_event, action, payload) => { if (action === 'preferences') { Object.assign(state, payload); state.dark = state.theme === 'dark'; } return state; });
+    BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed', state);
+  }, providers);
+  for (const plan of ['free', 'pro', 'max', 'ultra']) {
+    const detail = page.locator(`[data-alias="${plan}"] .identity small`);
+    await detail.filter({ hasText: `Claude ${plan[0].toUpperCase() + plan.slice(1)}` }).waitFor();
+    assert.equal(await detail.getAttribute('title'), 'Plan reported by the saved Claude sign-in.');
+  }
+  await page.locator('[data-alias="unknown"] .identity small').filter({ hasText: 'Claude · Plan unknown' }).waitFor();
+  assert.equal(await page.locator('.quota, .reset-quota, #claude-desktop-hint').count(), 0);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-en-light.png'), animations: 'disabled' });
+  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  const unknown = page.locator('[data-alias="unknown"] .identity small');
+  await unknown.filter({ hasText: 'Claude · 套餐未知' }).waitFor();
+  assert.match(await unknown.getAttribute('title'), /不代表该账号为 Free/);
+  assert.equal(await page.locator('[data-alias="pro"] .identity small').innerText(), 'Claude Pro');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-zh-CN-dark.png'), animations: 'disabled' });
 });

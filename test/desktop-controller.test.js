@@ -209,3 +209,25 @@ test('account plan is visible from saved sign-in before quota succeeds, without 
   const result = controller.snapshot({ usage: false });
   assert.equal(result.providers[0].plan, 'plus'); assert.doesNotMatch(JSON.stringify(result), /private-|fixture/);
 });
+
+
+test('Claude saved account plans distinguish Free, Pro, Max and Ultra without exporting credentials', t => {
+  const controller = setup(t); controller.clientSelection('claude');
+  const cases = [
+    ['free', { subscriptionType: 'free' }, 'free'],
+    ['pro', { subscriptionType: 'pro' }, 'pro'],
+    ['max', { subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' }, 'max'],
+    ['ultra', { subscriptionType: 'ultra' }, 'ultra'],
+    ['legacy-ultra', { subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' }, 'ultra'],
+    ['team', { subscriptionType: 'team', rateLimitTier: 'default_claude_max_20x' }, 'team'],
+    ['missing', {}, null], ['unknown', { subscriptionType: 'unknown' }, null],
+  ];
+  for (const [alias, metadata] of cases) {
+    const accountHome = path.join(controller.providerRoot, 'accounts', alias);
+    atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'private-access', refreshToken: 'private-refresh', email: 'private@example.test', ...metadata });
+    addProvider(alias, { type: 'account', accountHome }, controller.providerRoot);
+  }
+  const result = controller.snapshot({ usage: false });
+  assert.deepEqual(result.providers.map(provider => [provider.alias, provider.plan]), cases.map(([alias, , plan]) => [alias, plan]));
+  assert.doesNotMatch(JSON.stringify(result), /private|accessToken|refreshToken|rateLimitTier/);
+});

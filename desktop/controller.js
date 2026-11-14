@@ -120,7 +120,16 @@ export class DesktopController {
       const provider = state.providers[alias];
       let needsLogin = false, plan = null;
       if (provider.type === 'account') {
-        try { const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider); needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth); if (client === 'codex' && !imageEligible(auth)) freeImages = true; }
+        try {
+          const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider);
+          needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth);
+          if (client === 'codex' && !imageEligible(auth)) freeImages = true;
+          if (client === 'claude') {
+            const value = typeof auth.subscriptionType === 'string' ? auth.subscriptionType.trim().toLowerCase() : null;
+            // Legacy Max 20x credentials identify the plan now named Ultra.
+            if (planLabel(value, client)) plan = value === 'max' && auth.rateLimitTier === 'default_claude_max_20x' ? 'ultra' : value;
+          }
+        }
         catch { needsLogin = true; }
         if (client === 'codex') try {
           const auth = accountAuth(provider);

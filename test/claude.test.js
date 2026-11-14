@@ -112,7 +112,7 @@ test('Claude credentials support protected file storage and refresh once for par
   const root = fixture(t), provider = { type: 'account', accountHome: root };
   atomic(path.join(root, '.credentials.json'), { claudeAiOauth: oauth });
   assert.deepEqual(await existingClaudeAuth(root, { platform: 'linux' }), oauth);
-  atomic(path.join(root, 'oauth.json'), { ...oauth, expiresAt: 1 });
+  atomic(path.join(root, 'oauth.json'), { ...oauth, expiresAt: 1, subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' });
   let calls = 0;
   const fetchImpl = async (url, options) => {
     calls++; assert.equal(url, 'https://platform.claude.com/v1/oauth/token');
@@ -121,6 +121,8 @@ test('Claude credentials support protected file storage and refresh once for par
   };
   assert.deepEqual(await Promise.all([claudeToken(provider, fetchImpl), claudeToken(provider, fetchImpl)]), ['new-token', 'new-token']); assert.equal(calls, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'oauth.json'))).refreshToken, 'new-refresh');
+  const refreshed = JSON.parse(fs.readFileSync(path.join(root, 'oauth.json')));
+  assert.equal(refreshed.subscriptionType, 'max'); assert.equal(refreshed.rateLimitTier, 'default_claude_max_20x');
 });
 
 test('Claude model discovery paginates actual provider IDs and never borrows the Codex catalog', async t => {
