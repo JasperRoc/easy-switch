@@ -13,7 +13,7 @@ import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment } from './n
 import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
 import { existingProvider } from './import.js';
 import { SubscriptionUsage } from './usage.js';
-import { planLabel } from '../src/plans.js';
+import { planLabel, claudeSavedPlan } from '../src/plans.js';
 import { syncNativeCredentials } from './config.js';
 import { codexResetCredits } from './reset-credits.js';
 
@@ -128,10 +128,7 @@ export class DesktopController {
           needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth);
           if (client === 'codex' && !imageEligible(auth)) freeImages = true;
           if (client === 'claude') {
-            const value = typeof auth.subscriptionType === 'string' ? auth.subscriptionType.trim().toLowerCase() : null;
-            // Legacy Max 20x credentials identify the plan now named Ultra.
-            if (planLabel(value, client)) plan = value === 'max' && auth.rateLimitTier === 'default_claude_max_20x' ? 'ultra' : value;
-            plan = usage[alias]?.data?.plan || plan;
+            plan = usage[alias]?.data?.plan || claudeSavedPlan(auth);
           }
         }
         catch { needsLogin = true; }

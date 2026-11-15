@@ -752,10 +752,10 @@ test('sidebar switches each client independently, remembers routing choices and 
       assert.ok(actions.every(button => button.contentWidth <= button.innerWidth), 'action labels fit at the minimum window width');
       const alignment = await page.evaluate(() => {
         const header = document.querySelector('.workspace>header');
-        const first = document.querySelector('.client-item').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
-        return { firstTop: first.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(document.querySelector('.workspace-footer')).paddingRight), panelRightInset: innerWidth - panel.right, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
+        const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
+        return { brandTop: brand.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(document.querySelector('.workspace-footer')).paddingRight), panelRightInset: innerWidth - panel.right, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
       });
-      assert.ok(Math.abs(alignment.firstTop - alignment.panelTop) < 1, 'client navigation and provider panel share a top baseline: ' + JSON.stringify(alignment));
+      assert.ok(Math.abs(alignment.brandTop - alignment.panelTop) < 1, 'provider panel aligns with the sidebar brand instead of leaving an empty header: ' + JSON.stringify(alignment));
       assert.ok(Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
     }
     await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });

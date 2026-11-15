@@ -134,7 +134,7 @@ button.client-select:focus-visible {outline:none;}
 .client-item .route-switch[aria-checked="true"] .route-switch-thumb {transform:translateX(12px);}
 button.settings-nav {display:flex;align-items:center;align-self:center;gap:10px;width:100%;height:36px;padding:8px 13px;background:transparent;color:var(--muted);border:1px solid transparent;box-shadow:none;border-radius:13px;}
 button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--ink);border-color:var(--line);}
-.workspace {display:grid;grid-template-rows:var(--header-height) auto minmax(0,1fr) var(--footer-height);min-width:0;min-height:0;}
+.workspace {display:grid;grid-template-rows:var(--header-top) auto minmax(0,1fr) var(--footer-height);min-width:0;min-height:0;}
 #providers-page {padding:0 var(--page-inset) 12px;}
 #providers {margin:0 0 15px;}
 #settings-page {padding:0 var(--page-inset) 28px;overflow:auto;}

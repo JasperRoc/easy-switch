@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
-import { accountAuth } from '../src/store.js';
+import path from 'node:path';
+import { accountAuth, atomic } from '../src/store.js';
 import { createUpstreamFetch } from '../src/network.js';
 import { claudeAuth, claudeExpired, claudeToken } from '../src/claude-auth.js';
+import { claudeProfilePlan } from '../src/plans.js';
 
 const fingerprint = auth => createHash('sha256').update(JSON.stringify(auth.tokens || [auth.accessToken, auth.scopes])).digest('hex');
 const number = value => (typeof value === 'number' || typeof value === 'string' && value.trim()) && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -85,10 +87,15 @@ export class SubscriptionUsage {
       }
       const payload = await response.json();
       if (claude) {
-        const type = payload?.organization?.organization_type;
-        const plan = { claude_free: 'free', claude_pro: 'pro', claude_max: 'max', claude_ultra: 'ultra', claude_team: 'team', claude_enterprise: 'enterprise' }[type];
+        const plan = claudeProfilePlan(payload);
         if (!plan) throw new Error('Unknown Claude plan');
-        entry.data = { plan: plan === 'max' && payload.organization.rate_limit_tier === 'default_claude_max_20x' ? 'ultra' : plan };
+        const current = claudeAuth(provider);
+        if (abort.signal.aborted || current.accessToken !== auth.accessToken) return;
+        const rateLimitTier = typeof payload.organization?.rate_limit_tier === 'string' ? payload.organization.rate_limit_tier : null;
+        if (current.subscriptionType !== plan || current.rateLimitTier !== rateLimitTier || current.subscriptionTypeSource !== 'profile' || !Number.isFinite(current.subscriptionTypeVerifiedAt)) {
+          atomic(path.join(provider.accountHome, 'oauth.json'), { ...current, subscriptionType: plan, rateLimitTier, subscriptionTypeSource: 'profile', subscriptionTypeVerifiedAt: this.now() });
+        }
+        entry.data = { plan };
       } else entry.data = normalizeUsage(payload, this.now());
       entry.fetchedAt = this.now(); entry.status = 'ready'; entry.failures = 0;
     } catch { if (!abort.signal.aborted) { entry.status = 'unavailable'; entry.failures = (entry.failures || 0) + 1; } }

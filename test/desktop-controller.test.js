@@ -216,6 +216,8 @@ test('Claude saved account plans distinguish Free, Pro, Max and Ultra without ex
   const cases = [
     ['free', { subscriptionType: 'free' }, 'free'],
     ['pro', { subscriptionType: 'pro' }, 'pro'],
+    ['unverified-pro', { subscriptionType: 'pro', rateLimitTier: 'default_claude_ai' }, null],
+    ['verified-free', { subscriptionType: 'free', rateLimitTier: 'default_claude_ai', subscriptionTypeSource: 'profile', subscriptionTypeVerifiedAt: 1234 }, 'free'],
     ['max', { subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' }, 'max'],
     ['ultra', { subscriptionType: 'ultra' }, 'ultra'],
     ['legacy-ultra', { subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' }, 'ultra'],
@@ -250,6 +252,9 @@ test('live Claude plan changes override old sign-in metadata without changing cr
   assert.equal(controller.snapshot().providers[0].plan, 'free'); assert.equal(calls, 2);
   controller.claudeUsage.snapshot = () => assert.fail('tray-only snapshot queried a Claude profile');
   controller.snapshot({ usage: false });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json'))), auth);
+  const { subscriptionTypeSource, subscriptionTypeVerifiedAt, rateLimitTier, ...saved } = JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')));
+  assert.equal(subscriptionTypeSource, 'profile'); assert.equal(subscriptionTypeVerifiedAt, clock);
+  assert.equal(rateLimitTier, null);
+  assert.deepEqual(saved, auth);
   assert.equal(readState(controller.providerRoot).active, 'personal');
 });

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SubscriptionUsage, normalizeUsage } from '../desktop/usage.js';
-import { planLabel } from '../src/plans.js';
+import { planLabel, claudeSavedPlan, claudeProfilePlan } from '../src/plans.js';
 import { atomic } from '../src/store.js';
 
 const payload = (plan = 'plus') => ({ plan_type: plan, rate_limit: {
@@ -20,6 +20,59 @@ function setup(t, options = {}) {
   return { usage, state, accountHome };
 }
 const done = usage => Promise.all([...usage.entries.values()].map(entry => entry.pending));
+
+test('Claude active subscription flags override a legacy Pro organization, while contradictory saved plans stay unknown', () => {
+  assert.equal(claudeProfilePlan({ account: { has_claude_pro: false, has_claude_max: false }, organization: { organization_type: 'claude_pro', rate_limit_tier: 'default_claude_ai' } }), 'free');
+  assert.equal(claudeProfilePlan({ account: { has_claude_pro: true, has_claude_max: false }, organization: { organization_type: 'claude_pro' } }), 'pro');
+  assert.equal(claudeProfilePlan({ account: { has_claude_pro: true, has_claude_max: true }, organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' } }), 'ultra');
+  assert.equal(claudeProfilePlan({ account: {}, organization: {} }), null);
+  assert.equal(claudeProfilePlan({ account: { has_claude_pro: false }, organization: {} }), null);
+  assert.equal(claudeProfilePlan({ account: { has_claude_pro: false, has_claude_max: false }, organization: { organization_type: 'claude_team' } }), 'team');
+  assert.equal(claudeSavedPlan({ subscriptionType: 'pro', rateLimitTier: 'default_claude_ai' }), null);
+  assert.equal(claudeSavedPlan({ subscriptionType: 'free', rateLimitTier: 'default_claude_ai' }), 'free');
+  assert.equal(claudeSavedPlan({ subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' }), 'ultra');
+});
+
+test('verified Free replaces a stale saved Pro and survives a fresh app instance without exposing account details', async t => {
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: async () => Response.json({
+    account: { uuid: 'private-user', email: 'private@example.test', has_claude_pro: false, has_claude_max: false },
+    organization: { uuid: 'private-org', organization_type: 'claude_pro', rate_limit_tier: 'default_claude_ai' },
+  }) });
+  const auth = { accessToken: 'private-access', refreshToken: 'private-refresh', subscriptionType: 'pro', rateLimitTier: 'default_claude_ai', scopes: ['user:profile', 'user:inference'] };
+  atomic(path.join(accountHome, 'oauth.json'), auth);
+  usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.data.plan, 'free');
+  const saved = JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')));
+  assert.equal(claudeSavedPlan(saved), 'free'); assert.equal(saved.subscriptionTypeSource, 'profile');
+  assert.equal(saved.accessToken, auth.accessToken); assert.equal(saved.refreshToken, auth.refreshToken);
+  assert.doesNotMatch(JSON.stringify(saved), /private-user|private-org|private@example/);
+  const restarted = new SubscriptionUsage({ root: usage.root, client: 'claude', fetchImpl: async () => new Response('', { status: 403 }) });
+  t.after(() => restarted.close()); restarted.snapshot(state); await done(restarted);
+  assert.equal(claudeSavedPlan(JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')))), 'free');
+});
+
+test('a delayed profile cannot rewrite a replaced or removed Claude login', async t => {
+  let respond;
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: () => new Promise(resolve => { respond = resolve; }) });
+  const file = path.join(accountHome, 'oauth.json');
+  const auth = { accessToken: 'old-access', subscriptionType: 'pro', scopes: ['user:profile'] };
+  atomic(file, auth); usage.snapshot(state);
+  const replacement = { ...auth, accessToken: 'other-access', subscriptionType: 'max' };
+  atomic(file, replacement);
+  respond(Response.json({ organization: { organization_type: 'claude_free' } })); await done(usage);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), replacement);
+  usage.snapshot(state); fs.unlinkSync(file);
+  respond(Response.json({ organization: { organization_type: 'claude_free' } })); await done(usage);
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('a verified Max downgrade also replaces the old Ultra rate tier in the saved login', async t => {
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: async () => Response.json({ organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_5x' } }) });
+  atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'private-access', subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x', scopes: ['user:profile'] });
+  usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.data.plan, 'max');
+  assert.equal(claudeSavedPlan(JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')))), 'max');
+});
 
 test('Codex plan changes are reread with the same credentials after the cache interval and after resuming', async t => {
   let clock = 0, plan = 'free', calls = 0;
@@ -93,7 +146,7 @@ test('Claude profile authentication refreshes once on rejection and preserves th
   assert.equal(profiles, 2); assert.equal(refreshes, 1);
   assert.equal(usage.snapshot(state).account.data.plan, 'pro');
   const saved = JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')));
-  assert.equal(saved.subscriptionType, 'free'); assert.equal(saved.refreshToken, 'new-refresh');
+  assert.equal(saved.subscriptionType, 'pro'); assert.equal(saved.subscriptionTypeSource, 'profile'); assert.equal(saved.refreshToken, 'new-refresh');
 });
 
 test('pausing a Claude profile read cancels token refresh without changing the saved login', async t => {
