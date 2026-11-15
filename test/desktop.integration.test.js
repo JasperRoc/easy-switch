@@ -458,9 +458,9 @@ test('subscription quota rings, purchased credits, stale data and image access e
     globalThis.easySwitchQuotaState.imageToolsBlocked = true;
     BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
   });
-  await page.locator('#native-images').filter({ hasText: 'Free 账号无法启用' }).waitFor();
+  await page.locator('#native-images').filter({ hasText: '原生图片工具尚未配置' }).waitFor();
   await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
-  await page.locator('#native-images').filter({ hasText: 'Free accounts cannot enable' }).waitFor();
+  await page.locator('#native-images').filter({ hasText: 'Native image tools are not configured' }).waitFor();
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await plus.locator('.reset-quota').click();
   await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();

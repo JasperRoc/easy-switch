@@ -13,7 +13,7 @@ import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
 import { activateSession } from '../desktop/config.js';
 
-for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-server (${nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free' ? 'Free login bridged to paid image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and client models preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge']) test(`real Codex app-server (${nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free-bridge' ? 'API login bridged to Free image tools' : nativeAuth === 'free' ? 'Free native image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and client models preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -111,28 +111,24 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
     assert.ok(url.startsWith('http://127.0.0.1:'), 'test traffic must stay on simulated upstreams');
     return fetch(url, options);
   } }));
-  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-6.1-sol"\n' + (nativeAuth === 'bridge' ? 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\n' : '[features]\nimage_generation=true\n'));
+  const bridge = nativeAuth === 'bridge' || nativeAuth === 'free-bridge';
+  const free = nativeAuth === 'free' || nativeAuth === 'free-bridge';
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model="gpt-6.1-sol"\n' + (bridge ? 'cli_auth_credentials_store="keyring"\nforced_login_method="api"\n' : '[features]\nimage_generation=true\n'));
   if (nativeAuth) {
-    const jwt = 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture', chatgpt_plan_type: nativeAuth === 'free' ? 'free' : 'plus' }, exp: 4102444800 })).toString('base64url') + '.fixture';
+    const jwt = 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture', chatgpt_plan_type: free ? 'free' : 'plus' }, exp: 4102444800 })).toString('base64url') + '.fixture';
     const auth = { tokens: { id_token: jwt, access_token: jwt, refresh_token: 'fixture', account_id: 'fixture' }, last_refresh: new Date().toISOString() };
-    if (nativeAuth === 'bridge') {
+    if (bridge) {
       const accountHome = path.join(root, 'accounts', 'subscription');
       atomic(path.join(accountHome, 'auth.json'), auth);
       addProvider('subscription', { type: 'account', accountHome }, root);
       atomic(path.join(codexHome, 'auth.json'), { auth_mode: 'apikey', OPENAI_API_KEY: 'old-api-fixture' });
     } else {
       atomic(path.join(codexHome, 'auth.json'), auth);
-      if (nativeAuth === 'free') {
-        const accountHome = path.join(root, 'accounts', 'subscription');
-        const paid = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'plus' }, exp: 4102444800 })).toString('base64url') + '.fixture';
-        atomic(path.join(accountHome, 'auth.json'), { ...auth, tokens: { ...auth.tokens, access_token: paid, id_token: paid } });
-        addProvider('subscription', { type: 'account', accountHome }, root);
-      }
     }
     activateSession(root, codexHome, Number(new URL(proxy).port), token);
-    // Keep the text failover scenarios identical; the copied native sign-in
-    // still exercises tool exposure with no original native subscription.
-    if (nativeAuth === 'bridge' || nativeAuth === 'free') removeProvider('subscription', root);
+    // Keep text failover scenarios identical while exercising image tool setup
+    // over either the original native login or an original API/keyring login.
+    if (bridge) removeProvider('subscription', root);
   } else prepareConfig(root, codexHome, Number(new URL(proxy).port), token).apply();
   const child = spawn(process.env.SWITCH_TEST_CODEX, ['app-server'], { cwd: dir, env: { ...process.env, CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } });
@@ -182,7 +178,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   assert.ok(requests.every(r => r.body.model === 'gpt-6.1-sol' && r.body.reasoning?.effort === 'high'), 'effort selected in the actual Codex client must reach both upstreams');
   assert.deepEqual(requests.map(r => r.authorization), ['Bearer a', 'Bearer b'], 'API switches replace the native subscription bearer with the selected API key');
   assert.ok(requests.every(r => r.accountID === undefined), 'the native subscription identity never leaks to API providers');
-  if (nativeAuth === 'bridge') assert.equal(JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'))).auth_mode, 'chatgpt');
+  if (bridge) assert.equal(JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'))).auth_mode, 'apikey');
   const second = JSON.stringify(requests[1].body.input);
   assert.match(second, /First turn/);
   assert.match(second, /reply A/);
@@ -234,12 +230,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free']) test(`real Codex app-s
   if (nativeAuth) {
     const accountHome = path.join(root, 'accounts', 'image-subscription');
     const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
-    if (nativeAuth === 'free') {
-      const freeHome = path.join(root, 'accounts', 'free');
-      atomic(path.join(freeHome, 'auth.json'), { tokens: { access_token: jwt, id_token: jwt, account_id: 'free' } });
-      addProvider('free', { type: 'account', accountHome: freeHome }, root);
-    }
-    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture-subscription', account_id: 'fixture' } });
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture-subscription', account_id: 'fixture', ...(free ? { id_token: jwt } : {}) } });
     addProvider('images', { type: 'account', accountHome }, root);
     const textProvider = readState(root).active;
     imageTurn = true;

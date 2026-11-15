@@ -5,13 +5,12 @@ import { parse, stringify } from 'smol-toml';
 import { createHash } from 'node:crypto';
 import { atomic, readState, providerOrder, accountAuth } from '../src/store.js';
 import { patchedConfig, writeText } from '../src/install.js';
-import { imageEligible } from '../src/images.js';
 
 const provider = 'easy_switch';
 const normalized = value => JSON.parse(JSON.stringify(value));
 const same = (a, b) => isDeepStrictEqual(normalized(a), normalized(b));
 const rootSelector = /^[ \t]*(?:model_provider|"model_provider"|'model_provider')[ \t]*=[^\r\n]*(?:\r?\n|$)/m;
-const nativeSettings = [['', 'cli_auth_credentials_store', 'file'], ['', 'forced_login_method', 'chatgpt'], ['features', 'image_generation', true]];
+const nativeSettings = [['', 'cli_auth_credentials_store', 'ephemeral'], ['', 'forced_login_method', 'api'], ['features', 'image_generation', true]];
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 const hash = text => createHash('sha256').update(text).digest('hex');
 function subject(auth) {
@@ -131,16 +130,24 @@ function restoreAuth(auth) {
   if (auth.exists) writeText(auth.file, auth.original); else fs.rmSync(auth.file, { force: true });
 }
 
-function subscription(root) {
+function hasSubscription(root) {
   const state = readState(root);
   for (const alias of [state.active, ...providerOrder(state)]) {
     const provider = state.providers[alias];
     if (provider?.type !== 'account') continue;
     try {
-      const auth = accountAuth(provider);
-      if (imageEligible(auth)) return { provider, auth };
+      accountAuth(provider);
+      return true;
     } catch {}
   }
+  return false;
+}
+
+function nativeSubscription(codexHome) {
+  try {
+    const auth = JSON.parse(read(path.join(codexHome, 'auth.json')));
+    return auth.auth_mode !== 'apikey' && !auth.OPENAI_API_KEY && !!(auth.tokens?.access_token && auth.tokens?.account_id);
+  } catch { return false; }
 }
 
 // Reuse a native refresh only for the same account and subject, and only when newer.
@@ -167,41 +174,18 @@ export function syncSession(root, codexHome) {
   const recordFile = path.join(root, 'desktop-session.json');
   if (!fs.existsSync(recordFile)) return false;
   const record = JSON.parse(read(recordFile));
-  if (record.auth && !Object.values(readState(root).providers).some(provider =>
-    provider.type === 'account' && path.join(provider.accountHome, 'auth.json') === record.auth.sourceFile)) {
-    const current = read(record.file), config = parse(record.installed).model_providers.easy_switch;
-    const port = Number(new URL(config.base_url).port), token = config.http_headers['X-Easy-Switch-Token'];
-    const next = sessionConfig(restoredText(current, record), port, token);
-    restoreAuth(record.auth);
-    const replacement = { ...record, installed: sessionConfig(record.original, port, token), nativeTools: false,
-      previous: { installed: record.installed, nativeTools: record.nativeTools } };
-    delete replacement.auth;
-    atomic(recordFile, replacement); writeText(record.file, next);
-    return syncSession(root, codexHome);
-  }
-  const selected = subscription(root);
-  if (record.nativeTools) {
-    try {
-      if (imageEligible(JSON.parse(read(path.join(codexHome, 'auth.json'))))) return true;
-    } catch { return true; }
-  }
-  if (!selected) return false;
-  const current = read(record.file), authFile = path.join(codexHome, 'auth.json');
+  const enabled = nativeSubscription(codexHome) || hasSubscription(root);
+  if (enabled === !!record.nativeTools) return enabled;
+  const current = read(record.file);
   const config = parse(record.installed).model_providers.easy_switch;
   const port = Number(new URL(config.base_url).port), token = readState(root).token;
-  const installed = withNativeSettings(sessionConfig(record.original, port, token, true));
-  const next = withNativeSettings(sessionConfig(restoredText(current, record), port, token, true));
-  const originalAuth = read(authFile);
-  const auth = { ...selected.auth, auth_mode: 'chatgpt', OPENAI_API_KEY: null };
-  const authRecord = { file: authFile, exists: fs.existsSync(authFile), original: originalAuth,
-    installed: JSON.stringify(auth, null, 2) + '\n', sourceFile: path.join(selected.provider.accountHome, 'auth.json') };
-  authRecord.sourceHash = hash(read(authRecord.sourceFile));
-  atomic(recordFile, { ...record, installed, nativeTools: true, auth: authRecord,
+  const configure = text => enabled ? withNativeSettings(sessionConfig(text, port, token, true)) : sessionConfig(text, port, token);
+  const installed = configure(record.original), next = configure(restoredText(current, record));
+  atomic(recordFile, { ...record, installed, nativeTools: enabled,
     previous: { installed: record.installed, nativeTools: record.nativeTools } });
-  if (read(record.file) !== current || read(authFile) !== originalAuth) throw new Error('Codex settings changed while enabling native images. Retry.');
-  writeText(authFile, authRecord.installed);
+  if (read(record.file) !== current) throw new Error('Codex settings changed while configuring native images. Retry.');
   writeText(record.file, next);
-  return true;
+  return enabled;
 }
 
 export function activateSession(root, codexHome, port, token) {
@@ -210,13 +194,9 @@ export function activateSession(root, codexHome, port, token) {
   const file = path.join(codexHome, 'config.toml');
   const exists = fs.existsSync(file);
   const original = exists ? fs.readFileSync(file, 'utf8') : '';
-  // Existing native subscriptions need only tool settings. Otherwise a managed,
-  // recoverable sign-in is installed from an account the user added to this app.
-  let nativeAuth = false;
-  try {
-    const auth = JSON.parse(fs.readFileSync(path.join(codexHome, 'auth.json'), 'utf8'));
-    nativeAuth = auth.auth_mode !== 'apikey' && !auth.OPENAI_API_KEY && !!(auth.tokens?.access_token && auth.tokens?.account_id);
-  } catch {}
+  // Local actor authentication enables tools without loading a native account's
+  // plan gate. The proxy uses the real account credentials for image requests.
+  const nativeAuth = nativeSubscription(codexHome);
   const installed = nativeAuth ? withNativeSettings(sessionConfig(original, port, token, true)) : sessionConfig(original, port, token);
   atomic(recordFile, { file, exists, original, installed, nativeTools: nativeAuth, modelDiscovery: true });
   if ((fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '') !== original) {

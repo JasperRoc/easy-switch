@@ -10,7 +10,7 @@ import { inspectStartup } from './sse.js';
 import { createUpstreamFetch } from './network.js';
 import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
-import { imageEligible, imageUnavailable } from './images.js';
+import { imageUnavailable } from './images.js';
 import { createCodexCatalog } from './catalog.js';
 
 function authorized(req, token) {
@@ -133,10 +133,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       for (const [key, until] of modelCooldown) if (until <= now()) modelCooldown.delete(key);
       let alias = state.active;
       let modelRouting = false, rejectedModel;
-      const imageAccount = provider => {
-        if (provider?.type !== 'account') return false;
-        try { return imageEligible(accountAuth(provider)); } catch { return true; }
-      };
+      const imageAccount = provider => provider?.type === 'account';
       const accountsOnly = image && Object.values(state.providers).some(imageAccount);
       const accepts = (provider, name) => !!provider && (image ? imageAccount(provider) || !accountsOnly && provider.type === 'api' : catalog.supports(name, provider, requestedModel));
       const cooling = image ? imageCooldown : new Map(Object.keys(state.providers).map(name => [name, Math.max(cooldown.get(name) || 0, modelCooldown.get(modelKey(name)) || 0)]));
@@ -149,7 +146,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         const first = alternate(state, null, cooling, now(), new Set(), accepts);
         if (!first) {
           const account = Object.values(state.providers).find(imageAccount);
-          if (!account) return error(res, 403, 'Free 账号不支持 Codex 图片生成；请添加有图片权限的付费账号或图片 API。');
+          if (!account) return error(res, 403, '没有可用的图片上游；请添加具有图片权限的账号或图片 API。');
           let valid = false;
           try { valid = !expired(accountAuth(account)); } catch {}
           return valid ? error(res, 429, '订阅图片生成暂不可用，请稍后重试') : error(res, 401, await reauth.prompt(account));

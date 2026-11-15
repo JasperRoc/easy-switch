@@ -7,7 +7,6 @@ import { claudeModelMapping } from '../src/claude-models.js';
 import { providerModels } from '../src/provider-models.js';
 import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin } from '../src/claude-auth.js';
 import { randomUUID } from 'node:crypto';
-import { imageEligible } from '../src/images.js';
 import { networkEnvironment } from '../src/network.js';
 import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment } from './network.js';
 import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
@@ -118,7 +117,7 @@ export class DesktopController {
     if (includeUsage && client === 'codex' && this.runtime.clientEnabled('codex')) syncNativeCredentials(this.root, this.codexHome);
     const state = init(this.providerRoot);
     const usage = this.runtime.clientEnabled(client) && includeUsage ? (client === 'claude' ? this.claudeUsage : this.usage).snapshot(state) : {};
-    let freeImages = false;
+    const hasImageAccount = client === 'codex' && Object.values(state.providers).some(provider => provider.type === 'account');
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
       let needsLogin = false, plan = null;
@@ -126,7 +125,6 @@ export class DesktopController {
         try {
           const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider);
           needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth);
-          if (client === 'codex' && !imageEligible(auth)) freeImages = true;
           if (client === 'claude') {
             plan = usage[alias]?.data?.plan || claudeSavedPlan(auth);
           }
@@ -154,7 +152,7 @@ export class DesktopController {
     return { client, clients, running: this.runtime.clientEnabled(client), providers, active: state.active,
       claudeDesktop: client === 'claude' && fs.existsSync(path.join(this.root, 'claude-desktop-session.json')),
       lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
-      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.clientEnabled('codex') && freeImages && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.clientEnabled('codex') && hasImageAccount && !this.runtime.imageTools, activeRequests: this.runtime.activeRequests, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
   }
   switchProvider(alias) { activate(aliasName(alias), this.providerRoot); this.runtime.syncClaude(); return this.snapshot(); }
   order(aliases) { setOrder(aliases, this.providerRoot); return this.snapshot(); }

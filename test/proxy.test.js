@@ -635,7 +635,7 @@ test('images use an API when no subscription exists and do not retry policy or v
   assert.equal(unauthorized.status, 401); assert.equal(calls, 1);
 });
 
-test('Free accounts are skipped for image generation and edits without changing their text selection', async t => {
+test('Free accounts are tried for image generation and edits in priority order without changing text selection', async t => {
   const { root, token } = fixture(t), calls = [];
   for (const [alias, plan] of [['free', 'free'], ['paid', 'plus']]) {
     const accountHome = path.join(root, 'accounts', alias);
@@ -648,26 +648,28 @@ test('Free accounts are skipped for image generation and edits without changing 
   } }));
   for (const route of ['generations', 'edits']) {
     const response = await fetch(proxy + '/v1/images/' + route, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'fixture' }) });
-    assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'paid'); await response.text();
+    assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'free'); await response.text();
   }
-  assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer paid', 'Bearer paid']);
+  assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer free', 'Bearer free']);
   assert.equal(readState(root).active, 'free'); assert.equal(readState(root).lastFailover, undefined);
 });
 
-test('Free-only image requests explain access limits, while an API can supply images for a Free text account', async t => {
+test('an API text provider without image support routes images to its only Free account', async t => {
   const { root, token } = fixture(t); let calls = 0, logins = 0;
   const accountHome = path.join(root, 'accounts', 'free');
   const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
   atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: jwt, account_id: 'free' } });
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
   addProvider('free', { type: 'account', accountHome }, root);
   const proxy = await listen(t, createProxy({ root, reauth: { prompt() { logins++; return 'sign in'; }, close() {} }, fetchImpl: async (url, options) => {
-    calls++; assert.equal(url, 'https://api.example/v1/images/generations'); assert.equal(options.headers.authorization, 'Bearer api');
+    if (url.endsWith('/responses')) { assert.equal(url, 'https://api.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer api'); return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }); }
+    calls++; assert.equal(url, 'https://chatgpt.com/backend-api/codex/images/generations'); assert.equal(options.headers.authorization, `Bearer ${jwt}`);
     return Response.json({ data: [{ b64_json: 'fixture-image' }] });
   } }));
   const sendImage = () => fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
-  const denied = await sendImage(); assert.equal(denied.status, 403); assert.match(await denied.text(), /Free.*(?:API|付费)/); assert.equal(calls, 0); assert.equal(logins, 0);
-  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
-  const response = await sendImage(); assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1); assert.equal(readState(root).active, 'free');
+  const response = await sendImage(); assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'free'); await response.text();
+  assert.equal(calls, 1); assert.equal(logins, 0); assert.equal(readState(root).active, 'api');
+  assert.equal(await (await send(proxy, token)).text(), 'data: [DONE]\n\n');
 });
 
 test('image entitlement rejections fail over before output, including startup SSE, but safety refusals do not', async t => {
@@ -675,7 +677,8 @@ test('image entitlement rejections fail over before output, including startup SS
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['first', 'second']) {
       const accountHome = path.join(root, 'accounts', alias);
-      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+      const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
+      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, id_token: jwt, account_id: alias } });
       addProvider(alias, { type: 'account', accountHome }, root);
     }
     const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {

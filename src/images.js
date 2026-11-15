@@ -1,15 +1,3 @@
-// Account claims describe plan availability; the upstream still decides access.
-export function imageEligible(auth) {
-  for (const token of [auth.tokens?.id_token, auth.tokens?.access_token]) {
-    try {
-      const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
-      const plan = claims['https://api.openai.com/auth']?.chatgpt_plan_type;
-      if (typeof plan === 'string') return plan.toLowerCase() !== 'free';
-    } catch {}
-  }
-  return true; // Older credentials may not contain plan metadata.
-}
-
 export function imageUnavailable(status, message) {
   if (![400, 403, 404].includes(status)) return false;
   try {
