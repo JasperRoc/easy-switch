@@ -35,7 +35,7 @@ async function launch(t, extraEnv = {}, initialConfig, prepare) {
   const page = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus(); });
   await page.bringToFront();
-  await page.locator('#status').filter({ hasText: /Routing active|路由已启用/ }).waitFor();
+  await page.locator('#routing-toggle[aria-checked="true"]').waitFor();
   assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider, 'easy_switch');
   assert.equal(parse(fs.readFileSync(file,'utf8')).features.api_key_model_discovery, true);
   return { app, page, file, original, root, home, options };
@@ -48,19 +48,19 @@ test('an unreadable desktop.json cannot block startup; the warning clears when f
   const file = path.join(root, 'desktop.json');
   await page.locator('#preferences-warning').filter({ hasText: 'EACCES' }).waitFor();
   await page.locator('.provider strong').filter({ hasText: 'saved' }).waitFor();
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await page.locator('#error').filter({ hasText: 'desktop.json' }).waitFor();
   assert.equal(fs.statSync(file).mode & 0o777, 0);
   fs.chmodSync(file, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'en', theme: 'light' });
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').waitFor({ state: 'hidden' });
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
   fs.chmodSync(file, 0);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').filter({ hasText: 'Desktop preferences could not be read' }).waitFor();
   fs.chmodSync(file, 0o600);
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   fs.chmodSync(file, 0);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed'));
   await page.locator('#preferences-warning').filter({ hasText: '无法读取界面设置' }).waitFor();
@@ -104,21 +104,21 @@ test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { ski
   assert.equal((await page.evaluate(() => window.easySwitch.call('state'))).active, 'personal');
   assert.match(await page.locator('#models-provider').innerText(), /inactive/);
   await page.click('#close-models');
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await page.locator('.provider[data-alias="inactive"] .query-models').click();
   await page.locator('#models-status').filter({ hasText: '目录已刷新 · 5 个模型' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-models-dark-zh.png') });
   await page.click('#close-models');
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="light"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="light"]'); await providersPage(page);
   const state = await page.evaluate(() => window.easySwitch.call('state'));
   assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
   assert.equal(await page.locator('nav, #network, #network-form').count(), 0);
-  await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing stopped'}).waitFor();
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="false"]').waitFor();
   assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'false');
   assert.equal(fs.readFileSync(file,'utf8'),original);
-  await page.click('#routing-toggle'); await page.locator('#status').filter({hasText:'Routing active'}).waitFor();
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="true"]').waitFor();
   const image = path.join(project,'.desktop-test','settings.png'); fs.mkdirSync(path.dirname(image),{recursive:true}); await page.screenshot({path:image});
   await page.locator('[data-client="codex"]').focus();
   await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
@@ -166,7 +166,7 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
-  assert.equal(await page.locator('[data-i18n="clientHelp"]').innerText(), 'Manage providers and automatic fallback priority.');
+  assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status').count(), 0);
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   assert.equal(await page.locator('#claude-mapping').isVisible(), false, 'adding a Claude API starts with the same simple fields as Codex');
   assert.equal(await page.locator('#claude-fable-model').isVisible(), false);
@@ -216,7 +216,7 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.equal(await page.locator('.provider .tag').count(), 0);
   const second = page.locator('.provider[data-alias="second"] .select-provider');
   assert.equal(await second.innerText(), ''); assert.equal(await second.getAttribute('aria-pressed'), 'false');
-  await second.click(); await page.locator('#current-provider').filter({ hasText: /^second$/ }).waitFor();
+  await second.click(); await page.locator('[data-client-provider="claude"]').filter({ hasText: /^second$/ }).waitFor();
   assert.equal(await second.getAttribute('aria-pressed'), 'true'); assert.equal(await second.locator('use').getAttribute('href'), 'assets/ui.svg#check');
   await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-second'); assert.equal(calls.at(-1).key, 'second-key');
   assert.equal(fs.readFileSync(file, 'utf8'), original);
@@ -225,10 +225,10 @@ test('Claude Desktop setup and icon-only provider switches share the CLI route w
   assert.deepEqual(catalog.data.map(item => item.display_name), ['deepseek-first', 'deepseek-helper', 'deepseek-second']);
   assert.ok(catalog.data.every(item => item.description.startsWith('easy-switch · ')));
   const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('html[lang="zh-CN"]').waitFor();
   await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-light.png') });
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-dark.png') });
   await page.evaluate(() => window.easySwitch.call('stop'));
@@ -266,7 +266,7 @@ test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings
   await page.locator('.edit-provider').click();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-en.png') });
   await page.click('#close-dialog');
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('.edit-provider').click();
   assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
   assert.match(await page.locator('#claude-mapping [data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
@@ -423,7 +423,7 @@ test('subscription quota rings, purchased credits, stale data and image access e
   await plus.locator('.quota-segment.weekly').focus();
   await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
   await plus.locator('.quota-segment.weekly').evaluate(element => element.blur());
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await credits.locator('.quota-center').focus(); await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
   await credits.locator('.quota-center').evaluate(element => element.blur());
   await credits.locator('.quota-center').hover();
@@ -443,7 +443,7 @@ test('subscription quota rings, purchased credits, stale data and image access e
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
   await page.mouse.move(100, 100);
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await page.screenshot({ path: path.join(folder, 'quota-dark.png') });
   await app.evaluate(({ BrowserWindow }) => {
@@ -458,9 +458,9 @@ test('subscription quota rings, purchased credits, stale data and image access e
     BrowserWindow.getAllWindows()[0].webContents.send('easy-switch:changed');
   });
   await page.locator('#native-images').filter({ hasText: 'Free 账号无法启用' }).waitFor();
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
   await page.locator('#native-images').filter({ hasText: 'Free accounts cannot enable' }).waitFor();
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await plus.locator('.reset-quota').click();
   await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();
   assert.equal(await page.locator('#reset-confirm').isDisabled(), true, 'a card must be chosen explicitly');
@@ -478,7 +478,7 @@ test('subscription quota rings, purchased credits, stale data and image access e
   assert.equal(attempts.length, 2); assert.deepEqual(attempts[0], attempts[1]); assert.equal(attempts[0].creditId, 'later');
   assert.equal(await page.locator('#reset-confirm').isDisabled(), true);
   assert.match(await plus.locator('.quota-center').getAttribute('aria-label'), /36.445/);
-  assert.equal(await page.locator('#current-provider').innerText(), 'api');
+  assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'api');
   await page.click('#close-reset');
   await app.evaluate(({ BrowserWindow }) => {
     const state = globalThis.easySwitchQuotaState;
@@ -510,9 +510,9 @@ test('Electron recovery helper restores both clients after the main process is k
 
 test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {
   const { app, page, root, options } = await launch(t);
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.locator('#add-subscription').filter({hasText:'添加订阅'}).waitFor();
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
   await page.click('#add-subscription');
@@ -525,18 +525,18 @@ test('desktop language and glass themes update live and persist across applicati
   assert.match(await page.locator('.glass').first().evaluate(element=>getComputedStyle(element).backdropFilter), /blur/);
   const folder=path.join(project,'.desktop-test'); fs.mkdirSync(folder,{recursive:true});
   await page.screenshot({path:path.join(folder,'ocean-dark-zh.png')});
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
+  await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
   await page.screenshot({path:path.join(folder,'ocean-light-zh.png')});
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'desktop.json'))), {language:'zh-CN',theme:'dark'});
   await app.close();
   const {_electron}=await import('playwright-core'); const reopened=await _electron.launch(options);
   try {
     const second=await reopened.firstWindow();
-    await second.locator('#status').filter({hasText:'路由已启用'}).waitFor();
+    await second.locator('#routing-toggle[aria-checked="true"]').waitFor();
     assert.equal(await second.locator('html').getAttribute('lang'),'zh-CN');
     assert.equal(await second.locator('html').getAttribute('data-theme'),'dark');
-    await second.click('#settings'); await second.click('#language-button'); await second.click('[data-language="en"]'); await second.click('[data-client="codex"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
+    await second.click('#language-button'); await second.click('[data-language="en"]'); await second.click('[data-client="codex"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
   } finally {await reopened.close();}
 });
 test('grip dragging, deletion, explicit import and in-app release review work without opening Releases', {skip:!enabled,timeout:60000},async t=>{
@@ -571,7 +571,7 @@ test('grip dragging, deletion, explicit import and in-app release review work wi
  await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
  await page.click('#close-update'); await providersPage(page); await page.click('#star'); await providersPage(page);
  const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'liquid-light.png')});
- await page.click('#settings'); await page.click('#theme-button');await page.click('button[data-theme="dark"]'); await providersPage(page);await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
+ await page.click('#theme-button');await page.click('button[data-theme="dark"]'); await providersPage(page);await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
 });
 
 test('subscription verification stays in its dialog and disappears after approval', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
@@ -647,7 +647,7 @@ test('desktop localizes structured update notes', { skip: !enabled, timeout: 300
   await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
   assert.equal(await page.locator('#update-notes li strong').innerText(), 'session');
   await page.screenshot({ path: path.join(folder, 'update-en.png') });
-  await page.click('#close-update'); await providersPage(page); await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#close-update'); await providersPage(page); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
   assert.equal((await page.locator('#update-notes').innerText()).includes('Switch a single'), false);
   assert.equal((await page.locator('#update-notes').innerText()).includes('<!--'), false);
@@ -687,6 +687,8 @@ test('sidebar switches each client independently, remembers routing choices and 
   await page.click('#settings'); await page.locator('#settings-page').waitFor();
   assert.equal(await page.locator('#providers-page').isVisible(), false);
   assert.equal(await page.locator('#settings-page .settings-card').count(), 1);
+  assert.equal(await page.locator('#settings-page .setting-row').count(), 1);
+  assert.equal(await page.locator('.workspace>header .icon-control').count(), 2);
   // Exercise startup UI through a local IPC fixture; never change OS login items.
   await app.evaluate(({ ipcMain }) => {
     const original = ipcMain._invokeHandlers.get('easy-switch:call');
@@ -712,35 +714,47 @@ test('sidebar switches each client independently, remembers routing choices and 
     const layout = await page.evaluate(() => {
       const bounds = id => { const rect = document.getElementById(id).getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; };
       const footer = document.querySelector('.workspace-footer').getBoundingClientRect(), star = document.getElementById('star').getBoundingClientRect();
-      const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect(), title = document.querySelector('.workspace-title h1').getBoundingClientRect();
-      return { controls: ['language-button', 'theme-button', 'autostart'].map(bounds), settings: bounds('settings'), starCenter: bounds('star'), brandTop: brand.top, titleTop: title.top, footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
+      const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect();
+      return { controls: ['language-button', 'theme-button'].map(bounds), settings: bounds('settings'), starCenter: bounds('star'), brandCenter: brand.top + brand.height / 2, brandTop: brand.top, footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
     });
-    assert.ok(layout.controls.every(control => Math.abs(control.x - layout.controls[0].x) < 1), 'settings controls share a vertical center line: ' + JSON.stringify(layout));
-    assert.ok(Math.abs(layout.brandTop - layout.titleTop) < 1, 'sidebar brand and page title share a top baseline');
+    assert.ok(layout.controls.every(control => Math.abs(control.y - layout.brandCenter) < 1), 'toolbar buttons and sidebar brand share a center line: ' + JSON.stringify(layout));
+    assert.ok(layout.controls[0].x > layout.width / 2 && Math.abs(layout.controls[1].x - layout.starCenter.x) < 1, 'language and appearance sit at the top right');
+    if (process.platform === 'darwin') assert.ok(layout.brandTop >= 54, 'logo leaves room below the macOS window controls');
     assert.ok(Math.abs(layout.settings.y - layout.starCenter.y) < 1, 'sidebar settings and footer actions share a bottom baseline');
     assert.ok(Math.abs(layout.footer.bottom - layout.height) < 1 && Math.abs(layout.footer.right - layout.width) < 1, 'footer stays at the window edge');
     assert.ok(layout.star.bottom <= layout.height && layout.star.right <= layout.width && layout.scrollWidth === layout.width, 'footer fits without horizontal overflow');
     assert.equal(await page.locator('#updates').getAttribute('title'), language === 'en' ? 'Check for updates' : '检查更新');
     await page.screenshot({ path: path.join(folder, `settings-footer-${language}-${theme}.png`), animations: 'disabled' });
     await providersPage(page); await page.locator('#updates').waitFor({ state: 'visible' }); await page.locator('#star').waitFor({ state: 'visible' });
-    const descriptions = [];
     for (const client of ['codex', 'claude']) {
       await page.click(`[data-client="${client}"]`);
       await page.locator('.provider').filter({ hasText: `${client}-main` }).waitFor();
       await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
-      descriptions.push(await page.locator('[data-i18n="clientHelp"]').innerText());
+      assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status').count(), 0);
+      assert.equal(await page.locator('#language-button').isVisible(), true);
+      assert.equal(await page.locator('#theme-button').isVisible(), true);
+      const actions = await page.locator('.provider-actions button').evaluateAll(buttons => buttons.map(button => {
+        const rect = button.getBoundingClientRect();
+        return { top: rect.top, width: rect.width, height: rect.height, contentWidth: button.scrollWidth, innerWidth: button.clientWidth };
+      }));
+      assert.equal(actions.length, 3);
+      assert.ok(actions.every(button => Math.abs(button.top - actions[0].top) < 1 && Math.abs(button.width - actions[0].width) < 1 && Math.abs(button.height - actions[0].height) < 1), 'import and add actions share one row with equal sizes');
+      assert.ok(actions.every(button => button.contentWidth <= button.innerWidth), 'action labels fit at the minimum window width');
       const alignment = await page.evaluate(() => {
-        const header = document.querySelector('.workspace>header'), title = document.querySelector('.workspace-title').getBoundingClientRect();
+        const header = document.querySelector('.workspace>header'), toolbar = document.getElementById('theme-button').getBoundingClientRect();
         const first = document.querySelector('.client-item').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
-        return { firstTop: first.top, panelTop: panel.top, titleLeft: title.left, panelLeft: panel.left, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(header).paddingRight), panelRightInset: innerWidth - panel.right, titleBottom: title.bottom, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
+        return { firstTop: first.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(header).paddingRight), panelRightInset: innerWidth - panel.right, toolbarBottom: toolbar.bottom, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
       });
       assert.ok(Math.abs(alignment.firstTop - alignment.panelTop) < 1, 'client navigation and provider panel share a top baseline: ' + JSON.stringify(alignment));
-      assert.ok(alignment.titleBottom + 12 <= alignment.panelTop, 'description stays clear of the provider panel: ' + JSON.stringify(alignment));
-      assert.ok(Math.abs(alignment.titleLeft - alignment.panelLeft) < 1 && Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
+      assert.ok(alignment.toolbarBottom + 12 <= alignment.panelTop, 'toolbar stays clear of the provider panel: ' + JSON.stringify(alignment));
+      assert.ok(Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
     }
-    assert.equal(descriptions[0], descriptions[1]);
-    assert.equal(descriptions[0], language === 'en' ? 'Manage providers and automatic fallback priority.' : '管理服务商与自动切换优先级。');
     await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });
+    await page.click('#theme-button');
+    await page.locator('#theme-menu').waitFor({ state: 'visible' });
+    await page.screenshot({ path: path.join(folder, `appearance-toolbar-${language}-${theme}.png`), animations: 'disabled' });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#theme-button').getAttribute('aria-expanded'), 'false');
     await page.click('#settings');
   }
   await page.click('[data-client="codex"]'); await page.locator('#providers-page').waitFor();
@@ -788,8 +802,8 @@ test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credit
   for (const name of ['codex', 'claude']) assert.match(await page.locator(`.${name}-logo`).evaluate(element => getComputedStyle(element).maskImage), new RegExp(`${name}-mark\\.png`));
   await page.mouse.move(450, 100);
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-en.png'), animations: 'disabled' });
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-zh-dark.png'), animations: 'disabled' });
 });
@@ -812,8 +826,8 @@ test('Claude account rows display Free, Pro, Max and Ultra while missing plans s
   await page.locator('[data-alias="unknown"] .identity small').filter({ hasText: 'Claude · Plan unknown' }).waitFor();
   assert.equal(await page.locator('.quota, .reset-quota, #claude-desktop-hint').count(), 0);
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-en-light.png'), animations: 'disabled' });
-  await page.click('#settings'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
-  await page.click('#settings'); await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
   const unknown = page.locator('[data-alias="unknown"] .identity small');
   await unknown.filter({ hasText: 'Claude · 套餐未知' }).waitFor();
   assert.match(await unknown.getAttribute('title'), /不代表该账号为 Free/);

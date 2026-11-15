@@ -33,6 +33,7 @@ function appearance() {
   for (const element of document.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
   $('language-button').title = t('language'); $('theme-button').title = t('appearance');
   $('updates').title = t('updates'); $('star').title = t('star');
+  $('import-existing').title = t('importHint');
   renderProviderModels();
   for (const element of document.querySelectorAll('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
   providerType(); renderResetCards();
@@ -246,8 +247,6 @@ function refresh(nextState) {
       control.setAttribute('aria-label', `${name === 'codex' ? 'Codex' : 'Claude'} · ${t(route.running ? 'stopRouting' : 'startRouting')}`);
       control.title = control.getAttribute('aria-label');
     }
-    $('status').textContent = t(state.running ? 'routingActive' : 'routingStopped'); $('status').classList.toggle('stopped', !state.running);
-    $('current-provider').textContent = state.active || t('addProvider');
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').setAttribute('aria-checked', String(!!state.loginItem));
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
@@ -455,11 +454,8 @@ $('provider-form').addEventListener('submit', async event => {
 $('provider-alias').addEventListener('input', renderLogin);
 function showSettings(open) {
   settingsOpen = open;
-  document.querySelector('.workspace-title h1').textContent = t(open ? 'settings' : 'yourProviders');
-  document.querySelector('.workspace-title p').textContent = t(open ? 'settingsHelp' : 'clientHelp');
   $('providers-page').hidden = open; $('settings-page').hidden = !open;
   $('settings').setAttribute('aria-pressed', String(open));
-  document.querySelector('.workspace-route').hidden = open;
   for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(!open && item.dataset.client === state.client));
   for (const item of document.querySelectorAll('[data-client-item]')) item.classList.toggle('selected', !open && item.dataset.clientItem === state.client);
 }
