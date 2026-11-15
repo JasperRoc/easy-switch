@@ -86,3 +86,17 @@ test('reinstallation preserves changed model preferences, unrelated settings, an
   fs.appendFileSync(file, '# concurrent edit\n');
   assert.throws(() => plan.apply(), /安装期间配置被修改/);
 });
+
+test('Linux full uninstall restores client settings, removes account data and completions, and unregisters its package', {skip:process.platform!=='linux'},async t=>{
+ const {service}=await import('../src/install.js'),{installCompletion}=await import('../src/completion.js');
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'switch-uninstall-linux-')),root=path.join(home,'switch'),codexHome=path.join(home,'codex');
+ const previous=process.env.XDG_CONFIG_HOME;process.env.XDG_CONFIG_HOME=path.join(home,'.config');
+ t.after(()=>{if(previous===undefined)delete process.env.XDG_CONFIG_HOME;else process.env.XDG_CONFIG_HOME=previous;});
+ t.after(()=>fs.rmSync(home,{recursive:true,force:true}));fs.mkdirSync(codexHome);
+ const original='model="saved"\n';fs.writeFileSync(path.join(codexHome,'config.toml'),original);
+ prepareConfig(root,codexHome,18345,'token').apply();installCompletion(home,home);fs.mkdirSync(path.join(root,'accounts'));
+ const calls=[];service('uninstall',root,{userHome:home,zshHome:home,execute:(binary,args)=>calls.push([binary,args])});
+ assert.equal(fs.existsSync(root),false);assert.equal(fs.readFileSync(path.join(codexHome,'config.toml'),'utf8'),original);
+ assert.deepEqual(calls.at(-1),['npm',['uninstall','--global','--ignore-scripts','easy-switch']]);
+ assert.ok(!fs.readFileSync(path.join(home,'.bashrc'),'utf8').includes('easy-switch'));
+});

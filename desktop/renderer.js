@@ -60,18 +60,18 @@ function quotaRing(data, tooltip) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
   const plus = data.plan === 'plus' || !!data.fiveHour && !!data.weekly && !['pro', 'prolite', 'promax'].includes(data.plan);
-  const depleted = !data.unlimited && data.credits === 0 && [data.fiveHour, data.weekly].some(window => window?.remaining === 0);
+  const depleted = !data.unlimited && data.credits === 0 && [data.fiveHour, data.weekly, data.monthly].some(window => window?.remaining === 0);
   if (depleted) {
     svg.classList.add('depleted');
     const outline = document.createElementNS(svg.namespaceURI, 'circle');
     for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 20, class: 'quota-exhausted-outline' })) outline.setAttribute(key, value);
     svg.append(outline);
   }
-  const windows = plus ? ['fiveHour', 'weekly'] : [data.weekly ? 'weekly' : data.fiveHour ? 'fiveHour' : 'weekly'];
+  const windows = data.monthly ? ['monthly'] : plus ? ['fiveHour', 'weekly'] : [data.weekly ? 'weekly' : data.fiveHour ? 'fiveHour' : data.plan === 'free' ? 'monthly' : 'weekly'];
   const descriptions = [];
   for (const name of windows) {
     const weekly = name === 'weekly';
-    const value = weekly ? data.weekly : data.fiveHour, label = t(weekly ? 'quotaWeek' : 'quotaFiveHour');
+    const value = data[name], label = t(name === 'monthly' ? 'quotaMonth' : weekly ? 'quotaWeek' : 'quotaFiveHour');
     const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
     let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
     if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
@@ -157,7 +157,7 @@ function renderProviders() {
     handle.addEventListener('keydown', event => { if (!['ArrowUp','ArrowDown'].includes(event.key)) return; event.preventDefault(); const names = state.providers.map(item=>item.alias), next=index+(event.key==='ArrowUp'?-1:1); if(next<0 || next>=names.length)return; [names[index],names[next]]=[names[next],names[index]]; run('order',names).catch(()=>{}); });
     row.append(handle);
     const identity = node('div', null, 'identity');
-    const plan = provider.usage?.data?.plan || provider.plan, label = planLabel(plan, state.client);
+    const plan = provider.needsLogin && state.client === 'claude' ? null : provider.usage?.data?.plan || provider.plan, label = planLabel(plan, state.client);
     const detail = node('small', provider.type === 'account' ? label ? `${state.client === 'claude' ? 'Claude' : 'ChatGPT'} ${label}` : state.client === 'claude' ? t('claudePlanUnknown') : t('account') : provider.baseUrl);
     if (provider.type === 'account') detail.title = state.client === 'claude' ? t(label ? 'claudePlanCached' : 'claudePlanUnknownHelp') : label ? t(provider.usage?.data?.plan ? 'planLive' : 'planCached') : '';
     if (provider.plan && provider.usage?.data?.plan && provider.plan !== provider.usage.data.plan) detail.title = t('planMismatch', { cached: planLabel(provider.plan, state.client), live: label });
@@ -487,6 +487,7 @@ for(const id of ['language','theme']) $(id+'-button').addEventListener('click',(
 for(const item of document.querySelectorAll('[data-language],button[data-theme]')) item.addEventListener('click',async()=>{closeMenus();try{await run('preferences',item.dataset.language?{language:item.dataset.language}:{theme:item.dataset.theme});}catch{}});
 document.addEventListener('click', event => { if (!event.target.closest('.icon-control')) closeMenus(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
+$('uninstall').addEventListener('click', () => call('uninstall').catch(error => showError(error)));
 $('autostart').addEventListener('click', async event => {
   const control = event.currentTarget; control.disabled = true;
   try { await run('autostart', !state.loginItem); } catch {} finally { control.disabled = false; }

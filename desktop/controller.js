@@ -124,9 +124,9 @@ export class DesktopController {
       if (provider.type === 'account') {
         try {
           const auth = client === 'claude' ? claudeAuth(provider) : accountAuth(provider);
-          needsLogin = client === 'claude' ? claudeExpired(auth) && !auth.refreshToken : expired(auth);
+          needsLogin = client === 'claude' ? usage[alias]?.status === 'signin' || claudeExpired(auth) && !auth.refreshToken : expired(auth);
           if (client === 'claude') {
-            plan = usage[alias]?.data?.plan || claudeSavedPlan(auth);
+            plan = needsLogin ? null : usage[alias]?.data?.plan || claudeSavedPlan(auth);
           }
         }
         catch { needsLogin = true; }

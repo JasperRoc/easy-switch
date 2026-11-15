@@ -240,3 +240,33 @@ test('subscription model directories use series grouping and native variant orde
   assert.deepEqual(result.models.map(model => model.id), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']);
   assert.ok(result.models.every(model => model.defaultEffort === 'high'));
 });
+
+test('a saved provider catalog makes later launches independent of slow upstream discovery and never stores API keys', async t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switch-catalog-startup-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const providers={api:{type:'api',baseUrl:'https://models.example/v1',apiKey:'PRIVATE_API_KEY'}};
+  const state={providers,order:['api']};
+  const initial=createCodexCatalog({root,metadataImpl:clientMetadata,fetchImpl:async()=>Response.json({data:[{id:'gpt-6.1-sol'}]})});
+  await initial.union(state,'0.165.0',new AbortController().signal);
+  const saved=fs.readFileSync(path.join(root,'model-catalog-cache.json'),'utf8');
+  assert.doesNotMatch(saved,/PRIVATE_API_KEY/);
+  let respond,metadataReads=0;
+  const restarted=createCodexCatalog({root,metadataImpl:async()=>{metadataReads++;return clientMetadata();},fetchImpl:()=>new Promise(resolve=>{respond=resolve;})});
+  const models=await restarted.union(state,'0.165.0',new AbortController().signal);
+  assert.equal(models.models[0].slug,'gpt-6.1-sol');assert.equal(metadataReads,0);
+  assert.equal(restarted.supports('api',providers.api,'not-in-stale-cache'),true,'stale menus cannot claim current model exclusion');
+  const next=await restarted.union(state,'0.165.0',new AbortController().signal);
+  assert.equal(next.models[0].slug,'gpt-6.1-sol');
+  respond(Response.json({data:[{id:'vendor-new'}]}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual((await restarted.union(state,'0.165.0',new AbortController().signal)).models.map(model=>model.slug),['vendor-new']);
+});
+
+test('packaged official metadata enriches exact IDs without launching an extra Codex process or adding available models',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'switch-packaged-metadata-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const binary=path.join(root,process.platform==='win32'?'codex.exe':'codex');
+ fs.writeFileSync(path.join(root,'version.txt'),'fixture');
+ fs.writeFileSync(path.join(root,'model-metadata.json'),JSON.stringify({version:'fixture',models:[{id:'gpt-6.1-sol',label:'Official Sol',efforts:['low','high'],defaultEffort:'high'},{id:'never-offered',label:'No',efforts:[]}]}));
+ const result=await discoverModels({type:'api',baseUrl:'https://api.example/v1',apiKey:'fixture'},root,{binary,fetchImpl:async()=>Response.json({data:[{id:'gpt-6.1-sol'}]})});
+ assert.deepEqual(result.models.map(model=>model.id),['gpt-6.1-sol']);assert.equal(result.models[0].label,'Official Sol');assert.deepEqual(result.models[0].efforts,['low','high']);
+});

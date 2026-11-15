@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { accountAuth, atomic } from '../src/store.js';
 import { createUpstreamFetch } from '../src/network.js';
-import { claudeAuth, claudeExpired, claudeToken } from '../src/claude-auth.js';
+import { claudeAuth, claudeExpired, claudeToken, claudeProfileHeaders } from '../src/claude-auth.js';
 import { claudeProfilePlan } from '../src/plans.js';
 
 const fingerprint = auth => createHash('sha256').update(JSON.stringify(auth.tokens || [auth.accessToken, auth.scopes])).digest('hex');
@@ -11,10 +11,11 @@ const number = value => (typeof value === 'number' || typeof value === 'string' 
 export function normalizeUsage(payload, now = Date.now()) {
   if (!payload || typeof payload.plan_type !== 'string') throw new Error('Invalid usage response');
   const windows = [payload.rate_limit?.primary_window, payload.rate_limit?.secondary_window].filter(Boolean);
-  const window = weekly => {
+  const window = period => {
     const item = windows.find(item => {
       const seconds = number(item.limit_window_seconds);
-      return seconds > 0 && (weekly ? seconds >= 6 * 86400 && seconds <= 8 * 86400 : seconds < 86400);
+      return seconds > 0 && (period === 'monthly' ? seconds >= 28 * 86400 && seconds <= 31 * 86400
+        : period === 'weekly' ? seconds >= 6 * 86400 && seconds <= 8 * 86400 : seconds < 86400);
     });
     const used = number(item?.used_percent);
     if (!item || used === null) return null;
@@ -23,7 +24,7 @@ export function normalizeUsage(payload, now = Date.now()) {
       resetsAt: reset > 0 ? reset * 1000 : after !== null && after >= 0 ? now + after * 1000 : null };
   };
   const balance = number(payload.credits?.balance);
-  return { plan: payload.plan_type.toLowerCase(), fiveHour: window(false), weekly: window(true),
+  return { plan: payload.plan_type.toLowerCase(), fiveHour: window('fiveHour'), weekly: window('weekly'), monthly: window('monthly'),
     credits: balance !== null && balance >= 0 ? balance : payload.credits?.has_credits === false && payload.credits?.unlimited !== true ? 0 : null, unlimited: payload.credits?.unlimited === true };
 }
 
@@ -50,32 +51,38 @@ export class SubscriptionUsage {
       if (!this.closed && !this.paused && !entry.pending && (force === true || force === alias || this.now() - entry.attemptedAt >= retryMs)) {
         entry.attemptedAt = this.now(); entry.pending = this.load(provider, auth, entry).finally(() => { entry.pending = null; });
       }
-      result[alias] = { status: entry.status, fetchedAt: entry.fetchedAt, data: entry.data, refreshing: !!entry.pending };
+      result[alias] = { status: entry.status, fetchedAt: entry.fetchedAt, data: entry.data, refreshing: !!entry.pending,
+        ...(entry.failure ? { failure: entry.failure } : {}) };
     }
     for (const alias of this.entries.keys()) if (!state.providers[alias]) { this.entries.get(alias).abort?.abort(); this.entries.delete(alias); }
     return result;
   }
   async load(provider, auth, entry) {
     const abort = new AbortController(); entry.abort = abort;
+    delete entry.failure;
     let client;
     const claude = this.client === 'claude';
     const request = credentials => (this.fetchImpl || client.fetch)(claude ? 'https://api.anthropic.com/api/oauth/profile' : 'https://chatgpt.com/backend-api/wham/usage', {
-      headers: claude ? { authorization: `Bearer ${credentials.accessToken}`, accept: 'application/json', 'cache-control': 'no-cache' }
+      headers: claude ? claudeProfileHeaders(credentials.accessToken)
         : { authorization: `Bearer ${credentials.tokens.access_token}`, 'ChatGPT-Account-ID': credentials.tokens.account_id,
           accept: 'application/json', originator: 'codex_cli_rs' },
       redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]),
     });
     try {
       client = this.fetchImpl ? null : createUpstreamFetch(this.root);
-      if (claude && claudeExpired(auth) && auth.refreshToken) {
-        await claudeToken(provider, this.fetchImpl || client.fetch, { signal: abort.signal });
+      const refreshClaude = async force => {
+        try { await claudeToken(provider, this.fetchImpl || client.fetch, { signal: abort.signal, force }); }
+        catch (error) { if (!abort.signal.aborted && error.code === 'CLAUDE_AUTH_REQUIRED') { entry.status = 'signin'; entry.failure = 'authentication'; } throw error; }
         auth = claudeAuth(provider); entry.key = fingerprint(auth);
+      };
+      if (claude && claudeExpired(auth) && auth.refreshToken) {
+        await refreshClaude(false);
       }
       let response = await request(auth);
       if (abort.signal.aborted) { await response.body?.cancel(); return; }
       if (response.status === 401 && (this.refreshAuth || claude && auth.refreshToken)) {
         await response.body?.cancel();
-        if (claude) await claudeToken(provider, this.fetchImpl || client.fetch, { signal: abort.signal, force: true });
+        if (claude) await refreshClaude(true);
         else await this.refreshAuth(provider, abort.signal);
         if (abort.signal.aborted) return;
         auth = claude ? claudeAuth(provider) : accountAuth(provider); entry.key = fingerprint(auth);
@@ -83,7 +90,9 @@ export class SubscriptionUsage {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        entry.status = response.status === 401 ? 'signin' : 'unavailable'; entry.failures = (entry.failures || 0) + 1; return;
+        entry.status = response.status === 401 ? 'signin' : 'unavailable';
+        entry.failure = response.status === 401 ? 'authentication' : response.status === 403 ? 'forbidden' : 'connection';
+        entry.failures = (entry.failures || 0) + 1; return;
       }
       const payload = await response.json();
       if (claude) {
@@ -98,7 +107,8 @@ export class SubscriptionUsage {
         entry.data = { plan };
       } else entry.data = normalizeUsage(payload, this.now());
       entry.fetchedAt = this.now(); entry.status = 'ready'; entry.failures = 0;
-    } catch { if (!abort.signal.aborted) { entry.status = 'unavailable'; entry.failures = (entry.failures || 0) + 1; } }
+      delete entry.failure;
+    } catch { if (!abort.signal.aborted) { if (entry.failure !== 'authentication') { entry.status = 'unavailable'; entry.failure = 'connection'; } entry.failures = (entry.failures || 0) + 1; } }
     finally {
       if (abort.signal.aborted) entry.attemptedAt = -Infinity;
       delete entry.abort; await client?.close();

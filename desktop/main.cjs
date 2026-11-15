@@ -10,6 +10,7 @@ const root = path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.c
 if (process.platform === 'win32') app.setAppUserModelId('io.github.jasperroc.easy-switch');
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
+app.setAppLogsPath(path.join(root, 'logs'));
 const ownsLock = app.requestSingleInstanceLock();
 let window, tray, controller, updater, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '';
 let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
@@ -147,6 +148,20 @@ async function boot() {
           quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
         }
         case 'star': await shell.openExternal(repository); return null;
+        case 'uninstall': {
+          const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: [t('cancel'), t('uninstall')], defaultId: 0, cancelId: 0,
+            message: t('uninstall'), detail: t('uninstallDetail') });
+          if (choice.response !== 1) return null;
+          if ([controller.codexHome, controller.runtime.claudeHome].some(directory => path.resolve(directory) === root || path.resolve(directory).startsWith(root + path.sep)))
+            throw new Error('Client data is inside the application data directory. Move it before uninstalling.');
+          await controller.stop(); setAutoStart(false); activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer);
+          const worker = path.join(__dirname, 'uninstall-cli.cjs');
+          const args = [worker, '--parent', String(process.pid), '--root', root];
+          if (app.isPackaged) args.push('--application', process.platform === 'darwin' ? path.resolve(path.dirname(process.execPath), '..', '..') : path.dirname(process.execPath));
+          const child = require('node:child_process').spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+          await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); child.unref();
+          quitting = true; quitReady = true; app.exit(0); return null;
+        }
         case 'quit': app.quit(); return null;
         default: throw new Error('Unsupported application action.');
       }

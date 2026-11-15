@@ -10,7 +10,7 @@ export function candidates(words, root, scoped = false) {
   const prefix = words.at(-1) || '';
   const before = words.slice(0, -1);
   let options = [];
-  if (!before.length) options = ['add', 'edit', 'remove', 'list', 'current', 'order', ...(!scoped ? ['codex', 'claude', 'update', 'service'] : []), 'help', ...aliases];
+  if (!before.length) options = ['add', 'edit', 'remove', 'list', 'current', 'order', ...(!scoped ? ['codex', 'claude', 'update', 'uninstall', 'service'] : []), 'help', ...aliases];
   else if (before.length === 1 && before[0] === 'add') options = ['api', 'account'];
   else if (before.length === 1 && before[0] === 'service') options = ['status', 'restart', 'uninstall'];
   else if (before.length === 1 && ['edit', 'remove'].includes(before[0])) options = aliases;
@@ -55,4 +55,15 @@ export function installCompletion(userHome = os.homedir(), zshHome = process.env
     fs.mkdirSync(path.dirname(rc), { recursive: true });
     fs.writeFileSync(rc, result);
   }
+}
+export function removeCompletion(userHome = os.homedir(), zshHome = process.env.ZDOTDIR || userHome) {
+  for (const rc of [path.join(userHome, '.bashrc'), path.join(zshHome, '.zshrc')]) {
+    if (!fs.existsSync(rc)) continue;
+    const original = fs.readFileSync(rc, 'utf8'), from = original.indexOf(start), to = original.indexOf(end, from);
+    if (from < 0) continue;
+    if (to < 0) throw new Error(`Incomplete easy-switch completion block in ${rc}`);
+    const tail = to + end.length;
+    fs.writeFileSync(rc, original.slice(0, from) + original.slice(tail + (original[tail] === '\n' ? 1 : 0)));
+  }
+  fs.rmSync(path.join(userHome, '.local', 'share', 'easy-switch'), { recursive: true, force: true });
 }

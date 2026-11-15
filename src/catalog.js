@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { createUpstreamFetch } from './network.js';
 import { accountAuth, atomic, providerOrder } from './store.js';
@@ -16,7 +17,13 @@ function metadataFromModel(model) {
     supported_reasoning_levels: model.metadata?.supported_reasoning_levels || (model.efforts || []).map(effort => ({ effort, description: effort })) };
 }
 function clientCatalog(binary) {
-  if (!clientCatalogs.has(binary)) clientCatalogs.set(binary, codexModels({ binary, includeHidden: true }).then(models =>
+  if (!clientCatalogs.has(binary)) clientCatalogs.set(binary, (async () => {
+    if (path.isAbsolute(binary)) try {
+      const directory = path.dirname(binary), reference = JSON.parse(fs.readFileSync(path.join(directory, 'model-metadata.json'), 'utf8'));
+      if (reference.version === fs.readFileSync(path.join(directory, 'version.txt'), 'utf8').trim() && Array.isArray(reference.models)) return reference.models;
+    } catch { /* CLI installs and older bundles use the isolated official helper. */ }
+    return codexModels({ binary, includeHidden: true });
+  })().then(models =>
     models.map((model, priority) => ({ ...model, metadata: { priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model) } })))
     .catch(() => []));
   return clientCatalogs.get(binary);
@@ -42,12 +49,12 @@ async function enrichCodexModels(models, metadataImpl) {
   const visible = models.filter(codexTextModel);
   if (!visible.length) return [];
   let native;
-  try { native = await metadataImpl(); } catch { native = []; }
+  try { native = visible.every(model => model.metadataReady) ? [] : await metadataImpl(); } catch { native = []; }
   const metadata = new Map(native.map((model, priority) => [model.id, { priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model) }]));
   return visible.map(model => {
     const reference = metadata.get(model.id);
     const details = { ...reference, ...model.metadata };
-    return { ...model, pickerPriority: reference?.priority ?? model.metadata?.priority, label: model.label === model.id ? details.display_name || model.id : model.label, metadata: details,
+    return { ...model, metadataReady: true, pickerPriority: reference?.priority ?? model.pickerPriority ?? model.metadata?.priority, label: model.label === model.id ? details.display_name || model.id : model.label, metadata: details,
       efforts: (details.supported_reasoning_levels || []).map(level => level.effort), defaultEffort: details.default_reasoning_level ?? null };
   }).filter(codexTextModel).sort(compareCodexModels);
 }
@@ -157,7 +164,11 @@ export async function discoverModels(provider, root, { fetchImpl, signal, client
 
 export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITCH_CODEX_BIN || 'codex', metadataImpl = () => clientCatalog(binary), now = () => Date.now() }) {
   const cache = new Map();
-  const key = provider => JSON.stringify(provider) + (provider.type === 'account' ? JSON.stringify(accountAuth(provider)) : '');
+  const file = path.join(root, 'model-catalog-cache.json');
+  let saved = {};
+  try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = {};
+  const key = provider => createHash('sha256').update(JSON.stringify(provider) + (provider.type === 'account' ? JSON.stringify(accountAuth(provider)) : '')).digest('hex');
   const peek = (alias, provider, version) => {
     try {
       const entry = cache.get(alias);
@@ -166,22 +177,40 @@ export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITC
   };
   async function load(alias, provider, version, signal) {
     const cached = peek(alias, provider, version);
-    if (cached) return cached.pending;
+    if (cached) return cached.result || cached.pending;
     let fingerprint;
     try { fingerprint = key(provider); } catch { return { models: providerModels(provider), known: Array.isArray(provider.modelCatalog) }; }
     const entry = { key: fingerprint, version, until: now() + 60000 };
-    entry.pending = discoverModels(provider, root, { fetchImpl, signal, clientVersion: version, metadataImpl })
+    const prior = saved[alias];
+    const reusable = prior?.key === fingerprint && prior.version === version && now() - prior.fetchedAt < 24 * 60 * 60000 && Array.isArray(prior.models);
+    const refresh = reusable ? AbortSignal.timeout(10000) : signal;
+    entry.pending = discoverModels(provider, root, { fetchImpl, signal: refresh, clientVersion: version, metadataImpl })
       .then(result => ({ models: providerModels(provider, result.models), known: true }))
       .catch(error => {
-        if (signal.aborted) { if (cache.get(alias) === entry) cache.delete(alias); throw error; }
-        return { models: providerModels(provider), known: Array.isArray(provider.modelCatalog) };
-      }).then(result => { entry.result = result; return result; });
+        if (signal.aborted && !reusable) { if (cache.get(alias) === entry) cache.delete(alias); throw error; }
+        return { models: reusable ? prior.models : providerModels(provider), known: Array.isArray(provider.modelCatalog) };
+      }).then(result => {
+        if (result.known) {
+          saved[alias] = { key: fingerprint, version, fetchedAt: now(), models: result.models };
+          try { atomic(file, saved); } catch { /* An unwritable cache must not block discovery. */ }
+        }
+        entry.result = result; return result;
+      });
     cache.set(alias, entry);
+    if (reusable) {
+      const result = { models: prior.models, known: false };
+      // Cached availability only speeds the menu. Inference still verifies stale
+      // capabilities until the background refresh has answered.
+      entry.result = result;
+      entry.pending.catch(() => {});
+      return result;
+    }
     return entry.pending;
   }
   return {
     async union(state, version, signal) {
       for (const alias of cache.keys()) if (!state.providers[alias]) cache.delete(alias);
+      for (const alias of Object.keys(saved)) if (!state.providers[alias]) delete saved[alias];
       const entries = await Promise.all(providerOrder(state).filter(alias => state.providers[alias]).map(async alias =>
         [alias, await load(alias, state.providers[alias], version, signal)]));
       const models = new Map();

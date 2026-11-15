@@ -31,3 +31,21 @@
   !insertmacro skipPageIfUpdated
   !insertmacro MUI_PAGE_WELCOME
 !macroend
+
+; Updates preserve providers. A real uninstall restores routes before erasing data.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    IfFileExists "$INSTDIR\easy-switch.exe" 0 easy_switch_cleaned
+    System::Call 'kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "1")'
+    nsExec::ExecToStack '"$INSTDIR\easy-switch.exe" "$INSTDIR\resources\app.asar\desktop\uninstall-cli.cjs"'
+    Pop $0
+    Pop $1
+    System::Call 'kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "")'
+    ${if} $0 != 0
+      MessageBox MB_OK|MB_ICONSTOP "easy-switch could not restore its client settings. Your recovery data was retained. $1"
+      Abort
+    ${endif}
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "easy-switch"
+    easy_switch_cleaned:
+  ${endif}
+!macroend

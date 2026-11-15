@@ -1,5 +1,6 @@
 export const messages = {
   en: {
+    uninstall: 'Uninstall easy-switch', uninstallDetail: 'Restore client connections and remove this app, saved providers, login copies, preferences, downloads and caches. Original Codex/Claude sign-ins and conversations are kept. This cannot be undone.',
     modelCatalog: 'Model catalog', modelID: 'Model ID', modelDisplayName: 'Display name',
     fetchModels: 'Fetch available models', resetModels: 'Use automatic catalog', addModel: 'Add model', cancel: 'Cancel',
     automaticCatalog: 'From provider', customCatalog: 'Customized catalog', reorderModel: 'Reorder model {index}', removeModel: 'Remove model {index}',
@@ -34,7 +35,7 @@ export const messages = {
     resetConfirm: 'Use selected reset card', resetWorking: 'Applying reset…', resetRetry: 'Retry the same reset', resetReload: 'Refresh cards',
     reset_reset: 'Reset applied. A fresh quota read has been requested.', reset_alreadyRedeemed: 'This reset was already applied. A fresh quota read has been requested.',
     reset_nothingToReset: 'There is no eligible limit to reset.', reset_noCredit: 'No reset card is available for this request.',
-    quotaWeek: 'Week', quotaFiveHour: '5h', quotaCredits: 'Remaining credits', quotaLoading: 'Loading quota…',
+    quotaWeek: 'Week', quotaMonth: 'Month', quotaFiveHour: '5h', quotaCredits: 'Remaining credits', quotaLoading: 'Loading quota…',
     quotaUnavailable: 'Quota unavailable', quotaStale: 'Last known quota',
     quotaRemaining: '{label}: {percent}% remaining', quotaNotProvided: '{label}: not reported by account',
     quotaResets: 'Resets {time}', quotaUpdated: 'Updated {time}',
@@ -77,6 +78,7 @@ export const messages = {
     loginPermission: 'The operating system did not apply the login startup setting. Check login-item permissions in system settings.',
   },
   'zh-CN': {
+    uninstall: '彻底卸载 easy-switch', uninstallDetail: '恢复客户端连接，并删除软件、已保存的服务商、独立登录副本、偏好设置、下载和缓存。保留 Codex/Claude 原有登录及会话。此操作不可撤销。',
     modelCatalog: '模型目录', modelID: '模型 ID', modelDisplayName: '显示名称',
     fetchModels: '获取可用模型', resetModels: '恢复自动目录', addModel: '添加模型', cancel: '取消',
     automaticCatalog: '来自服务商', customCatalog: '已自定义目录', reorderModel: '调整第 {index} 个模型的顺序', removeModel: '删除第 {index} 个模型',
@@ -111,7 +113,7 @@ export const messages = {
     resetConfirm: '使用所选重置卡', resetWorking: '正在重置…', resetRetry: '重试同一次重置', resetReload: '刷新卡片',
     reset_reset: '已完成重置，已请求刷新账号额度。', reset_alreadyRedeemed: '这次重置已完成，已请求刷新账号额度。',
     reset_nothingToReset: '当前没有可重置的额度限制。', reset_noCredit: '当前请求没有可用重置卡。',
-    quotaWeek: '周额度', quotaFiveHour: '5 小时', quotaCredits: '剩余购买额度', quotaLoading: '正在读取额度…',
+    quotaWeek: '周额度', quotaMonth: '月额度', quotaFiveHour: '5 小时', quotaCredits: '剩余购买额度', quotaLoading: '正在读取额度…',
     quotaUnavailable: '额度暂不可用', quotaStale: '上次读取的额度',
     quotaRemaining: '{label}：剩余 {percent}%', quotaNotProvided: '{label}：账号未返回此额度',
     quotaResets: '重置时间：{time}', quotaUpdated: '更新于 {time}',

@@ -9,6 +9,8 @@ import { parse } from 'smol-toml';
 import { init, atomic } from './store.js';
 import { saveNetwork } from './network.js';
 import { restoreClaude } from './claude-config.js';
+import { restoreClaudeDesktop } from './claude-desktop.js';
+import { removeCompletion } from './completion.js';
 
 const providerName = 'easy_switch';
 const unitName = 'easy-switch.service';
@@ -141,16 +143,28 @@ export async function install(root, port) {
   plan.apply();
   console.log(`已启动后台服务并启用开机自启；已配置 ${path.join(codexHome, 'config.toml')}。首次请重启 Codex/重载远程 VS Code 窗口，以后正常使用 codex 或插件即可。`);
 }
-export function service(action, root) {
+export function service(action, root, { execute = command, userHome = os.homedir(), zshHome = process.env.ZDOTDIR || userHome } = {}) {
   linux();
   if (fs.existsSync(unitFile()) && !fs.readFileSync(unitFile(), 'utf8').includes(`Environment=${quote('SWITCH_HOME=' + root)}\n`)) throw new Error('服务属于其他 SWITCH_HOME，拒绝操作');
   if (action === 'uninstall') {
+    if (path.resolve(root) === path.resolve(userHome) || path.resolve(root) === path.parse(path.resolve(root)).root || fs.lstatSync(root).isSymbolicLink()) throw new Error('Unsafe application data directory.');
+    for (const name of ['installation.json', 'claude-session.json', 'claude-desktop-session.json']) {
+      const file = path.join(root, name);
+      if (!fs.existsSync(file)) continue;
+      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if ([record.file, ...(record.files || []).map(entry => entry.file)].filter(Boolean).some(target => path.resolve(target).startsWith(path.resolve(root) + path.sep)))
+        throw new Error('Client data is inside the application data directory. Move it before uninstalling.');
+    }
     restoreConfig(root);
     restoreClaude(path.join(root, 'claude-session.json'));
-    command('systemctl', ['--user', 'disable', '--now', unitName]);
+    restoreClaudeDesktop(path.join(root, 'claude-desktop-session.json'));
+    if (fs.existsSync(unitFile())) execute('systemctl', ['--user', 'disable', '--now', unitName]);
     fs.rmSync(unitFile(), { force: true });
-    command('systemctl', ['--user', 'daemon-reload']);
-    console.log('已恢复配置并移除服务；保留账号数据和用户 linger 设置');
+    execute('systemctl', ['--user', 'daemon-reload']);
+    removeCompletion(userHome, zshHome);
+    fs.rmSync(root, { recursive: true, force: true });
+    execute('npm', ['uninstall', '--global', '--ignore-scripts', 'easy-switch']);
+    console.log('已恢复客户端配置并删除服务、工具、服务商凭据、缓存和补全；保留原客户端会话及用户 linger 设置。');
   } else if (action === 'restart') command('systemctl', ['--user', 'restart', unitName]);
   else if (action === 'status') console.log(command('systemctl', ['--user', 'status', unitName, '--no-pager']));
   else throw new Error('用法：switch service status|restart|uninstall');

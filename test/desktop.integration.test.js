@@ -696,8 +696,9 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
   await page.click('#settings'); await page.locator('#settings-page').waitFor();
   assert.equal(await page.locator('#providers-page').isVisible(), false);
-  assert.equal(await page.locator('#settings-page .settings-card').count(), 1);
-  assert.equal(await page.locator('#settings-page .setting-row').count(), 1);
+  assert.equal(await page.locator('#settings-page .settings-card').count(), 2);
+  assert.equal(await page.locator('#settings-page .setting-row').count(), 2);
+  assert.equal(await page.locator('#uninstall').count(), 1);
   assert.equal(await page.locator('.workspace-footer .icon-control').count(), 2);
   // Exercise startup UI through a local IPC fixture; never change OS login items.
   await app.evaluate(({ ipcMain }) => {
@@ -779,6 +780,7 @@ test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credit
   const accounts = ['plus', 'prolite', 'pro', 'promax', 'free', 'go'].map(plan => ({ alias: plan, type: 'account', plan, usage: { status: 'ready', fetchedAt: Date.now(), data: { plan, fiveHour: window, weekly: window, credits: 0, unlimited: false } } }));
   accounts.push({ alias: 'unknown', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: null, weekly: null, credits: null } } });
   accounts.push({ alias: 'go-short', type: 'account', plan: 'go', usage: { status: 'ready', data: { plan: 'go', fiveHour: { remaining: 60 }, weekly: null, credits: 0 } } });
+  accounts.push({ alias: 'free-month', type: 'account', plan: 'free', usage: { status: 'ready', data: { plan: 'free', fiveHour: null, weekly: null, monthly: { remaining: 97, resetsAt: Date.now() + 30 * 86400000 }, credits: 0 } } });
   accounts.push({ alias: 'purchased', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: window, weekly: window, credits: 12 } } });
   await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
     powerMonitor.emit('lock-screen');
@@ -800,6 +802,12 @@ test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credit
   assert.equal(await short.locator('.quota-segment').count(), 1);
   assert.match(await short.locator('.quota-segment').getAttribute('aria-label'), /5h: 60% remaining/);
   assert.equal(await short.locator('.quota-segment.unknown').count(), 0);
+  const monthly = page.locator('[data-alias="free-month"]');
+  assert.equal(await monthly.locator('.quota-segment').count(), 1);
+  assert.match(await monthly.locator('.quota-segment').getAttribute('aria-label'), /Month: 97% remaining/);
+  assert.equal(await monthly.locator('.quota-progress').getAttribute('stroke-dashoffset'), '3');
+  await monthly.locator('.quota-segment').focus(); await monthly.locator('.quota-tooltip').filter({ hasText: 'Month: 97% remaining' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'quota-month-0.5.25-en.png'), animations: 'disabled' });
   assert.equal(await page.locator('[data-alias="purchased"] .quota-exhausted-mark').count(), 0, 'purchased credits can remain usable after included quota is exhausted');
   const plus = page.locator('[data-alias="plus"]');
   assert.equal(await plus.locator('.quota-segment').count(), 2);
@@ -815,6 +823,7 @@ test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credit
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-en.png'), animations: 'disabled' });
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
   await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  assert.match(await monthly.locator('.quota-segment').getAttribute('aria-label'), /月额度：剩余 97%/);
   await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-zh-dark.png'), animations: 'disabled' });
 });

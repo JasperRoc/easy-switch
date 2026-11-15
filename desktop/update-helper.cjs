@@ -7,9 +7,10 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function replaceApplication({ current, staged, verify, launch, accepted }) {
   const directory = fs.mkdtempSync(path.join(path.dirname(current), '.easy-switch-update-'));
   const candidate = path.join(directory, 'next.app'), backup = path.join(directory, 'previous.app');
-  let replaced = false, child;
+  let replaced = false, moved = false, child;
   try {
-    fs.cpSync(staged, candidate, { recursive: true, dereference: false, verbatimSymlinks: true });
+    try { fs.renameSync(staged, candidate); moved = true; }
+    catch (error) { if (error.code !== 'EXDEV') throw error; fs.cpSync(staged, candidate, { recursive: true, dereference: false, verbatimSymlinks: true }); }
     verify(candidate);
     fs.renameSync(current, backup);
     try { fs.renameSync(candidate, current); replaced = true; } catch (error) { fs.renameSync(backup, current); throw error; }
@@ -18,9 +19,15 @@ async function replaceApplication({ current, staged, verify, launch, accepted })
     fs.rmSync(backup, { recursive: true, force: true });
   } catch (error) {
     if (child?.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await delay(600); }
-    if (replaced) { fs.rmSync(current, { recursive: true, force: true }); fs.renameSync(backup, current); launch(current); }
+    if (replaced) {
+      if (moved) fs.renameSync(current, staged); else fs.rmSync(current, { recursive: true, force: true });
+      fs.renameSync(backup, current); launch(current);
+    }
     throw error;
-  } finally { if (!fs.existsSync(backup)) fs.rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    if (moved && fs.existsSync(candidate)) fs.renameSync(candidate, staged);
+    if (!fs.existsSync(backup)) fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 module.exports = { replaceApplication };
 if (require.main === module) (async () => {

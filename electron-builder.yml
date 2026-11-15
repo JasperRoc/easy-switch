@@ -39,6 +39,7 @@ win:
     - from: .desktop-cache/codex-win32-${arch}
       to: codex
 nsis:
+  deleteAppDataOnUninstall: true
   oneClick: false
   include: desktop/assets/installer.nsh
   installerSidebar: desktop/assets/installerSidebar.bmp

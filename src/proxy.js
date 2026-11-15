@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readState, accountAuth, activateFallback } from './store.js';
+import { readState, accountAuth, activateFallback, providerOrder } from './store.js';
 import { createReauth, expired } from './auth.js';
 import { alternate, recoverable, rejectionText, rejectionStatus, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
@@ -135,7 +135,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       let modelRouting = false, rejectedModel;
       const imageAccount = provider => provider?.type === 'account';
       const accountsOnly = image && Object.values(state.providers).some(imageAccount);
-      const accepts = (provider, name) => !!provider && (image ? imageAccount(provider) || !accountsOnly && provider.type === 'api' : catalog.supports(name, provider, requestedModel));
+      const accepts = (provider, name) => !!provider && (image ? imageAccount(provider) || provider.type === 'api' : catalog.supports(name, provider, requestedModel));
+      const imageAlternate = (failed, attempted = new Set()) => {
+        const accounts = Object.fromEntries(Object.entries(state.providers).filter(([, provider]) => imageAccount(provider)));
+        return alternate({ ...state, providers: accounts, order: providerOrder(state).filter(name => accounts[name]) }, failed, cooling, now(), attempted, accepts)
+          || alternate(state, failed, cooling, now(), attempted, accepts);
+      };
       const cooling = image ? imageCooldown : new Map(Object.keys(state.providers).map(name => [name, Math.max(cooldown.get(name) || 0, modelCooldown.get(modelKey(name)) || 0)]));
       if (!image && ((modelCooldown.get(modelKey(alias)) || 0) > now() || !catalog.supports(alias, state.providers[alias], requestedModel))) {
         modelRouting = true; rejectedModel = requestedModel;
@@ -143,7 +148,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (!alias) return error(res, 400, `已配置的服务商均未提供模型 ${requestedModel}；请刷新 Codex 模型列表并选择可用模型。`);
       }
       if (accountsOnly || image && !accepts(state.providers[alias])) {
-        const first = alternate(state, null, cooling, now(), new Set(), accepts);
+        const first = imageAlternate(null);
         if (!first) {
           const account = Object.values(state.providers).find(imageAccount);
           if (!account) return error(res, 403, '没有可用的图片上游；请添加具有图片权限的账号或图片 API。');
@@ -222,7 +227,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               if (modelCooldown.size > 256) modelCooldown.delete(modelCooldown.keys().next().value);
             } else (image ? imageCooldown : cooldown).set(alias, now() + 60000);
             cooling.set(alias, now() + 60000);
-            let next = attempt + 1 < maxAttempts && !abort.signal.aborted && alternate(state, alias, cooling, now(), attempted, accepts);
+            let next = attempt + 1 < maxAttempts && !abort.signal.aborted && (image ? imageAlternate(alias, attempted) : alternate(state, alias, cooling, now(), attempted, accepts));
             if (modelRouting) {
               const current = readState(root);
               if (current.generation !== state.generation) {
@@ -269,7 +274,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             res.setHeader('x-switch-alias', alias);
             if (upstream.headers.has('x-codex-imagegen-request-id')) res.setHeader('x-codex-imagegen-request-id', upstream.headers.get('x-codex-imagegen-request-id'));
             const detail = !recoverable(403, failureMessage) ? '图片上游明确拒绝此请求，未通过其他服务商重试'
-              : status === 403 ? `${provider.type === 'account' ? '订阅' : 'API'}图片接口拒绝了请求，请检查该账号的图片权限、额度或登录状态`
+              : status === 403 ? `${provider.type === 'account' ? 'Codex 账号' : 'API'}图片接口拒绝了请求。ChatGPT 网页图片权限不等同于 Codex 图片权限；目前 Codex Free 不提供图片生成，请使用有权限的账号或图片 API`
               : '没有其他可用的图片上游，请检查图片服务或稍后重试';
             return error(res, status, `图片请求已路由到 ${alias}，该图片上游返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}；${detail}。`);
           }

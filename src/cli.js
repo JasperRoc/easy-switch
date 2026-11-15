@@ -26,6 +26,7 @@ const help = `easy-switch
   switch <codex|claude> list | current     查看对应客户端（不显示密钥）
   switch current              分别显示 Codex 和 Claude 当前服务商
   switch update               更新至官方仓库最新版本
+  switch uninstall            恢复客户端设置并彻底卸载（含已保存的账号/API）
   switch service status|restart|uninstall
 兼容：省略 codex 前缀的 add/edit/remove/list/order/<alias> 仍管理 Codex
 环境：SWITCH_HOME、SWITCH_PORT（默认 18345）、SWITCH_CODEX_BIN
@@ -68,6 +69,11 @@ async function main() {
   if (command === 'update') {
     if (args.length !== 1) throw new Error('用法：switch update');
     return updateTool(appRoot);
+  }
+  if (command === 'uninstall' || command === 'service' && type === 'uninstall') {
+    if (client || args.length > (command === 'service' ? 3 : 2) || args.some((arg, index) => index > (command === 'service' ? 1 : 0) && arg !== '--yes')) throw new Error('用法：switch uninstall [--yes]');
+    if (!args.includes('--yes') && (await ask('将删除 easy-switch 保存的账号、密钥和缓存，恢复客户端连接。输入 yes 确认：')).toLowerCase() !== 'yes') return console.log('已取消');
+    return service('uninstall', appRoot);
   }
   if (command === 'service') return service(type, appRoot);
   if (command === 'remove') {

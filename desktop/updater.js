@@ -62,6 +62,71 @@ export async function downloadVerified(response, destination, asset, progress = 
     fs.renameSync(partial, destination);
   } finally { fs.rmSync(partial, { force: true }); }
 }
+export async function downloadPackage(fetch, asset, destination, progress = () => {}) {
+  // Large official assets can use concurrent byte ranges. Each part is bounded,
+  // and the assembled file must still match GitHub's full-file SHA-256 digest.
+  if (asset.size < 16 * 1024 * 1024) {
+    return downloadVerified(await fetch(asset.url, { signal: AbortSignal.timeout(20 * 60000) }), destination, asset, progress);
+  }
+  const partial = `${destination}.part`, receipt = `${destination}.parts.json`, count = 4;
+  let saved = { sha256: asset.sha256, size: asset.size, completed: [] };
+  try {
+    const previous = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    if (previous.sha256 === asset.sha256 && previous.size === asset.size && previous.count === count &&
+        fs.statSync(partial).size === asset.size && Array.isArray(previous.completed)) saved = previous;
+  } catch {}
+  saved.count = count;
+  const range = index => ({ start: Math.floor(asset.size * index / count), end: Math.floor(asset.size * (index + 1) / count) - 1 });
+  const completed = new Set(saved.completed.filter(index => Number.isInteger(index) && index >= 0 && index < count));
+  const bytes = Array.from({ length: count }, (_, index) => completed.has(index) ? range(index).end - range(index).start + 1 : 0);
+  const abort = new AbortController(); let fallback;
+  const fd = fs.openSync(partial, completed.size ? 'r+' : 'w+', 0o600);
+  fs.ftruncateSync(fd, asset.size);
+  const report = () => progress(bytes.reduce((sum, size) => sum + size, 0), asset.size);
+  try {
+    const first = [...Array(count).keys()].find(index => !completed.has(index));
+    if (first !== undefined) {
+      const { start, end } = range(first);
+      const response = await fetch(asset.url, { headers: { Range: `bytes=${start}-${end}` }, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20 * 60000)]) });
+      if (response.status === 200) fallback = response;
+      else {
+        const writePart = async (index, response) => {
+          const { start, end } = range(index);
+          if (response.status !== 206 || response.headers.get('content-range') !== `bytes ${start}-${end}/${asset.size}` || !response.body) {
+            await response.body?.cancel(); throw new Error('The update server returned an invalid byte range.');
+          }
+          let received = 0;
+          for await (const chunk of response.body) {
+            if (received + chunk.length > end - start + 1) throw new Error('Update range exceeds its expected size.');
+            let written = 0;
+            while (written < chunk.length) written += fs.writeSync(fd, chunk, written, chunk.length - written, start + received + written);
+            received += chunk.length; bytes[index] = received; report();
+          }
+          if (received !== end - start + 1) throw new Error('The update range ended early. Retry to resume the download.');
+          completed.add(index); saved.completed = [...completed]; atomic(receipt, saved);
+        };
+        const tasks = [writePart(first, response), ...[...Array(count).keys()].filter(index => index !== first && !completed.has(index)).map(async index => {
+          const { start, end } = range(index);
+          await writePart(index, await fetch(asset.url, { headers: { Range: `bytes=${start}-${end}` }, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20 * 60000)]) }));
+        })];
+        const results = await Promise.allSettled(tasks.map(task => task.catch(error => { abort.abort(); throw error; })));
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure) throw failure.reason;
+      }
+    }
+  } finally { fs.closeSync(fd); }
+  if (fallback) {
+    fs.rmSync(receipt, { force: true });
+    return downloadVerified(fallback, destination, asset, progress);
+  }
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(partial)) hash.update(chunk);
+  if (hash.digest('hex') !== asset.sha256) {
+    fs.rmSync(partial, { force: true }); fs.rmSync(receipt, { force: true });
+    throw new Error('Update package SHA-256 verification failed.');
+  }
+  fs.renameSync(partial, destination); fs.rmSync(receipt, { force: true }); report();
+}
 export function validateArchiveEntries(list) {
   for (const entry of list.split('\n').filter(Boolean)) {
     if (entry.startsWith('/') || entry.replaceAll('\\', '/').split('/').includes('..')) throw new Error('Unsafe update archive path.');
@@ -107,9 +172,8 @@ export class DesktopUpdater {
     const release = this.release, target = path.join(this.directory, release.asset.name);
     this.emit({ phase: 'downloading', received: 0, total: release.asset.size, error: '' });
     this.pending = this.connection(async fetch => {
-      const response = await fetch(release.asset.url, { headers: { 'user-agent': 'easy-switch-desktop' }, signal: AbortSignal.timeout(20 * 60 * 1000) });
       let last = 0;
-      await downloadVerified(response, target, release.asset, (received, total) => { if (Date.now() - last > 150) { last = Date.now(); this.emit({ received, total }); } });
+      await downloadPackage(fetch, release.asset, target, (received, total) => { if (Date.now() - last > 150) { last = Date.now(); this.emit({ received, total }); } });
       if (this.platform === 'darwin') {
         const entries = await execute('/usr/bin/unzip', ['-Z', '-1', target], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
         validateArchiveEntries(entries.stdout);

@@ -169,7 +169,7 @@ test('normalize usage by window duration, retaining credits and missing fields w
   assert.equal(data.credits, 36.445);
   const swapped = payload('pro'); [swapped.rate_limit.primary_window, swapped.rate_limit.secondary_window] = [swapped.rate_limit.secondary_window, swapped.rate_limit.primary_window];
   assert.equal(normalizeUsage(swapped).weekly.remaining, 20);
-  assert.deepEqual(normalizeUsage({ plan_type: 'pro', credits: { balance: null } }), { plan: 'pro', fiveHour: null, weekly: null, credits: null, unlimited: false });
+  assert.deepEqual(normalizeUsage({ plan_type: 'pro', credits: { balance: null } }), { plan: 'pro', fiveHour: null, weekly: null, monthly: null, credits: null, unlimited: false });
   for (const value of [null, '', false, 'not-a-number']) {
     const input = payload(); input.rate_limit.primary_window.used_percent = value;
     assert.equal(normalizeUsage(input).fiveHour, null);
@@ -251,6 +251,12 @@ test('zero quota and an explicit no-credits balance remain successful data, whil
 test('quota windows use their actual duration instead of treating monthly Free quota as weekly', () => {
   const result = normalizeUsage({ plan_type: 'free', rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 2592000, reset_after_seconds: 60 } } });
   assert.equal(result.weekly, null); assert.equal(result.fiveHour, null);
+  assert.deepEqual(result.monthly, { remaining: 100, resetsAt: result.monthly.resetsAt });
+  for (const days of [28, 29, 30, 31]) {
+    const data = normalizeUsage({ plan_type: 'free', rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: days * 86400, reset_at: 1900000000 } } });
+    assert.deepEqual(data.monthly, { remaining: 97, resetsAt: 1900000000000 });
+    assert.equal(data.weekly, null);
+  }
 });
 
 
@@ -271,4 +277,19 @@ test('Claude plan labels use its own Free, Pro, Max and Ultra names without chan
   for (const [id, label] of [['free', 'Free'], ['pro', 'Pro'], ['max', 'Max'], ['ultra', 'Ultra']]) assert.equal(planLabel(id, 'claude'), label);
   assert.equal(planLabel('pro'), 'Pro 200');
   assert.equal(planLabel('unknown', 'claude'), null); assert.equal(planLabel(null, 'claude'), null);
+});
+
+test('Claude profile requests include JSON OAuth headers and expired refresh failure is reported as sign-in required',async t=>{
+ const {usage,state,accountHome}=setup(t,{client:'claude',fetchImpl:async(url,options)=>{
+  assert.equal(options.headers['content-type'],'application/json');
+  if(url.endsWith('/oauth/token'))return Response.json({error:'invalid_grant'},{status:400});
+  assert.equal(options.headers['anthropic-beta'],'oauth-2025-04-20');
+  return Response.json({organization:{organization_type:'claude_free'}});
+ }});
+ atomic(path.join(accountHome,'oauth.json'),{accessToken:'old',refreshToken:'old-refresh',expiresAt:1,subscriptionType:'pro',scopes:['user:profile']});
+ usage.snapshot(state);await done(usage);
+ assert.equal(usage.snapshot(state).account.status,'signin');assert.equal(usage.snapshot(state).account.failure,'authentication');
+ const next={accessToken:'new',expiresAt:Date.now()+3600000,scopes:['user:profile']};atomic(path.join(accountHome,'oauth.json'),next);
+ usage.snapshot(state);await done(usage);
+ assert.equal(usage.snapshot(state).account.data.plan,'free');assert.equal(usage.snapshot(state).account.failure,undefined);
 });

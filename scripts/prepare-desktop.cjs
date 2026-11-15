@@ -3,11 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const version = '0.165.0';
 const targets = process.argv.slice(2);
 if (!targets.length) targets.push(`${process.platform}-${process.arch}`);
 const triples = { 'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin', 'win32-x64': 'x86_64-pc-windows-msvc', 'win32-arm64': 'aarch64-pc-windows-msvc' };
-for (const target of targets) {
+const nativeTarget = `${process.platform}-${process.arch}`;
+for (const target of new Set([...targets, nativeTarget])) {
   if (!triples[target]) throw new Error(`Unsupported desktop target: ${target}`);
   const dest = path.resolve('.desktop-cache', `codex-${target}`);
   const exe = target.startsWith('win32') ? 'codex.exe' : 'codex';
@@ -30,3 +32,15 @@ for (const target of targets) {
     fs.writeFileSync(marker, version);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
+// Package sanitized metadata from the matching official helper. This enriches
+// exact provider IDs only and avoids a second Codex process on Windows startup.
+const native = path.resolve('.desktop-cache', `codex-${nativeTarget}`);
+const metadataFile = path.join(native, 'model-metadata.json');
+let metadata;
+try { metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); } catch {}
+if (metadata?.version !== version) {
+  const moduleURL = pathToFileURL(path.join(__dirname, '..', 'src', 'catalog.js')).href;
+  const script = `import {codexModels} from ${JSON.stringify(moduleURL)}; const models=await codexModels({binary:process.argv[1],includeHidden:true}); process.stdout.write(JSON.stringify({version:${JSON.stringify(version)},models}));`;
+  metadata = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script, path.join(native, process.platform === 'win32' ? 'codex.exe' : 'codex')], { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024 }));
+}
+for (const target of targets) fs.writeFileSync(path.resolve('.desktop-cache', `codex-${target}`, 'model-metadata.json'), JSON.stringify(metadata));

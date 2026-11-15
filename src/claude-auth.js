@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 import { atomic } from './store.js';
 
 const execute = promisify(execFile);
+export function claudeProfileHeaders(token) {
+  return { authorization: `Bearer ${token}`, accept: 'application/json', 'content-type': 'application/json',
+    'cache-control': 'no-cache', 'user-agent': 'easy-switch', 'anthropic-beta': 'oauth-2025-04-20' };
+}
 export function claudeHeaders(provider, token, incoming = {}) {
   const headers = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   for (const [key, value] of Object.entries(incoming)) if (/^(anthropic-|x-stainless-|x-claude-code-)/.test(key) || ['user-agent', 'x-app', 'accept'].includes(key)) headers[key] = value;
@@ -92,7 +96,12 @@ export async function claudeToken(provider, fetchImpl, { signal, force = false }
     const response = await fetchImpl('https://platform.claude.com/v1/oauth/token', { method: 'POST', redirect: 'error',
       headers: { 'content-type': 'application/json' }, signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
       body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e' }) });
-    if (!response.ok) { await response.body?.cancel(); throw new Error('Claude subscription authentication required.'); }
+    if (!response.ok) {
+      await response.body?.cancel();
+      const error = new Error([400, 401].includes(response.status) ? 'Claude subscription authentication required.' : 'Unable to refresh Claude credentials. Check the connection or proxy.');
+      error.code = [400, 401].includes(response.status) ? 'CLAUDE_AUTH_REQUIRED' : 'CLAUDE_REFRESH_UNAVAILABLE';
+      throw error;
+    }
     const next = await response.json();
     signal?.throwIfAborted();
     if (typeof next.access_token !== 'string' || !Number.isFinite(next.expires_in)) throw new Error('Claude subscription authentication required.');

@@ -890,12 +890,31 @@ test('exhausted subscription image rejection names the actual image route withou
   addProvider('elias', { type: 'account', accountHome }, root);
   let calls = 0;
   const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
-    calls++; assert.equal(options.headers.authorization, 'Bearer private-elias');
+    calls++;
+    assert.equal(options.headers.authorization, url.includes('chatgpt.com') ? 'Bearer private-elias' : 'Bearer private-aos');
     return Response.json({ detail: 'Forbidden private-elias' }, { status: 403 });
   } }));
   const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A cat chasing a mouse' }) });
-  assert.equal(response.status, 403); assert.equal(response.headers.get('x-switch-alias'), 'elias');
-  const text = await response.text(); assert.match(text, /图片.*elias.*403/);
-  assert.match(text, /已尝试：elias/); assert.doesNotMatch(text, /private-|API_KEY|冷却/);
-  assert.equal(calls, 1); assert.equal(readState(root).active, 'aos');
+  assert.equal(response.status, 403); assert.equal(response.headers.get('x-switch-alias'), 'aos');
+  const text = await response.text(); assert.match(text, /图片.*aos.*403/);
+  assert.match(text, /已尝试：elias → aos/); assert.doesNotMatch(text, /private-|API_KEY|冷却/);
+  assert.equal(calls, 2); assert.equal(readState(root).active, 'aos');
+});
+
+test('an image-capable API is tried after a Free subscription image rejection without changing the text selection', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('text', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text-key' }, root);
+  const accountHome = path.join(root, 'accounts', 'free');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'free-key', account_id: 'free' } });
+  addProvider('free', { type: 'account', accountHome }, root);
+  addProvider('images', { type: 'api', baseUrl: 'https://images.example/v1', apiKey: 'images-key' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({url,token:options.headers.authorization});
+    return url.includes('images.example') ? Response.json({data:[{b64_json:'image'}]})
+      : url.includes('text.example') ? Response.json({error:{message:'Endpoint not found'}},{status:404}) : Response.json({detail:'Forbidden'},{status:403});
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({model:'gpt-image-2',prompt:'fixture'})});
+  assert.equal(response.status,200);await response.text();
+  assert.deepEqual(calls.map(item=>item.token),['Bearer free-key','Bearer text-key','Bearer images-key']);
+  assert.equal(readState(root).active,'text');
 });

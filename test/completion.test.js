@@ -61,3 +61,13 @@ test('Bash and Zsh completion scripts pass the current word and exclude used ali
     assert.equal(result.stdout.trim(), 'relay');
   }
 });
+
+test('uninstall removes only the managed shell completion blocks and generated files',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'switch-completion-remove-'));
+ t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const {removeCompletion}=await import('../src/completion.js');
+ for(const rc of ['.bashrc','.zshrc'])fs.writeFileSync(path.join(root,rc),'# user preferences\nexport MY_SETTING=1\n');
+ installCompletion(root,root);removeCompletion(root,root);
+ for(const rc of ['.bashrc','.zshrc']){const content=fs.readFileSync(path.join(root,rc),'utf8');assert.match(content,/export MY_SETTING=1/);assert.doesNotMatch(content,/easy-switch/);}
+ assert.equal(fs.existsSync(path.join(root,'.local','share','easy-switch')),false);
+});

@@ -258,3 +258,13 @@ test('live Claude plan changes override old sign-in metadata without changing cr
   assert.deepEqual(saved, auth);
   assert.equal(readState(controller.providerRoot).active, 'personal');
 });
+
+test('an invalid Claude login displays reauthentication instead of its cached subscription tier',t=>{
+ const controller=setup(t);controller.clientSelection('claude');
+ const accountHome=path.join(controller.root,'claude','accounts','stale');
+ atomic(path.join(accountHome,'oauth.json'),{accessToken:'private-stale',refreshToken:'private-refresh',expiresAt:1,subscriptionType:'pro',scopes:['user:profile']});
+ addProvider('stale',{type:'account',accountHome},path.join(controller.root,'claude'));
+ controller.runtime.active=true;
+ controller.claudeUsage.snapshot=()=>({stale:{status:'signin',failure:'authentication',data:null}});
+ const provider=controller.snapshot().providers[0];assert.equal(provider.needsLogin,true);assert.equal(provider.plan,null);
+});

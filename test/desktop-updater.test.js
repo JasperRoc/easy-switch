@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { selectRelease, compareVersions, downloadVerified, validateArchiveEntries, DesktopUpdater } from '../desktop/updater.js';
+import { selectRelease, compareVersions, downloadVerified, downloadPackage, validateArchiveEntries, DesktopUpdater } from '../desktop/updater.js';
 import helper from '../desktop/update-helper.cjs';
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const release = (version, suffix='mac-arm64.zip') => ({tag_name:`v${version}`,body:'Release notes',assets:[{name:`easy-switch-${version}-${suffix}`,browser_download_url:`https://github.com/JasperRoc/easy-switch/releases/download/v${version}/easy-switch-${version}-${suffix}`,size:3,digest:`sha256:${digest('abc')}`}]});
@@ -50,4 +50,41 @@ test('automatic updates use the system network transport and a failed download c
  assert.equal(fs.existsSync(path.join(root,'updates','easy-switch-0.5.0-win-x64.exe.part')),false);
  await updater.download();assert.equal(updater.snapshot().phase,'ready');assert.equal(updater.snapshot().retryDownload,false);
  assert.equal(fs.readFileSync(updater.staged,'utf8'),'abc');
+});
+
+test('large downloads use bounded parallel ranges, verify the whole file and resume only complete parts', async t => {
+ const folder=temporary(t),destination=path.join(folder,'update.exe'),data=Buffer.alloc(16*1024*1024,17);
+ const asset={url:'https://github.com/asset',size:data.length,sha256:digest(data)};
+ let calls=[],active=0,peak=0,fail=true;
+ const fetch=async(_url,options)=>{
+  const [,from,to]=/^bytes=(\d+)-(\d+)$/.exec(options.headers.Range);const start=Number(from),end=Number(to);
+  calls.push(start);active++;peak=Math.max(peak,active);
+  return new Response(new ReadableStream({async start(controller){
+   await new Promise(resolve=>setTimeout(resolve,start===0?1:15));active--;
+   if(fail&&start===data.length/2){controller.error(new TypeError('network interrupted'));return;}
+   controller.enqueue(data.subarray(start,end+1));controller.close();
+  }}),{status:206,headers:{'content-range':`bytes ${start}-${end}/${data.length}`}});
+ };
+ await assert.rejects(downloadPackage(fetch,asset,destination));
+ assert.equal(fs.existsSync(destination),false);assert.ok(peak>1);
+ const receipt=JSON.parse(fs.readFileSync(destination+'.parts.json'));
+ assert.ok(receipt.completed.includes(0));
+ calls=[];fail=false;
+ await downloadPackage(fetch,asset,destination);
+ assert.ok(!calls.includes(0),'verified complete parts are reused after a network interruption');
+ assert.equal(digest(fs.readFileSync(destination)),asset.sha256);
+ assert.equal(fs.existsSync(destination+'.parts.json'),false);
+});
+
+test('range-ignorant servers fall back to one verified stream and corrupt ranged data is discarded',async t=>{
+ const folder=temporary(t),destination=path.join(folder,'update.exe'),data=Buffer.alloc(16*1024*1024,3);
+ const asset={url:'https://github.com/asset',size:data.length,sha256:digest(data)};let calls=0;
+ await downloadPackage(async()=>{calls++;return new Response(data);},asset,destination);
+ assert.equal(calls,1);assert.equal(digest(fs.readFileSync(destination)),asset.sha256);
+ fs.rmSync(destination);
+ await assert.rejects(downloadPackage(async(_url,options)=>{
+  const[,from,to]=/^bytes=(\d+)-(\d+)$/.exec(options.headers.Range),start=Number(from),end=Number(to);
+  return new Response(Buffer.alloc(end-start+1,4),{status:206,headers:{'content-range':`bytes ${start}-${end}/${data.length}`}});
+ },asset,destination),/SHA-256/);
+ assert.equal(fs.existsSync(destination),false);assert.equal(fs.existsSync(destination+'.part'),false);
 });
