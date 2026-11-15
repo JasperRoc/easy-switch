@@ -231,3 +231,25 @@ test('Claude saved account plans distinguish Free, Pro, Max and Ultra without ex
   assert.deepEqual(result.providers.map(provider => [provider.alias, provider.plan]), cases.map(([alias, , plan]) => [alias, plan]));
   assert.doesNotMatch(JSON.stringify(result), /private|accessToken|refreshToken|rateLimitTier/);
 });
+
+test('live Claude plan changes override old sign-in metadata without changing credentials or providers', async t => {
+  const controller = setup(t); controller.clientSelection('claude'); controller.runtime.active = true;
+  t.after(() => controller.claudeUsage.close());
+  const accountHome = path.join(controller.providerRoot, 'accounts', 'personal');
+  const auth = { accessToken: 'private-access', subscriptionType: 'free', scopes: ['user:inference', 'user:profile'] };
+  atomic(path.join(accountHome, 'oauth.json'), auth);
+  addProvider('personal', { type: 'account', accountHome }, controller.providerRoot);
+  let clock = 0, type = 'claude_pro', calls = 0;
+  controller.claudeUsage.now = () => clock;
+  controller.claudeUsage.fetchImpl = async () => { calls++; return Response.json({ organization: { organization_type: type } }); };
+  assert.equal(controller.snapshot().providers[0].plan, 'free');
+  await controller.claudeUsage.entries.get('personal').pending;
+  assert.equal(controller.snapshot().providers[0].plan, 'pro');
+  type = 'claude_free'; clock += 60000;
+  controller.snapshot(); await controller.claudeUsage.entries.get('personal').pending;
+  assert.equal(controller.snapshot().providers[0].plan, 'free'); assert.equal(calls, 2);
+  controller.claudeUsage.snapshot = () => assert.fail('tray-only snapshot queried a Claude profile');
+  controller.snapshot({ usage: false });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json'))), auth);
+  assert.equal(readState(controller.providerRoot).active, 'personal');
+});

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { accountAuth } from '../src/store.js';
 import { createUpstreamFetch } from '../src/network.js';
+import { claudeAuth, claudeExpired, claudeToken } from '../src/claude-auth.js';
 
-const fingerprint = auth => createHash('sha256').update(JSON.stringify(auth.tokens)).digest('hex');
+const fingerprint = auth => createHash('sha256').update(JSON.stringify(auth.tokens || [auth.accessToken, auth.scopes])).digest('hex');
 const number = value => (typeof value === 'number' || typeof value === 'string' && value.trim()) && Number.isFinite(Number(value)) ? Number(value) : null;
 
 export function normalizeUsage(payload, now = Date.now()) {
@@ -26,8 +27,8 @@ export function normalizeUsage(payload, now = Date.now()) {
 
 // Poll independently of inference. Only normalized limits cross the renderer IPC.
 export class SubscriptionUsage {
-  constructor({ root, fetchImpl, refreshAuth, now = Date.now, intervalMs = 60000 }) {
-    Object.assign(this, { root, fetchImpl, refreshAuth, now, intervalMs });
+  constructor({ root, client = 'codex', fetchImpl, refreshAuth, now = Date.now, intervalMs = 60000 }) {
+    Object.assign(this, { root, client, fetchImpl, refreshAuth, now, intervalMs });
     this.entries = new Map(); this.closed = false; this.paused = false;
   }
   snapshot(state, force = false) {
@@ -35,7 +36,8 @@ export class SubscriptionUsage {
     for (const [alias, provider] of Object.entries(state.providers)) {
       if (provider.type !== 'account') continue;
       let auth;
-      try { auth = accountAuth(provider); } catch { result[alias] = { status: 'signin' }; continue; }
+      try { auth = this.client === 'claude' ? claudeAuth(provider) : accountAuth(provider); } catch { result[alias] = { status: 'signin' }; continue; }
+      if (this.client === 'claude' && !auth.scopes?.includes('user:profile')) { result[alias] = { status: 'unavailable' }; continue; }
       const key = fingerprint(auth);
       let entry = this.entries.get(alias);
       if (!entry || entry.key !== key) {
@@ -54,27 +56,40 @@ export class SubscriptionUsage {
   async load(provider, auth, entry) {
     const abort = new AbortController(); entry.abort = abort;
     let client;
-    const request = credentials => (this.fetchImpl || client.fetch)('https://chatgpt.com/backend-api/wham/usage', {
-      headers: { authorization: `Bearer ${credentials.tokens.access_token}`, 'ChatGPT-Account-ID': credentials.tokens.account_id,
-        accept: 'application/json', originator: 'codex_cli_rs' },
+    const claude = this.client === 'claude';
+    const request = credentials => (this.fetchImpl || client.fetch)(claude ? 'https://api.anthropic.com/api/oauth/profile' : 'https://chatgpt.com/backend-api/wham/usage', {
+      headers: claude ? { authorization: `Bearer ${credentials.accessToken}`, accept: 'application/json', 'cache-control': 'no-cache' }
+        : { authorization: `Bearer ${credentials.tokens.access_token}`, 'ChatGPT-Account-ID': credentials.tokens.account_id,
+          accept: 'application/json', originator: 'codex_cli_rs' },
       redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]),
     });
     try {
       client = this.fetchImpl ? null : createUpstreamFetch(this.root);
+      if (claude && claudeExpired(auth) && auth.refreshToken) {
+        await claudeToken(provider, this.fetchImpl || client.fetch, { signal: abort.signal });
+        auth = claudeAuth(provider); entry.key = fingerprint(auth);
+      }
       let response = await request(auth);
       if (abort.signal.aborted) { await response.body?.cancel(); return; }
-      if (response.status === 401 && this.refreshAuth) {
+      if (response.status === 401 && (this.refreshAuth || claude && auth.refreshToken)) {
         await response.body?.cancel();
-        await this.refreshAuth(provider, abort.signal);
+        if (claude) await claudeToken(provider, this.fetchImpl || client.fetch, { signal: abort.signal, force: true });
+        else await this.refreshAuth(provider, abort.signal);
         if (abort.signal.aborted) return;
-        auth = accountAuth(provider); entry.key = fingerprint(auth);
+        auth = claude ? claudeAuth(provider) : accountAuth(provider); entry.key = fingerprint(auth);
         response = await request(auth);
       }
       if (!response.ok) {
         await response.body?.cancel();
         entry.status = response.status === 401 ? 'signin' : 'unavailable'; entry.failures = (entry.failures || 0) + 1; return;
       }
-      entry.data = normalizeUsage(await response.json(), this.now());
+      const payload = await response.json();
+      if (claude) {
+        const type = payload?.organization?.organization_type;
+        const plan = { claude_free: 'free', claude_pro: 'pro', claude_max: 'max', claude_ultra: 'ultra', claude_team: 'team', claude_enterprise: 'enterprise' }[type];
+        if (!plan) throw new Error('Unknown Claude plan');
+        entry.data = { plan: plan === 'max' && payload.organization.rate_limit_tier === 'default_claude_max_20x' ? 'ultra' : plan };
+      } else entry.data = normalizeUsage(payload, this.now());
       entry.fetchedAt = this.now(); entry.status = 'ready'; entry.failures = 0;
     } catch { if (!abort.signal.aborted) { entry.status = 'unavailable'; entry.failures = (entry.failures || 0) + 1; } }
     finally {

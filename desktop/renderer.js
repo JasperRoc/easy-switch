@@ -253,8 +253,6 @@ function refresh(nextState) {
     $('native-images').hidden = !state.imageToolsBlocked;
     if (state.error) showError(state.error);
     renderProviders();
-    $('failover').hidden = !state.lastFailover;
-    if (state.lastFailover) $('failover').textContent = t('lastFailover', state.lastFailover);
     renderLogin();
     if (catalogProvider && (catalogProvider.client !== state.client || !state.providers.some(provider => provider.alias === catalogProvider.alias))) {
       $('models-dialog').close(); catalogProvider = null; catalogRequest++;

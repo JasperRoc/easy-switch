@@ -163,10 +163,11 @@ test('provider editing and separate Claude model mappings work in the desktop UI
   await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/v1`); await page.click('#save-provider');
   await page.locator('.edit-provider').click(); assert.equal(await page.locator('#api-key').inputValue(), '');
   await page.fill('#provider-alias', 'renamed'); await page.click('#save-provider');
+  await page.locator('#add-dialog').waitFor({ state: 'hidden' });
   await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
   await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
-  assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status').count(), 0);
+  assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status, #failover, [data-i18n="priorityHelp"]').count(), 0);
   await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
   assert.equal(await page.locator('#claude-mapping').isVisible(), false, 'adding a Claude API starts with the same simple fields as Codex');
   assert.equal(await page.locator('#claude-fable-model').isVisible(), false);
@@ -666,11 +667,20 @@ test('sidebar switches each client independently, remembers routing choices and 
   await page.click('[data-client="claude"]');
   await page.evaluate(() => window.easySwitch.call('add-api', { alias: 'claude-main', url: 'https://claude.example', key: 'fixture' }));
   await page.locator('[data-client-provider="claude"]').filter({ hasText: 'claude-main' }).waitFor();
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('easy-switch:call');
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', async (event, action, payload) => {
+      const result = await original(event, action, payload);
+      if (action === 'state') result.lastFailover = { from: 'aos', to: 'elias', status: 403, at: new Date().toISOString() };
+      return result;
+    });
+  });
   assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'codex-main');
   assert.equal(await page.locator('[data-client="codex"]').innerText(), 'codex-main');
   assert.equal(await page.locator('[data-client="claude"]').innerText(), 'claude-main');
   assert.equal(await page.locator('.sidebar footer').count(), 0);
-  assert.equal(await page.locator('.workspace-footer button').count(), 2);
+  assert.equal(await page.locator('.workspace-footer>.icon-button').count(), 2);
   const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
   assert.ok(fs.existsSync(claudeFile));
   await page.click('#routing-toggle');
@@ -688,7 +698,7 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('#providers-page').isVisible(), false);
   assert.equal(await page.locator('#settings-page .settings-card').count(), 1);
   assert.equal(await page.locator('#settings-page .setting-row').count(), 1);
-  assert.equal(await page.locator('.workspace>header .icon-control').count(), 2);
+  assert.equal(await page.locator('.workspace-footer .icon-control').count(), 2);
   // Exercise startup UI through a local IPC fixture; never change OS login items.
   await app.evaluate(({ ipcMain }) => {
     const original = ipcMain._invokeHandlers.get('easy-switch:call');
@@ -717,8 +727,8 @@ test('sidebar switches each client independently, remembers routing choices and 
       const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect();
       return { controls: ['language-button', 'theme-button'].map(bounds), settings: bounds('settings'), starCenter: bounds('star'), brandCenter: brand.top + brand.height / 2, brandTop: brand.top, footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
     });
-    assert.ok(layout.controls.every(control => Math.abs(control.y - layout.brandCenter) < 1), 'toolbar buttons and sidebar brand share a center line: ' + JSON.stringify(layout));
-    assert.ok(layout.controls[0].x > layout.width / 2 && Math.abs(layout.controls[1].x - layout.starCenter.x) < 1, 'language and appearance sit at the top right');
+    assert.ok(layout.controls.every(control => Math.abs(control.y - layout.starCenter.y) < 1), 'footer controls share a center line: ' + JSON.stringify(layout));
+    assert.ok(layout.controls[0].x > layout.width / 2 && layout.controls[1].x < layout.starCenter.x, 'language and appearance sit with the bottom-right actions');
     if (process.platform === 'darwin') assert.ok(layout.brandTop >= 54, 'logo leaves room below the macOS window controls');
     assert.ok(Math.abs(layout.settings.y - layout.starCenter.y) < 1, 'sidebar settings and footer actions share a bottom baseline');
     assert.ok(Math.abs(layout.footer.bottom - layout.height) < 1 && Math.abs(layout.footer.right - layout.width) < 1, 'footer stays at the window edge');
@@ -730,7 +740,7 @@ test('sidebar switches each client independently, remembers routing choices and 
       await page.click(`[data-client="${client}"]`);
       await page.locator('.provider').filter({ hasText: `${client}-main` }).waitFor();
       await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
-      assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status').count(), 0);
+      assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status, #failover, [data-i18n="priorityHelp"]').count(), 0);
       assert.equal(await page.locator('#language-button').isVisible(), true);
       assert.equal(await page.locator('#theme-button').isVisible(), true);
       const actions = await page.locator('.provider-actions button').evaluateAll(buttons => buttons.map(button => {
@@ -741,17 +751,18 @@ test('sidebar switches each client independently, remembers routing choices and 
       assert.ok(actions.every(button => Math.abs(button.top - actions[0].top) < 1 && Math.abs(button.width - actions[0].width) < 1 && Math.abs(button.height - actions[0].height) < 1), 'import and add actions share one row with equal sizes');
       assert.ok(actions.every(button => button.contentWidth <= button.innerWidth), 'action labels fit at the minimum window width');
       const alignment = await page.evaluate(() => {
-        const header = document.querySelector('.workspace>header'), toolbar = document.getElementById('theme-button').getBoundingClientRect();
+        const header = document.querySelector('.workspace>header');
         const first = document.querySelector('.client-item').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
-        return { firstTop: first.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(header).paddingRight), panelRightInset: innerWidth - panel.right, toolbarBottom: toolbar.bottom, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
+        return { firstTop: first.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(document.querySelector('.workspace-footer')).paddingRight), panelRightInset: innerWidth - panel.right, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
       });
       assert.ok(Math.abs(alignment.firstTop - alignment.panelTop) < 1, 'client navigation and provider panel share a top baseline: ' + JSON.stringify(alignment));
-      assert.ok(alignment.toolbarBottom + 12 <= alignment.panelTop, 'toolbar stays clear of the provider panel: ' + JSON.stringify(alignment));
       assert.ok(Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
     }
     await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });
     await page.click('#theme-button');
     await page.locator('#theme-menu').waitFor({ state: 'visible' });
+    const menu = await page.locator('#theme-menu').boundingBox(), trigger = await page.locator('#theme-button').boundingBox();
+    assert.ok(menu.y >= 0 && menu.y + menu.height < trigger.y, 'footer menu opens upwards within the window');
     await page.screenshot({ path: path.join(folder, `appearance-toolbar-${language}-${theme}.png`), animations: 'disabled' });
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#theme-button').getAttribute('aria-expanded'), 'false');
@@ -821,7 +832,7 @@ test('Claude account rows display Free, Pro, Max and Ultra while missing plans s
   for (const plan of ['free', 'pro', 'max', 'ultra']) {
     const detail = page.locator(`[data-alias="${plan}"] .identity small`);
     await detail.filter({ hasText: `Claude ${plan[0].toUpperCase() + plan.slice(1)}` }).waitFor();
-    assert.equal(await detail.getAttribute('title'), 'Plan reported by the saved Claude sign-in.');
+    assert.equal(await detail.getAttribute('title'), 'Claude subscription plan.');
   }
   await page.locator('[data-alias="unknown"] .identity small').filter({ hasText: 'Claude · Plan unknown' }).waitFor();
   assert.equal(await page.locator('.quota, .reset-quota, #claude-desktop-hint').count(), 0);

@@ -75,18 +75,26 @@ export function claudeAuth(provider) {
 }
 export const claudeExpired = auth => typeof auth.expiresAt === 'number' && auth.expiresAt <= Date.now() + 60000;
 const refreshing = new Map();
-export async function claudeToken(provider, fetchImpl) {
+export async function claudeToken(provider, fetchImpl, { signal, force = false } = {}) {
   const auth = claudeAuth(provider);
-  if (!claudeExpired(auth)) return auth.accessToken;
+  if (!force && !claudeExpired(auth)) return auth.accessToken;
   if (!auth.refreshToken) throw new Error('Claude subscription authentication required.');
   const file = path.join(provider.accountHome, 'oauth.json');
-  if (refreshing.has(file)) return refreshing.get(file);
+  if (refreshing.has(file)) {
+    try { return await refreshing.get(file); }
+    catch (error) {
+      // A hidden window may cancel its profile refresh while inference waits.
+      if (signal || error.name !== 'AbortError') throw error;
+      return claudeToken(provider, fetchImpl, { force });
+    }
+  }
   const operation = (async () => {
     const response = await fetchImpl('https://platform.claude.com/v1/oauth/token', { method: 'POST', redirect: 'error',
-      headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(15000),
+      headers: { 'content-type': 'application/json' }, signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
       body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e' }) });
     if (!response.ok) { await response.body?.cancel(); throw new Error('Claude subscription authentication required.'); }
     const next = await response.json();
+    signal?.throwIfAborted();
     if (typeof next.access_token !== 'string' || !Number.isFinite(next.expires_in)) throw new Error('Claude subscription authentication required.');
     // Never recreate removed credentials or overwrite a separate sign-in.
     const current = claudeAuth(provider);

@@ -5,7 +5,7 @@
 html, body { height: 100%; }
 body { --header-height:104px; --header-top:28px; --page-inset:24px; --footer-height:68px; margin: 0; color: var(--ink); background: var(--background); font-size: 13px; display: grid; grid-template-columns:190px minmax(0,1fr);grid-template-rows:minmax(0,1fr); isolation: isolate; }
 :root[data-platform="darwin"] body { --header-height:116px; --header-top:56px; }
-header { position:relative;z-index:10;padding:calc(var(--header-top) - 3px) var(--page-inset) 20px;display:flex;align-items:flex-start;justify-content:flex-end;gap:10px;-webkit-app-region:drag; }
+header { -webkit-app-region:drag; }
 main { overflow: auto; padding: 0 30px 12px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .glass, dialog { background: var(--glass); border: 1px solid var(--line); box-shadow: var(--panel-shadow); backdrop-filter: blur(28px) saturate(145%); -webkit-backdrop-filter: blur(28px) saturate(145%); }
 .eyebrow { color: var(--muted); font-size: 9px; letter-spacing: 1.3px; font-weight: 600; }
@@ -137,7 +137,6 @@ button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--i
 .workspace {display:grid;grid-template-rows:var(--header-height) auto minmax(0,1fr) var(--footer-height);min-width:0;min-height:0;}
 #providers-page {padding:0 var(--page-inset) 12px;}
 #providers {margin:0 0 15px;}
-#providers>.help {margin-bottom:16px;}
 #settings-page {padding:0 var(--page-inset) 28px;overflow:auto;}
 .workspace-notices {padding:0 var(--page-inset);}
 .workspace-notices .notice {margin-top:0;}
@@ -145,7 +144,8 @@ button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--i
 .setting-row {display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:18px;min-height:68px;font-size:12px;border-bottom:1px solid var(--line);}
 .setting-row:last-child {border-bottom:0;}
 .setting-control {display:flex;align-items:center;justify-content:center;width:44px;}
-.workspace-footer {display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 var(--page-inset);}
+.workspace-footer {position:relative;z-index:10;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 var(--page-inset);}
+.workspace-footer .control-popover {top:auto;bottom:calc(100% + 10px);}
 #version {color:var(--muted);font-size:11px;margin-right:4px;white-space:nowrap;}
 #updates {position:relative;}
 .quota-segment.unknown .quota-track {stroke-dasharray:4 6;}

@@ -125,6 +125,21 @@ test('Claude credentials support protected file storage and refresh once for par
   assert.equal(refreshed.subscriptionType, 'max'); assert.equal(refreshed.rateLimitTier, 'default_claude_max_20x');
 });
 
+test('hiding the profile window cannot cancel an inference request waiting for the same token refresh', async t => {
+  const root = fixture(t), provider = { type: 'account', accountHome: root }, abort = new AbortController();
+  atomic(path.join(root, 'oauth.json'), { ...oauth, expiresAt: 1 });
+  let calls = 0;
+  const fetchImpl = async (_url, options) => {
+    if (++calls === 1) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    return Response.json({ access_token: 'inference-token', refresh_token: 'new-refresh', expires_in: 3600 });
+  };
+  const profile = claudeToken(provider, fetchImpl, { signal: abort.signal });
+  const inference = claudeToken(provider, fetchImpl);
+  abort.abort();
+  await assert.rejects(profile, { name: 'AbortError' });
+  assert.equal(await inference, 'inference-token'); assert.equal(calls, 2);
+});
+
 test('Claude model discovery paginates actual provider IDs and never borrows the Codex catalog', async t => {
   const root = fixture(t), provider = { type: 'api', baseUrl: 'https://example.test/anthropic/v1', apiKey: 'key' }; let calls = 0;
   const result = await discoverClaudeModels(provider, root, { fetchImpl: async (url, options) => {

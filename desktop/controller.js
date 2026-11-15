@@ -30,6 +30,7 @@ export class DesktopController {
     this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, binary, port, reauth: this.reauth, guardExec,
       claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}) });
     this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
+    this.claudeUsage = new SubscriptionUsage({ root, client: 'claude' });
     this.preferencesFile = path.join(root, 'desktop.json');
     this.repairPreferences = repairPreferences;
     this.resetRequest = resetRequest; this.resetPending = new Map();
@@ -70,6 +71,7 @@ export class DesktopController {
     process.env.SWITCH_CODEX_BIN = this.binary;
     await this.configureNetwork();
     this.usage.closed = false;
+    this.claudeUsage.closed = false;
     Object.assign(this.runtime.routes, { codex: true, claude: true }, this.preferences().routing);
     await this.runtime.start();
   }
@@ -105,16 +107,17 @@ export class DesktopController {
     await this.runtime.setClientRouting(client, enabled);
     try { this.setPreferences({ routing: { ...this.runtime.routes } }); }
     catch (error) { await this.runtime.setClientRouting(client, routing[client]); throw error; }
-    if (client === 'codex') { this.usage.closed = !enabled; if (!enabled) this.usage.setPaused(true); else this.usage.setPaused(false); }
+    const usage = client === 'claude' ? this.claudeUsage : this.usage;
+    usage.closed = !enabled; usage.setPaused(!enabled);
     return this.snapshot();
   }
-  async stop() { await this.runtime.stop(); this.usage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
+  async stop() { await this.runtime.stop(); this.usage.close(); this.claudeUsage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
   snapshot({ usage: includeUsage = true } = {}) {
     const preferences = this.preferences();
     const client = this.client;
     if (includeUsage && client === 'codex' && this.runtime.clientEnabled('codex')) syncNativeCredentials(this.root, this.codexHome);
     const state = init(this.providerRoot);
-    const usage = client === 'codex' && this.runtime.clientEnabled('codex') && includeUsage ? this.usage.snapshot(state) : {};
+    const usage = this.runtime.clientEnabled(client) && includeUsage ? (client === 'claude' ? this.claudeUsage : this.usage).snapshot(state) : {};
     let freeImages = false;
     const providers = providerOrder(state).map(alias => {
       const provider = state.providers[alias];
@@ -128,6 +131,7 @@ export class DesktopController {
             const value = typeof auth.subscriptionType === 'string' ? auth.subscriptionType.trim().toLowerCase() : null;
             // Legacy Max 20x credentials identify the plan now named Ultra.
             if (planLabel(value, client)) plan = value === 'max' && auth.rateLimitTier === 'default_claude_max_20x' ? 'ultra' : value;
+            plan = usage[alias]?.data?.plan || plan;
           }
         }
         catch { needsLogin = true; }

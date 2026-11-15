@@ -21,6 +21,94 @@ function setup(t, options = {}) {
 }
 const done = usage => Promise.all([...usage.entries.values()].map(entry => entry.pending));
 
+test('Codex plan changes are reread with the same credentials after the cache interval and after resuming', async t => {
+  let clock = 0, plan = 'free', calls = 0;
+  const { usage, state } = setup(t, { now: () => clock, fetchImpl: async () => { calls++; return Response.json(payload(plan)); } });
+  usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.data.plan, 'free');
+  for (const next of ['plus', 'pro', 'free']) {
+    plan = next; clock += 60000; usage.snapshot(state); await done(usage);
+    assert.equal(usage.snapshot(state).account.data.plan, next);
+  }
+  usage.setPaused(true); plan = 'plus'; clock += 60000; usage.snapshot(state); await done(usage);
+  assert.equal(calls, 4); assert.equal(usage.snapshot(state).account.data.plan, 'free');
+  usage.setPaused(false); usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.data.plan, 'plus'); assert.equal(calls, 5);
+});
+
+test('Claude plans refresh online, retain the last known plan on failure and never guess Free from missing fields', async t => {
+  let clock = 0, type = 'claude_free', tier = null, fail = false, calls = 0;
+  const { usage, state, accountHome } = setup(t, { client: 'claude', now: () => clock, fetchImpl: async (url, options) => {
+    calls++; assert.equal(url, 'https://api.anthropic.com/api/oauth/profile');
+    assert.equal(options.headers.authorization, 'Bearer claude-private'); assert.equal(options.redirect, 'error');
+    return fail ? new Response('private error', { status: 503 }) : Response.json({ organization: { organization_type: type, rate_limit_tier: tier }, account: { email: 'private@example.test' } });
+  } });
+  atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'claude-private', expiresAt: Date.now() + 3600000, scopes: ['user:inference', 'user:profile'] });
+  for (const [next, nextTier, expected] of [['claude_free', null, 'free'], ['claude_pro', null, 'pro'], ['claude_max', 'default_claude_max_5x', 'max'], ['claude_max', 'default_claude_max_20x', 'ultra'], ['claude_free', null, 'free']]) {
+    type = next; tier = nextTier; usage.snapshot(state); await done(usage);
+    assert.equal(usage.snapshot(state).account.data.plan, expected); clock += 60000;
+  }
+  assert.equal(calls, 5);
+  fail = true; usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.status, 'unavailable'); assert.equal(usage.snapshot(state).account.data.plan, 'free');
+  fail = false; type = null; clock += 120000; usage.snapshot(state); await done(usage);
+  assert.equal(usage.snapshot(state).account.status, 'unavailable'); assert.equal(usage.snapshot(state).account.data.plan, 'free');
+  assert.doesNotMatch(JSON.stringify(usage.snapshot(state)), /private|organization_type|accessToken/);
+  assert.equal(usage.snapshot(state).api, undefined);
+});
+
+test('Claude plan reads respect foreground pause and missing profile permission', async t => {
+  let calls = 0;
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: async (_url, options) => {
+    calls++;
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  } });
+  const auth = { accessToken: 'claude-private', expiresAt: Date.now() + 3600000, scopes: ['user:inference'] };
+  atomic(path.join(accountHome, 'oauth.json'), auth);
+  assert.equal(usage.snapshot(state).account.status, 'unavailable'); assert.equal(calls, 0);
+  atomic(path.join(accountHome, 'oauth.json'), { ...auth, scopes: ['user:inference', 'user:profile'] });
+  usage.snapshot(state); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1); usage.setPaused(true); await done(usage);
+  for (let index = 0; index < 10; index++) usage.snapshot(state);
+  assert.equal(calls, 1);
+  usage.setPaused(false); usage.snapshot(state);
+  assert.equal(calls, 2); usage.close(); await done(usage);
+});
+
+test('Claude profile authentication refreshes once on rejection and preserves the saved plan metadata', async t => {
+  let profiles = 0, refreshes = 0;
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: async (url, options) => {
+    if (url === 'https://platform.claude.com/v1/oauth/token') {
+      refreshes++; assert.equal(JSON.parse(options.body).refresh_token, 'private-refresh');
+      return Response.json({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 });
+    }
+    profiles++;
+    if (profiles === 1) return new Response('', { status: 401 });
+    assert.equal(options.headers.authorization, 'Bearer new-access');
+    return Response.json({ organization: { organization_type: 'claude_pro' } });
+  } });
+  atomic(path.join(accountHome, 'oauth.json'), { accessToken: 'old-access', refreshToken: 'private-refresh', expiresAt: Date.now() + 3600000,
+    subscriptionType: 'free', scopes: ['user:inference', 'user:profile'] });
+  usage.snapshot(state); await done(usage);
+  assert.equal(profiles, 2); assert.equal(refreshes, 1);
+  assert.equal(usage.snapshot(state).account.data.plan, 'pro');
+  const saved = JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json')));
+  assert.equal(saved.subscriptionType, 'free'); assert.equal(saved.refreshToken, 'new-refresh');
+});
+
+test('pausing a Claude profile read cancels token refresh without changing the saved login', async t => {
+  let refreshSignal;
+  const { usage, state, accountHome } = setup(t, { client: 'claude', fetchImpl: async (url, options) => {
+    assert.equal(url, 'https://platform.claude.com/v1/oauth/token'); refreshSignal = options.signal;
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  } });
+  const auth = { accessToken: 'old-access', refreshToken: 'private-refresh', expiresAt: 1, scopes: ['user:inference', 'user:profile'] };
+  atomic(path.join(accountHome, 'oauth.json'), auth);
+  usage.snapshot(state); await new Promise(resolve => setImmediate(resolve)); usage.setPaused(true); await done(usage);
+  assert.equal(refreshSignal.aborted, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountHome, 'oauth.json'))), auth);
+});
+
 test('normalize usage by window duration, retaining credits and missing fields without inventing percentages', () => {
   const data = normalizeUsage(payload(), 1000);
   assert.equal(data.fiveHour.remaining, 75); assert.equal(data.weekly.remaining, 20);

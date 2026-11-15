@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, Notification, powerMonitor, nativeTheme, screen, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, nativeImage, powerMonitor, nativeTheme, screen, session } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,7 +11,7 @@ if (process.platform === 'win32') app.setAppUserModelId('io.github.jasperroc.eas
 fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 const ownsLock = app.requestSingleInstanceLock();
-let window, tray, controller, updater, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '', lastFailover;
+let window, tray, controller, updater, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '';
 let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
 const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
@@ -35,7 +35,7 @@ function snapshot(details = activity?.visible() ?? true) { const preferences = c
 function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
   uiClient = state.client || 'codex';
-  const signature = JSON.stringify([state.client, state.running, Object.entries(state.clients || {}).map(([name, item]) => [name, item.running, item.active]), state.active, state.providers.map(({ alias, type, active, needsLogin, revision }) => ({ alias, type, active, needsLogin, revision })), state.loginItem, state.lastFailover, uiLanguage]);
+  const signature = JSON.stringify([state.client, state.running, Object.entries(state.clients || {}).map(([name, item]) => [name, item.running, item.active]), state.active, state.providers.map(({ alias, type, active, needsLogin, revision }) => ({ alias, type, active, needsLogin, revision })), state.loginItem, uiLanguage]);
   if (signature === trayState) return;
   trayState = signature;
   controller.runtime.syncClaude();
@@ -55,11 +55,6 @@ function updateTray(state = snapshot(false)) {
     { label: t('updates'), click: () => showWindow('updates') },
     { type: 'separator' }, { label: t('quit'), click: () => app.quit() },
   ]);
-  if (lastFailover !== undefined && state.lastFailover?.at !== lastFailover && state.lastFailover && Notification.isSupported()) {
-    const event = state.lastFailover;
-    new Notification({ title: t('notifyTitle'), body: `${event.from} → ${event.to} (HTTP ${event.status})` }).show();
-  }
-  lastFailover = state.lastFailover?.at || null;
 }
 function refreshDesktop(visible = activity?.visible() ?? false) {
   if (!controller || !tray) return;
@@ -165,7 +160,10 @@ async function boot() {
   await window.loadFile(path.join(__dirname, 'index.html'));
   updateTray(); updater.confirmLaunch();
   nativeTheme.on('updated', () => { if (activity?.visible()) refreshDesktop(true); });
-  activity = desktopActivity({ window, powerMonitor, foreground: visible => controller.usage.setPaused(!visible || !controller.runtime.clientEnabled('codex')), refresh: visible => {
+  activity = desktopActivity({ window, powerMonitor, foreground: visible => {
+    controller.usage.setPaused(!visible || !controller.runtime.clientEnabled('codex'));
+    controller.claudeUsage.setPaused(!visible || !controller.runtime.clientEnabled('claude'));
+  }, refresh: visible => {
     try { refreshDesktop(visible); } catch { /* A transient metadata read is retried on the next pass. */ }
   } });
   if (app.isPackaged && !process.env.SWITCH_TEST_DESKTOP) {
