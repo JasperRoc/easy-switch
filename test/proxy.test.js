@@ -918,3 +918,20 @@ test('an image-capable API is tried after a Free subscription image rejection wi
   assert.deepEqual(calls.map(item=>item.token),['Bearer free-key','Bearer text-key','Bearer images-key']);
   assert.equal(readState(root).active,'text');
 });
+
+test('isolated web image success, sign-in and exhausted quota never affect the API text selection or credentials',async t=>{
+ const {root,token}=fixture(t);addProvider('api',{type:'api',baseUrl:'https://text.example/v1',apiKey:'private-text'},root);
+ let images=0,status=200,texts=0;
+ const proxy=await listen(t,createProxy({root,imageHandler:async({raw,signal,route,turnId})=>{
+  images++;assert.ok(signal);assert.equal(route,'/v1/images/generations');assert.equal(JSON.parse(raw).prompt,'fixture');
+  assert.equal(turnId,'image-turn');
+  return Response.json(status===200?{data:[{b64_json:'fixture'}]}:{error:{message:'web quota or sign-in'}},{status});
+ },fetchImpl:async(url,options)=>{texts++;assert.equal(url,'https://text.example/v1/responses');assert.equal(options.headers.authorization,'Bearer private-text');return new Response('data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});}}));
+ for(status of [200,401,429]){
+  const result=await fetch(proxy+'/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json','x-codex-image-turn-id':'image-turn'},body:JSON.stringify({prompt:'fixture'})});
+  assert.equal(result.status,status);assert.equal(result.headers.get('x-switch-image-route'),'chatgpt-web');await result.text();
+  await(await send(proxy,token)).text();assert.equal(readState(root).active,'api');
+ }
+ assert.equal(images,3);assert.equal(texts,3);
+ const denied=await fetch(proxy+'/v1/images/generations',{method:'POST',body:'{}'});assert.equal(denied.status,401);assert.equal(images,3);
+});

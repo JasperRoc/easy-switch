@@ -696,8 +696,8 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
   await page.click('#settings'); await page.locator('#settings-page').waitFor();
   assert.equal(await page.locator('#providers-page').isVisible(), false);
-  assert.equal(await page.locator('#settings-page .settings-card').count(), 2);
-  assert.equal(await page.locator('#settings-page .setting-row').count(), 2);
+  assert.equal(await page.locator('#settings-page .settings-card').count(), 3);
+  assert.equal(await page.locator('#settings-page .setting-row').count(), 3);
   assert.equal(await page.locator('#uninstall').count(), 1);
   assert.equal(await page.locator('.workspace-footer .icon-control').count(), 2);
   // Exercise startup UI through a local IPC fixture; never change OS login items.
@@ -853,4 +853,22 @@ test('Claude account rows display Free, Pro, Max and Ultra while missing plans s
   assert.match(await unknown.getAttribute('title'), /不代表该账号为 Free/);
   assert.equal(await page.locator('[data-alias="pro"] .identity small').innerText(), 'Claude Pro');
   await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-zh-CN-dark.png'), animations: 'disabled' });
+});
+
+test('web image settings use a separate opt-in and leave API selection and native sign-in intact', { skip: !enabled, timeout: 20000 }, async t => {
+ const {app,page,root,home}=await launch(t);
+ await page.click('#add-api');await page.fill('#provider-alias','text-api');await page.fill('#api-key','private-key');await page.click('#save-provider');
+ await page.locator('[data-alias="text-api"]').waitFor();
+ const authFile=path.join(home,'auth.json'),auth='{"auth_mode":"apikey","OPENAI_API_KEY":"private-original"}\n';fs.writeFileSync(authFile,auth);
+ await page.click('#settings');await page.locator('#web-images-toggle[aria-checked="false"]').waitFor();
+ await page.click('#web-images-toggle');await page.locator('#web-images-toggle[aria-checked="true"]').waitFor();
+ assert.equal(parse(fs.readFileSync(path.join(home,'config.toml'),'utf8')).features.image_generation,true);
+ assert.equal(fs.readFileSync(authFile,'utf8'),auth);assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).active,'text-api');
+ assert.match(await page.locator('.web-images-setting').innerText(),/create regular chats/);
+ await page.click('#language-button');await page.click('[data-language="zh-CN"]');
+ await page.locator('#web-images-label').filter({hasText:'ChatGPT 网页图片'}).waitFor();
+ assert.match(await page.locator('.web-images-setting').innerText(),/创建普通聊天记录/);
+ await page.click('#web-images-toggle');await page.locator('#web-images-toggle[aria-checked="false"]').waitFor();
+ assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+ await page.screenshot({path:path.join(project,'.desktop-test','web-images-settings-preview.png'),animations:'disabled'});
 });

@@ -82,7 +82,7 @@ async function sseBody(response) {
     throw error;
   }
 }
-export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, clientEnabled = () => true, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
+export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, imageHandler, clientEnabled = () => true, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
   const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
@@ -113,6 +113,13 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       const contentType = req.headers['content-type'] || 'application/json';
       if (image && !/^(?:application\/json|multipart\/form-data)(?:;|$)/i.test(contentType)) return error(res, 400, '图片请求须使用 JSON 或 multipart/form-data');
       const payload = image && /^multipart\//i.test(contentType) ? null : jsonBody(raw);
+      if (image && imageHandler) {
+        const result = await imageHandler({ raw, contentType, route: req.url, signal: abort.signal, turnId: req.headers['x-codex-image-turn-id'] });
+        if (result) {
+          res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-image-route': 'chatgpt-web' });
+          await pipeline(Readable.fromWeb(result.body), res); return;
+        }
+      }
       if (!image) {
         if (payload.previous_response_id || payload.conversation) return error(res, 400, '切换代理要求完整 input；不支持上游响应 ID / conversation 引用');
         if (!Array.isArray(payload.input) && typeof payload.input !== 'string') return error(res, 400, '缺少 input');

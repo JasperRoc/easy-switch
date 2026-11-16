@@ -170,11 +170,11 @@ export function syncNativeCredentials(root, codexHome) {
 
 // Adding the first subscription also enables client tools; provider switching
 // continues to happen inside the proxy and never replaces a running turn.
-export function syncSession(root, codexHome) {
+export function syncSession(root, codexHome, externalImages = false) {
   const recordFile = path.join(root, 'desktop-session.json');
   if (!fs.existsSync(recordFile)) return false;
   const record = JSON.parse(read(recordFile));
-  const enabled = nativeSubscription(codexHome) || hasSubscription(root);
+  const enabled = externalImages || nativeSubscription(codexHome) || hasSubscription(root);
   if (enabled === !!record.nativeTools) return enabled;
   const current = read(record.file);
   const config = parse(record.installed).model_providers.easy_switch;

@@ -97,3 +97,15 @@ The desktop renderer uses a small icon menu for language and appearance, native 
 Large desktop installers use four bounded HTTP range requests with completed-part receipts. Resumed files still need the full GitHub SHA-256 digest before installation. Servers that ignore Range use the single-stream verifier. macOS staging renames a same-volume app instead of recursively copying it; cross-volume updates copy and retain rollback behavior. Provider catalogs persist observed model metadata with hashed provider/credential fingerprints, are reused for up to 24 hours, and refresh in the background. A stale cache never establishes an inference model exclusion.
 
 `desktop/uninstall.js` restores client recovery records before removing data, and `uninstall-cli.cjs` performs cleanup after Electron exits. macOS exposes complete removal in Settings; deleting an app bundle in Finder has no uninstall hook. Windows NSIS runs the headless cleanup on an actual uninstall and skips it during updates. Linux `switch uninstall` also removes managed completion blocks and its global npm package. Original client credentials and conversation directories are outside the removal scope.
+
+## Isolated web image routing
+
+`desktop/web-images.js` manages an on-demand sandboxed browser window with its own persistent Electron partition. `desktop/web-image-page.js` contains only DOM/composer and bounded image-download operations run in an isolated browser world; the page has no Node.js bridge or access to the app renderer IPC. The normal renderer gets only the route's enabled flag and phase. Native `/v1/images/*` requests enter the optional handler after local proxy authentication, while text follows the normal provider router.
+
+The image session remains under Electron's session-data directory. Browser cookie persistence is verified with separate write/read/clear/read processes. Ordinary exit and update flush the storage, explicit disconnect clears it, and uninstall removes it. Do not put the profile beside Electron's userData directory: the macOS sandboxed network process can fail to write cookies there even when the session reports persistent.
+
+```bash
+SWITCH_TEST_DESKTOP=1 node --test test/web-images.integration.test.js
+```
+
+This uses local simulated pages for both the legacy textarea and current contenteditable/gallery structure, Chinese send labels, reference-file input selection, output/quota handling and persistence. The actual ChatGPT webpage is not exercised by default tests. Live validation on November 15–16, 2026 used a separately signed-in Free account for generation, an edited image, native Codex tool return and text continuation after a real zero-image quota error. The live image checks used local simulated text upstreams. No cookies, account history or generated live image files are committed.

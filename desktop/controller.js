@@ -27,7 +27,7 @@ export class DesktopController {
     this.reauth.prompt = provider => Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)
       ? prompt(provider) : Promise.resolve('The provider was removed. Retry with the selected provider.');
     this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, binary, port, reauth: this.reauth, guardExec,
-      claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}) });
+      claudeReauth: alias => this.startClaudeSignIn(alias).catch(() => {}), externalImages: () => this.preferences().webImages === true });
     this.usage = new SubscriptionUsage({ root, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
     this.claudeUsage = new SubscriptionUsage({ root, client: 'claude' });
     this.preferencesFile = path.join(root, 'desktop.json');
@@ -59,12 +59,13 @@ export class DesktopController {
   }
   setPreferences(patch) {
     for (const [key, value] of Object.entries(patch)) {
-      const valid = key === 'routing' ? value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(client => ['codex', 'claude'].includes(client) && typeof value[client] === 'boolean') : key === 'client' ? ['codex', 'claude'].includes(value) : key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : key === 'startAtLogin' && typeof value === 'boolean';
+      const valid = key === 'routing' ? value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(client => ['codex', 'claude'].includes(client) && typeof value[client] === 'boolean') : key === 'client' ? ['codex', 'claude'].includes(value) : key === 'language' ? ['en', 'zh-CN'].includes(value) : key === 'theme' ? ['system', 'light', 'dark'].includes(value) : ['startAtLogin', 'webImages'].includes(key) && typeof value === 'boolean';
       if (!valid) throw new Error('Invalid desktop preference.');
     }
     const current = this.preferences();
     if (this.preferencesError) throw new Error('Restore access to desktop.json before saving desktop preferences.');
     atomic(this.preferencesFile, { ...current, ...patch });
+    if (Object.hasOwn(patch, 'webImages')) this.runtime.syncTools();
   }
   async start() {
     process.env.SWITCH_CODEX_BIN = this.binary;

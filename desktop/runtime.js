@@ -35,8 +35,8 @@ export function repairPreferencesAccess(file, { platform = process.platform, run
 }
 
 export class DesktopRuntime {
-  constructor({ root, codexHome, claudeHome, claudeDesktop, binary, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath }) {
-    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, binary, port, reauth, claudeReauth, createServer, guardExec });
+  constructor({ root, codexHome, claudeHome, claudeDesktop, binary, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath, imageHandler, externalImages = () => false }) {
+    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, binary, port, reauth, claudeReauth, createServer, guardExec, imageHandler, externalImages });
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
@@ -71,7 +71,7 @@ export class DesktopRuntime {
       } catch (error) { this.routes[client] = false; throw error; }
     });
   }
-  syncTools() { if (this.clientEnabled('codex')) this.imageTools = syncSession(this.root, this.codexHome); }
+  syncTools() { if (this.clientEnabled('codex')) this.imageTools = syncSession(this.root, this.codexHome, this.externalImages()); }
   syncClaude() {
     if (!this.clientEnabled('claude')) return;
     const state = init(path.join(this.root, 'claude'));
@@ -85,7 +85,8 @@ export class DesktopRuntime {
   }
   restore() { restoreSession(this.recordFile); restoreClaude(path.join(this.root, 'claude-session.json')); restoreClaudeDesktop(path.join(this.root, 'claude-desktop-session.json')); }
   async listen() {
-    const server = this.createServer({ root: this.root, binary: this.binary, clientEnabled: client => this.clientEnabled(client), reauth: this.reauth, claudeReauth: this.claudeReauth });
+    const server = this.createServer({ root: this.root, binary: this.binary, clientEnabled: client => this.clientEnabled(client), reauth: this.reauth, claudeReauth: this.claudeReauth,
+      imageHandler: request => this.imageHandler?.(request) });
     server.on('request', (req, res) => {
       if (req.method !== 'POST') return;
       const client = req.url.startsWith('/claude/') || req.url.startsWith('/claude-desktop/') ? 'claude' : 'codex';
