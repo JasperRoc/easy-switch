@@ -110,10 +110,11 @@ function restoreAuth(auth) {
   if (auth.exists) writeText(auth.file, auth.original); else fs.rmSync(auth.file, { force: true });
 }
 
-function hasSubscription(root) {
+function hasImageProvider(root) {
   const state = readState(root);
   for (const alias of [state.active, ...providerOrder(state)]) {
     const provider = state.providers[alias];
+    if (provider?.type === 'api') return true;
     if (provider?.type !== 'account') continue;
     try {
       accountAuth(provider);
@@ -148,13 +149,13 @@ export function syncNativeCredentials(root, codexHome) {
   }
 }
 
-// Adding the first subscription also enables client tools; provider switching
+// Adding an account or API enables client tools; provider switching
 // continues to happen inside the proxy and never replaces a running turn.
 export function syncSession(root, codexHome, externalImages = false) {
   const recordFile = path.join(root, 'desktop-session.json');
   if (!fs.existsSync(recordFile)) return false;
   const record = JSON.parse(read(recordFile));
-  const enabled = externalImages || nativeSubscription(codexHome) || hasSubscription(root);
+  const enabled = externalImages || nativeSubscription(codexHome) || hasImageProvider(root);
   if (enabled === !!record.nativeTools) return enabled;
   const current = read(record.file);
   const config = parse(record.installed).model_providers.easy_switch;

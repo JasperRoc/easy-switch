@@ -16,13 +16,13 @@ for (const modern of [false, true]) test(`real isolated browser (${modern ? 'cur
  t.after(async()=>{await app.close().catch(()=>{});fs.rmSync(root,{recursive:true,force:true});});
  for(let index=0;index<100;index++){if(await app.evaluate(()=>!!globalThis.webImageFixture))break;await new Promise(resolve=>setTimeout(resolve,50));}
  const result=await app.evaluate(()=>globalThis.webImageFixture.run('image'));
- assert.equal(result.status,200,JSON.stringify(result));assert.ok(result.bytes>100);assert.equal(result.phase,'ready');
+ assert.equal(result.status,200,JSON.stringify(result));assert.ok(result.bytes>100);assert.equal(result.phase,'ready');assert.equal(result.visible,false);
  const edited=await app.evaluate(()=>globalThis.webImageFixture.run('edit'));
  assert.equal(edited.status,200,JSON.stringify(edited));assert.ok(edited.bytes>100);
  const quota=await app.evaluate(()=>globalThis.webImageFixture.run('quota'));
- assert.equal(quota.status,429,JSON.stringify(quota));assert.equal(quota.phase,'attention');
+ assert.equal(quota.status,429,JSON.stringify(quota));assert.equal(quota.phase,'attention');assert.equal(quota.visible,false);
  const prequota=await app.evaluate(()=>globalThis.webImageFixture.run('prequota'));
- assert.equal(prequota.status,429,JSON.stringify(prequota));assert.equal(prequota.phase,'attention');
+ assert.equal(prequota.status,429,JSON.stringify(prequota));assert.equal(prequota.phase,'attention');assert.equal(prequota.visible,false);
  assert.equal(fs.existsSync(path.join(root,'auth.json')),false);assert.equal(fs.existsSync(path.join(root,'config.toml')),false);
 });
 

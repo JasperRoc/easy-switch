@@ -1,21 +1,27 @@
-# Isolated ChatGPT web images
+# Optional ChatGPT web image fallback
 
-Desktop 0.5.26 adds an optional, experimental browser adapter for Codex's built-in image tool. ChatGPT web sign-in stays in a separate browser profile while Codex remains connected to the easy-switch gateway. A Free account was used to verify live generation, reference-image editing, native Codex image output, and continued text in the same task after a real zero-image quota rejection. This does not guarantee access for every account or future webpage versions.
+Desktop 0.5.26 added an optional, experimental browser adapter for Codex's built-in image tool. ChatGPT web sign-in stays in a separate browser profile while Codex remains connected to the easy-switch gateway. A Free account was used to verify live generation, reference-image editing, native Codex image output, and continued text in the same task after a real zero-image quota rejection. This does not guarantee access for every account or future webpage versions.
+
+## Routing and sign-in boundaries
+
+Saved Codex subscriptions and APIs each enable the native image tool without requiring the web fallback. They are always tried before the optional webpage, even when the web switch is enabled. A successful native account request uses the account credentials already stored by easy-switch, without a second login or browser window. Native image entitlement, authentication, quota, missing-endpoint or eligible transient failures can try other saved providers; only after that queue is exhausted can this enabled web fallback run. Content-policy refusals and unrelated validation errors do not fall back to the webpage.
+
+The web adapter is not a token converter. Codex OAuth credentials do not supply the independent browser session cookie. Official [Codex pricing](https://learn.chatgpt.com/docs/pricing#image-generation-usage-limits) currently excludes Free image generation; web image access is separate. The [Sign in with ChatGPT preview restrictions](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) concern hosted Responses tools, not every native Codex image tool path. A missing local tool and an HTTP denial at the image backend are different failures. Merely enabling a tool does not grant image entitlement.
 
 ## Setup
 
-1. Open **Settings → ChatGPT web images · experimental** and choose **Open image sign-in**.
+1. Open **Settings → ChatGPT web image fallback · experimental** and choose **Open image sign-in**.
 2. Complete normal ChatGPT sign-in in the independent image window, using the account that provides web image access.
 3. Enable the web image switch. Reload an already-running Codex client once so it registers the image tool.
-4. Keep the desired text provider selected and ask Codex to generate or edit an image. Subsequent native image requests use the independent webpage while text requests keep the selected API or subscription.
+4. Keep the desired text provider selected and ask Codex to generate or edit an image. Native saved accounts/APIs are tried first. Only eligible failures reach the optional webpage; text requests keep the selected API or subscription.
 
-To use the existing native account/API image routes again, turn off this switch. **Clear image sign-in** clears this browser profile's cookies and storage. It does not log Codex out or change the current text provider. The adapter does not restore the official app's sidebar image page and does not add a new `switch model` command.
+Native account/API image routes remain active regardless of this switch. Turn it off to disable only the web fallback. **Clear image sign-in** clears this browser profile's cookies and storage. It does not log Codex out or change the current text provider. The adapter does not restore the official app's sidebar image page and does not add a new `switch model` command.
 
 ## Request flow
 
 The adapter opens the normal ChatGPT Images page, enters the image prompt using native browser input and clicks the page's send button. For edits, it uploads inline reference images through the file-upload control. It reads a completed generated image, validates the downloaded bytes and returns native Images JSON to Codex. Codex then handles the image result and resumes its task normally.
 
-The adapter does not directly call private web conversation endpoints, read existing browser cookies, or manufacture verification tokens. Required sign-in and verification are shown in the normal webpage for the user to complete.
+The adapter does not directly call private web conversation endpoints, read existing browser cookies, or manufacture verification tokens. Image generation never calls `show()` or `focus()` on the browser. Sign-in, verification, quota errors and timeouts remain in the tool result and Settings status; only the explicit Open image sign-in action opens the page. Hidden windows are destroyed after success or failure. If the web session expires, the user must open it manually; no automatic sign-in is attempted.
 
 **Image requests create regular conversations and attachments in the selected ChatGPT account.** They can appear in its history. The earlier temporary-chat path was rejected by the live page and is not used. Follow that account's retention and privacy settings; easy-switch does not delete these conversations automatically.
 
@@ -37,7 +43,7 @@ The browser is created on demand. A completed hidden image window is destroyed; 
 - Remote reference URLs, file IDs, masks, SVG/animation controls and multiple-image count requests are rejected rather than silently dropped.
 - ChatGPT web chooses the actual model, quality and dimensions. Images-model fields from Codex are not equivalent to selecting an exact web model. Transparent-background intent is included in the prompt and requires result validation.
 - Editing is generative and can change details or style despite a preservation prompt. A valid returned image is not proof of exact visual preservation.
-- DOM selectors depend on the ChatGPT page. Page changes, sign-in provider restrictions, output/download failures and unavailable account access can interrupt a request. An attention state lets the user inspect the webpage without changing the text route.
+- DOM selectors depend on the ChatGPT page. Page changes, sign-in provider restrictions, output/download failures and unavailable account access can interrupt a request. An attention state lets the user explicitly reopen the webpage from Settings without changing the text route.
 - The adapter is a desktop feature. Headless Linux service support is not implemented, and Windows runtime behavior still needs native hardware validation.
 
 ## Validation
@@ -57,9 +63,9 @@ Separately, live checks on November 15–16, 2026 verified generation and an edi
 
 桌面版 0.5.26 增加可选的实验性网页图片适配。图片使用独立的 ChatGPT 网页登录，Codex 仍以本地 easy-switch 网关身份连接。已使用 Free 网页账号验证真实图片生成、参考图编辑、Codex 工具结果回传，以及真实图片额度耗尽后的原任务文字续接；不保证所有账号或后续网页版本都可用。
 
-在 **设置 → ChatGPT 网页图片 · 实验性** 中打开图片登录，完成官方登录后开启开关。已运行的 Codex 首次需要重载一次来注册图片工具。文字保持所选服务商，后续内置图片请求改由独立网页处理。关闭开关后恢复已有原生账号／API 图片路由；“清除图片登录”只清理此独立网页环境，不改变 Codex 登录或文字服务商。此功能不恢复官方客户端侧栏页面。
+在 **设置 → ChatGPT 网页图片备用 · 实验性** 中打开图片登录，完成官方登录后开启开关。已运行的 Codex 首次需要重载一次来注册图片工具。文字保持所选服务商，内置图片请求优先尝试已保存订阅账号和 API；只有符合条件的失败且原生备用耗尽后才尝试网页。原生账号／API 图片路径使用现有凭据，无需重新登录。关闭开关只禁用网页备用；“清除图片登录”只清理此独立网页环境，不改变 Codex 登录或文字服务商。此功能不恢复官方客户端侧栏页面。
 
-适配操作正常网页输入框、上传控件及发送按钮，再将生成结果转换为 Codex 图片结果，不直接调用私有会话端点，不读取用户现有浏览器 Cookie，不自行构造验证令牌。需要登录或验证时由用户在官方网页完成。
+适配操作正常网页输入框、上传控件及发送按钮，再将生成结果转换为 Codex 图片结果，不直接调用私有会话端点，不读取用户现有浏览器 Cookie，不自行构造验证令牌。生成期间不自动打开窗口；登录、验证、额度错误和超时通过工具结果及设置状态提示。只有用户主动点击打开图片登录时显示网页，隐藏窗口在请求完成或失败后销毁。Codex OAuth 不等于网页登录 Cookie，无法凭现有 Codex 令牌保证免登网页。
 
 **图片请求会在该 ChatGPT 账号中创建普通聊天和附件，并可能出现在历史记录。** 实测临时聊天拒绝图片生成，因此不使用临时聊天；数据保留遵循账号自身设置，easy-switch 不自动删除这些聊天。
 
@@ -69,6 +75,10 @@ Separately, live checks on November 15–16, 2026 verified generation and an edi
 
 支持单个图片请求和最多 5 张内联 PNG/JPEG/WebP/GIF 参考图，每张最多 24 MiB，仍受本地请求体总计 32 MiB 限制。远程 URL、文件 ID、蒙版、动画、SVG 及多图数量控制暂不支持。模型、质量和尺寸由 ChatGPT 网页决定；生成式编辑可能改变风格或其他细节，不能保证精确保留。
 
-浏览器按需创建，隐藏窗口完成后销毁，空闲不轮询；生成期间最多每 1.5 秒检查进度，最多等 10 分钟，不阻止系统休眠。网页结构或权限变化可能导致失败，需要时可打开窗口查看。当前不支持无界面的 Linux 服务；Windows 仍需原生系统验证。
+浏览器按需创建，隐藏窗口在成功或失败后销毁，空闲不轮询；生成期间最多每 1.5 秒检查进度，最多等 10 分钟，不阻止系统休眠。网页结构或权限变化可能导致失败，需要时由用户主动打开窗口查看。当前不支持无界面的 Linux 服务；Windows 仍需原生系统验证。
 
 2026 年 11 月 15–16 日的真实验证覆盖了 Free 网页生成、添加云朵的参考图编辑、真实 Codex 的图片工具调用和原任务续接，以及真实零图片额度时仍可继续文字并切换 API。文字上游使用本地模拟服务，图片上游为实际 ChatGPT 网页；不将账号、私有聊天或生成图片提交为测试数据。
+
+On November 17, 2026, a real Codex app-server completed native image generation and continued the same turn through easy-switch in about eight seconds (one observation, not a speed guarantee). The text upstream was simulated and the image upstream was live; no web handler was called or native auth file created. A separate direct native image request using an existing paid Codex account returned HTTP 200 with image data and no webpage. This validates that account's native route; it does not establish native Free entitlement. The Free web checks above still required a separate browser sign-in.
+
+2026 年 11 月 17 日补测：真实 Codex 通过 easy-switch 使用已保存付费账号调用原生图片接口，并在同一任务内继续文字，本次约 8 秒完成（单次观测，不是速度保证），网页调用为 0，也未创建原生登录文件。文字上游为模拟服务，图片上游为真实接口；另一次直接图片请求也返回 HTTP 200 和图片数据。该结果只验证该账号原生权限，不能据此宣称 Free 原生图片免登可用；前述 Free 网页验证使用的是独立网页登录。

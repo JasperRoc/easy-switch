@@ -135,12 +135,12 @@ export class WebImages {
       let page;
       while (this.now() < startupDeadline) {
         signal.throwIfAborted(); page = await this.evaluate(inspectImagePage);
-        if (page.verification || page.login) { this.emit('signin'); this.window.show(); throw failure(401, 'Complete the official sign-in or verification in the Web images window, then retry.'); }
+        if (page.verification || page.login) { this.emit('signin'); throw failure(401, 'Web image fallback needs sign-in or verification. Open it from easy-switch Settings; generation does not open windows automatically.'); }
         if (page.composer) break;
         await delay(500, undefined, { signal });
       }
       if (!page?.composer) throw failure(503, 'The ChatGPT web composer is unavailable. Open Web images in Settings to check it.');
-      if (page.quota) { this.emit('attention'); this.window.show(); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
+      if (page.quota) { this.emit('attention'); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
       const prior = new Set(page.images.map(image => image.url));
       const debuggerAPI = this.window.webContents.debugger;
       debuggerAPI.attach('1.3'); debugging = true;
@@ -160,7 +160,7 @@ export class WebImages {
       for (let attempt = 0; attempt < 60; attempt++) {
         signal.throwIfAborted();
         const current = await this.evaluate(inspectImagePage);
-        if (current.quota) { this.emit('attention'); this.window.show(); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
+        if (current.quota) { this.emit('attention'); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
         if (await this.evaluate(submitImageComposer)) { submitted = true; break; }
         await delay(500, undefined, { signal });
       }
@@ -170,7 +170,7 @@ export class WebImages {
       let finishedWithoutImage = 0;
       while (this.now() < deadline) {
         signal.throwIfAborted(); page = await this.evaluate(inspectImagePage);
-        if (page.login || page.verification) { this.emit('signin'); this.window.show(); throw failure(401, 'Complete the official sign-in or verification in the Web images window, then retry.'); }
+        if (page.login || page.verification) { this.emit('signin'); throw failure(401, 'Web image fallback needs sign-in or verification. Open it from easy-switch Settings; generation does not open windows automatically.'); }
         const image = page.images.find(image => !prior.has(image.url) && allowedImage(image.url));
         if (image && !page.busy) {
           const encoded = await this.evaluate(readGeneratedImage, { url: image.url, limit: imageLimit });
@@ -180,12 +180,12 @@ export class WebImages {
           await this.flush();
           return { created: Math.floor(this.now() / 1000), data: [{ b64_json: encoded }], model: 'chatgpt-web' };
         }
-        if (page.quota) { this.emit('attention'); this.window.show(); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
+        if (page.quota) { this.emit('attention'); throw failure(429, 'ChatGPT web image quota is exhausted. Your text provider remains available.'); }
         finishedWithoutImage = page.assistantDone && !page.busy ? finishedWithoutImage + 1 : 0;
-        if (finishedWithoutImage >= 4) { this.emit('attention'); this.window.show(); throw failure(502, 'ChatGPT completed without returning an image. Check the image window; the request is not replayed automatically.'); }
+        if (finishedWithoutImage >= 4) { this.emit('attention'); throw failure(502, 'ChatGPT completed without returning an image. Check the image window; the request is not replayed automatically.'); }
         await delay(1500, undefined, { signal });
       }
-      this.emit('attention'); this.window.show();
+      this.emit('attention');
       throw failure(504, 'No completed image was returned. Check Web images for quota, refusal or generation status; the request is not replayed automatically.');
     } finally {
       signal.removeEventListener('abort', cancelled);
@@ -193,8 +193,8 @@ export class WebImages {
       fs.rmSync(uploadDirectory, { recursive: true, force: true });
       this.pending = false;
       if (this.window && !this.window.isDestroyed()) this.window.webContents.setBackgroundThrottling(true);
-      if (this.state.phase === 'ready' && this.window && !this.window.isVisible()) this.close();
-      else if (this.state.phase === 'generating') this.emit('attention');
+      if (this.state.phase === 'generating') this.emit('attention');
+      if (this.window && !this.window.isVisible()) this.close();
     }
   }
   async handle(request) {

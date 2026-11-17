@@ -268,3 +268,13 @@ test('an invalid Claude login displays reauthentication instead of its cached su
  controller.claudeUsage.snapshot=()=>({stale:{status:'signin',failure:'authentication',data:null}});
  const provider=controller.snapshot().providers[0];assert.equal(provider.needsLogin,true);assert.equal(provider.plan,null);
 });
+
+test('adding the first Codex API while routing is running enables its native image tool independently of web images', async t => {
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'switch-api-image-controller-'));
+ const controller=new DesktopController({root:path.join(directory,'switch'),codexHome:path.join(directory,'codex'),binary:'not-used',port:0});
+ t.after(async()=>{await controller.stop();fs.rmSync(directory,{recursive:true,force:true});});
+ await controller.runtime.start();assert.equal(controller.runtime.imageTools,false);
+ controller.addAPI({alias:'images',key:'saved-image-key',url:'https://images.example/v1'});
+ assert.equal(controller.runtime.imageTools,true);assert.equal(controller.preferences().webImages,undefined);
+ assert.equal(fs.existsSync(path.join(controller.codexHome,'auth.json')),false);
+});

@@ -92,7 +92,7 @@ test('a Free subscription enables native image tools over local actor auth witho
     const add = () => { atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'free-token', id_token: jwt, account_id: 'free-id' } }); addProvider('free', { type: 'account', accountHome }, root); };
     if (!later) add();
     await runtime.start();
-    if (later) { assert.equal(runtime.imageTools, false); add(); runtime.syncTools(); }
+    if (later) { assert.equal(runtime.imageTools, true); add(); runtime.syncTools(); }
     assert.equal(runtime.imageTools, true);
     const config = parse(fs.readFileSync(file, 'utf8'));
     assert.equal(config.features.image_generation, true);
@@ -317,6 +317,16 @@ test('independent web image tools enable over an API with no subscription and re
  addProvider('api',{type:'api',baseUrl:'https://api.example/v1',apiKey:'private-api'},root);
  await runtime.start();assert.equal(runtime.imageTools,true);assert.equal(parse(fs.readFileSync(file,'utf8')).features.image_generation,true);
  assert.equal(parse(fs.readFileSync(file,'utf8')).cli_auth_credentials_store,'ephemeral');assert.equal(fs.readFileSync(authFile,'utf8'),auth);
- enabled=false;runtime.syncTools();assert.equal(runtime.imageTools,false);assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+ enabled=false;runtime.syncTools();assert.equal(runtime.imageTools,true,'a saved API keeps its native image tools without the web fallback');assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+ await runtime.stop();assert.equal(fs.readFileSync(file,'utf8'),original);assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+});
+
+test('an API alone exposes native image tools without a web login and removing it restores tool settings', async t => {
+ const {runtime,root,codexHome,file,original}=await setup(t);init(root);
+ const authFile=path.join(codexHome,'auth.json'),auth='{"auth_mode":"apikey","OPENAI_API_KEY":"original"}\n';fs.writeFileSync(authFile,auth);
+ addProvider('images',{type:'api',baseUrl:'https://api.example/v1',apiKey:'saved-key'},root);
+ await runtime.start();assert.equal(runtime.imageTools,true);assert.equal(parse(fs.readFileSync(file,'utf8')).features.image_generation,true);
+ assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+ removeProvider('images',root);runtime.syncTools();assert.equal(runtime.imageTools,false);
  await runtime.stop();assert.equal(fs.readFileSync(file,'utf8'),original);assert.equal(fs.readFileSync(authFile,'utf8'),auth);
 });

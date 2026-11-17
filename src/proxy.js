@@ -115,13 +115,17 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       const contentType = req.headers['content-type'] || 'application/json';
       if (image && !/^(?:application\/json|multipart\/form-data)(?:;|$)/i.test(contentType)) return error(res, 400, '图片请求须使用 JSON 或 multipart/form-data');
       const payload = image && /^multipart\//i.test(contentType) ? null : jsonBody(raw);
-      if (image && imageHandler) {
+      const fallbackImage = async () => {
+        if (!image || !imageHandler) return false;
+        abort.signal.throwIfAborted();
         const result = await imageHandler({ raw, contentType, route: req.url, signal: abort.signal, turnId: req.headers['x-codex-image-turn-id'] });
-        if (result) {
-          res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-image-route': 'chatgpt-web' });
-          await pipeline(Readable.fromWeb(result.body), res); return;
-        }
-      }
+        if (!result) return false;
+        res.removeHeader('x-switch-alias');
+        res.removeHeader('x-codex-imagegen-request-id');
+        res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-image-route': 'chatgpt-web' });
+        await pipeline(Readable.fromWeb(result.body), res);
+        return true;
+      };
       if (!image) {
         if (payload.previous_response_id || payload.conversation) return error(res, 400, '切换代理要求完整 input；不支持上游响应 ID / conversation 引用');
         if (!Array.isArray(payload.input) && typeof payload.input !== 'string') return error(res, 400, '缺少 input');
@@ -130,7 +134,10 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       }
       const compactTrigger = !image && Array.isArray(payload.input) && payload.input.some(item => item.type === 'compaction_trigger');
       const summarizing = compact || compactTrigger;
-      if (!state.providers[state.active]) return error(res, 409, '请先添加并选择账号/API');
+      if (!state.providers[state.active]) {
+        if (await fallbackImage()) return;
+        return error(res, 409, '请先添加并选择账号/API');
+      }
       if (manualGeneration !== (state.manualGeneration || 0)) {
         cooldown.clear(); imageCooldown.clear(); modelCooldown.clear(); manualGeneration = state.manualGeneration || 0;
       }
@@ -168,6 +175,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (accountsOnly || image && !accepts(state.providers[alias])) {
         const first = imageAlternate(null);
         if (!first) {
+          if (await fallbackImage()) return;
           const account = Object.values(state.providers).find(imageAccount);
           if (!account) return error(res, 403, '没有可用的图片上游；请添加具有图片权限的账号或图片 API。');
           let valid = false;
@@ -283,6 +291,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               capacityRetries++; continue;
             }
           }
+          if (image && (recoverable(status, failureMessage) || imageDenied || capacity || temporary) && await fallbackImage()) { await stream?.cancel(); return; }
           // Preserve the native terminal SSE error after the bounded retries.
           if (startup?.capacity) {
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-switch-alias': alias });
@@ -294,7 +303,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             res.setHeader('x-switch-alias', alias);
             if (upstream.headers.has('x-codex-imagegen-request-id')) res.setHeader('x-codex-imagegen-request-id', upstream.headers.get('x-codex-imagegen-request-id'));
             const detail = !recoverable(403, failureMessage) ? '图片上游明确拒绝此请求，未通过其他服务商重试'
-              : status === 403 ? `${provider.type === 'account' ? 'Codex 账号' : 'API'}图片接口拒绝了请求。ChatGPT 网页图片权限不等同于 Codex 图片权限；目前 Codex Free 不提供图片生成，请使用有权限的账号或图片 API`
+              : status === 403 ? `${provider.type === 'account' ? 'Codex 账号' : 'API'}图片接口拒绝了请求。请检查此账号或 API 的图片权限；ChatGPT 网页图片权限与 Codex 图片接口分别校验`
               : '没有其他可用的图片上游，请检查图片服务或稍后重试';
             return error(res, status, `图片请求已路由到 ${alias}，该图片上游返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}；${detail}。`);
           }

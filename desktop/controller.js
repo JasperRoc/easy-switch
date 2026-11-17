@@ -195,7 +195,7 @@ export class DesktopController {
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) throw new Error('Enter a valid API key.');
     const mapping = this.client === 'claude' ? claudeModelMapping(claudeModels) : null;
     addProvider(alias, { type: 'api', baseUrl: this.apiURL(url), apiKey: key.trim(), ...(mapping ? { claudeModels: mapping } : {}) }, this.providerRoot);
-    this.runtime.syncClaude();
+    this.runtime.syncTools(); this.runtime.syncClaude();
     return this.snapshot();
   }
   async startLogin(alias) {

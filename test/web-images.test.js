@@ -51,9 +51,10 @@ test('browser image output uses its own session and returns native image JSON wi
  assert.match(commands.find(command=>command.method==='Input.insertText').params.text,/draw a bird/);
  assert.equal(adapter.pending,false);assert.equal(adapter.window,null,'a hidden completed web page is destroyed');
 });
-test('a required official sign-in opens only the isolated image window and never submits generation',async t=>{
+test('a required web sign-in stays hidden until the user explicitly opens Settings',async t=>{
  const {adapter,windows,commands}=fixture(t,{mode:'login'});const response=await adapter.handle(request());
- assert.equal(response.status,401);assert.equal(windows[0].visible,true);assert.equal(adapter.snapshot().phase,'signin');assert.equal(commands.length,0);
+ assert.equal(response.status,401);assert.equal(windows[0].visible,false);assert.equal(adapter.snapshot().phase,'signin');assert.equal(commands.length,0);
+ await adapter.connect();assert.equal(windows.at(-1).visible,true);
  await adapter.disconnect();assert.equal(adapter.snapshot().phase,'disconnected');
 });
 test('a concurrent web image job is rejected without replacing the running job and disabled routing returns control',async t=>{
@@ -89,4 +90,13 @@ test('native client retries reuse the same turn image result instead of submitti
  adapter.generate=async()=>{calls++;throw Object.assign(new Error('quota exhausted'),{status:429});};
  const second={...request(),turnId:'turn-quota'};assert.equal((await adapter.handle(second)).status,429);assert.equal((await adapter.handle(second)).status,429);assert.equal(calls,2);
  await adapter.disconnect();assert.equal(adapter.results.size,0);
+});
+
+test('an exhausted web request stays hidden and releases its window without submitting generation', async t => {
+ const {adapter,windows,commands}=fixture(t,{mode:'quota'});
+ const evaluate=adapter.evaluate.bind(adapter);
+ adapter.evaluate=async(fn,args)=>fn.name==='inspectImagePage'?{composer:true,login:false,verification:false,quota:true,images:[]}:evaluate(fn,args);
+ const response=await adapter.handle(request());
+ assert.equal(response.status,429);assert.equal(adapter.snapshot().phase,'attention');
+ assert.equal(windows[0].visible,false);assert.equal(adapter.window,null);assert.equal(commands.length,0);
 });

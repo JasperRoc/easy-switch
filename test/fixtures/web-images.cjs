@@ -42,7 +42,7 @@ if (process.versions.electron) {
         mode = nextMode;
         const response = await adapter.handle({ raw: Buffer.from(JSON.stringify({ prompt: 'A blue square', ...(mode === 'edit' ? { images: [{ image_url: image }] } : {}) })), contentType: 'application/json', route: '/v1/images/' + (mode === 'edit' ? 'edits' : 'generations'), signal: AbortSignal.timeout(15000) });
         const result = await response.json();
-        return { status: response.status, bytes: result.data?.[0]?.b64_json?.length || 0, phase: adapter.snapshot().phase, error: result.error?.message };
+        return { status: response.status, bytes: result.data?.[0]?.b64_json?.length || 0, phase: adapter.snapshot().phase, visible: BrowserWindow.getAllWindows().some(window => window.isVisible()), error: result.error?.message };
       },
       close() { adapter.close(); app.quit(); },
     };

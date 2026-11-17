@@ -27,7 +27,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const toolReady = new Promise(resolve => { signalTool = resolve; });
   let pauseNext = false, signalPaused;
   const paused = new Promise(resolve => { signalPaused = resolve; });
-  let imageTurn = false, imageIssued = false, imageCalls = 0, capacityNext = false, imageSequence = 0, webStatus = 200;
+  let imageTurn = false, imageIssued = false, imageCalls = 0, directImage = false, webCalls = 0, capacityNext = false, imageSequence = 0, webStatus = 200;
   async function serve(server) {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -98,11 +98,15 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
   const proxy = await serve(createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, wait: async () => {}, imageHandler: nativeAuth === 'web' ? async ({raw}) => {
-    imageCalls++; assert.equal(JSON.parse(raw).model, 'gpt-image-2');
+    webCalls++; imageCalls++; assert.equal(JSON.parse(raw).model, 'gpt-image-2');
     return Response.json(webStatus === 200 ? { created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] }
       : { error: { message: 'ChatGPT web image quota exhausted' } }, { status: webStatus });
   } : undefined, fetchImpl: async (url, options) => {
     if (url.endsWith('/images/generations')) {
+      if (nativeAuth === 'web') {
+        if (!directImage) return Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 404 });
+        imageCalls++; return Response.json({ created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] });
+      }
       imageCalls++;
       assert.equal(options.headers.authorization, 'Bearer fixture-subscription');
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/images/generations');
@@ -263,6 +267,11 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
       await call('turn/start', {threadId: thread.id, input: [{type: 'text', text: 'Continue text after image quota is exhausted', text_elements: []}]});
       assert.equal((await continued).status, 'completed'); assert.equal(requests.at(-1).authorization, 'Bearer b');
       assert.equal(readState(root).active, textProvider); assert.equal(imageCalls, 2);
+      directImage = true; imageTurn = true; imageIssued = false;
+      const direct = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
+      await call('turn/start', {threadId: thread.id, input: [{type: 'text', text: 'Generate with the native API without opening web images', text_elements: []}]});
+      assert.equal((await direct).status, 'completed'); assert.equal(imageCalls, 3); assert.equal(webCalls, 2, 'a working API preempts an enabled web fallback');
+      imageTurn = false;
     }
   }
   pauseNext = true;

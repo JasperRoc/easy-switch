@@ -919,18 +919,18 @@ test('an image-capable API is tried after a Free subscription image rejection wi
 
 test('isolated web image success, sign-in and exhausted quota never affect the API text selection or credentials',async t=>{
  const {root,token}=fixture(t);addProvider('api',{type:'api',baseUrl:'https://text.example/v1',apiKey:'private-text'},root);
- let images=0,status=200,texts=0;
+ let images=0,status=200,texts=0,direct=0;
  const proxy=await listen(t,createProxy({root,imageHandler:async({raw,signal,route,turnId})=>{
   images++;assert.ok(signal);assert.equal(route,'/v1/images/generations');assert.equal(JSON.parse(raw).prompt,'fixture');
   assert.equal(turnId,'image-turn');
   return Response.json(status===200?{data:[{b64_json:'fixture'}]}:{error:{message:'web quota or sign-in'}},{status});
- },fetchImpl:async(url,options)=>{texts++;assert.equal(url,'https://text.example/v1/responses');assert.equal(options.headers.authorization,'Bearer private-text');return new Response('data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});}}));
+ },fetchImpl:async(url,options)=>{if(url.endsWith('/images/generations')){direct++;return Response.json({error:{code:'image_generation_not_supported'}},{status:404});}texts++;assert.equal(url,'https://text.example/v1/responses');assert.equal(options.headers.authorization,'Bearer private-text');return new Response('data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});}}));
  for(status of [200,401,429]){
   const result=await fetch(proxy+'/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json','x-codex-image-turn-id':'image-turn'},body:JSON.stringify({prompt:'fixture'})});
   assert.equal(result.status,status);assert.equal(result.headers.get('x-switch-image-route'),'chatgpt-web');await result.text();
   await(await send(proxy,token)).text();assert.equal(readState(root).active,'api');
  }
- assert.equal(images,3);assert.equal(texts,3);
+ assert.equal(images,3);assert.equal(texts,3);assert.equal(direct,3);
  const denied=await fetch(proxy+'/v1/images/generations',{method:'POST',body:'{}'});assert.equal(denied.status,401);assert.equal(images,3);
 });
 
@@ -990,4 +990,41 @@ test('local checkpoints are authenticated and matching item references resolve w
   const call = { type: 'function_call', id: 'fc', call_id: 'call', name: 'shell', arguments: '{}' };
   const response = await send(proxy, token, { ...payload, input: [call, { type: 'item_reference', id: 'fc' }, { type: 'function_call_output', call_id: 'call', output: 'done' }] });
   assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1);
+});
+
+test('web fallback never intercepts successful saved subscriptions or APIs, regardless of plan label', async t => {
+  for (const type of ['api', 'account']) {
+    const { root, token } = fixture(t), calls = [];
+    if (type === 'account') {
+      const accountHome = path.join(root, 'account');
+      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'existing-oauth', account_id: 'existing-account' } });
+      addProvider('direct', { type, accountHome }, root);
+    } else addProvider('direct', { type, baseUrl: 'https://images.example/v1', apiKey: 'existing-api-key' }, root);
+    let web = 0;
+    const proxy = await listen(t, createProxy({ root, imageHandler: async () => { web++; return Response.json({ data: [] }); }, fetchImpl: async (url, options) => {
+      calls.push({ url, options }); return Response.json({ created: 1, data: [{ b64_json: 'native-image' }] });
+    } }));
+    const result = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'fixture' }) });
+    assert.equal(result.status, 200); assert.equal((await result.json()).data[0].b64_json, 'native-image');
+    assert.equal(result.headers.get('x-switch-alias'), 'direct'); assert.equal(web, 0); assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.authorization, type === 'account' ? 'Bearer existing-oauth' : 'Bearer existing-api-key');
+  }
+});
+
+test('native image fallback queue is exhausted before the optional webpage, and policy errors never reach it', async t => {
+  for (const policy of [false, true]) {
+    const { root, token } = fixture(t), calls = [];
+    addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
+    const accountHome = path.join(root, 'accounts', 'free');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-free', account_id: 'free' } });
+    addProvider('free', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, imageHandler: async () => { calls.push('web'); return Response.json({ data: [{ b64_json: 'web-image' }] }); }, fetchImpl: async url => {
+      calls.push(url.includes('chatgpt.com') ? 'free' : 'api');
+      return policy ? Response.json({ error: { code: 'content_policy_violation' } }, { status: 403 }) : Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 403 });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.status, policy ? 403 : 200); await response.text();
+    assert.deepEqual(calls, policy ? ['free'] : ['free', 'api', 'web']);
+    assert.equal(readState(root).active, 'api');
+  }
 });

@@ -1,7 +1,7 @@
 export const messages = {
   en: {
-    webImages: 'ChatGPT web images · experimental', webImagesHelp: 'Image tools use a separate ChatGPT web sign-in; text stays with your selected provider. Image requests create regular chats in that account. Complete official verification in the image window when requested. Model, quality and dimensions follow ChatGPT web.',
-    webImagesOpen: 'Open image sign-in', webImagesDisconnect: 'Clear image sign-in', webImages_disconnected: 'Not connected', webImages_signin: 'Complete sign-in or verification in the image window', webImages_ready: 'Web composer available · image entitlement is checked on request', webImages_generating: 'Generating through ChatGPT web…', webImages_attention: 'Open the image window to check the result or quota',
+    webImages: 'ChatGPT web image fallback · experimental', webImagesHelp: 'Saved subscription accounts and APIs are tried first, using their existing credentials. Only eligible failures use this optional web fallback. It needs a separate web sign-in and can create regular chats in that account. Generation never opens the browser window automatically. Model, quality and dimensions follow ChatGPT web.',
+    webImagesOpen: 'Open image sign-in', webImagesDisconnect: 'Clear image sign-in', webImages_disconnected: 'Not connected', webImages_signin: 'Web fallback needs sign-in · open the image window manually', webImages_ready: 'Web composer available · image entitlement is checked on request', webImages_generating: 'Generating through ChatGPT web…', webImages_attention: 'Open the image window to check the result or quota',
     uninstall: 'Uninstall easy-switch', uninstallDetail: 'Restore client connections and remove this app, saved providers, login copies, preferences, downloads and caches. Original Codex/Claude sign-ins and conversations are kept. This cannot be undone.',
     modelCatalog: 'Model catalog', modelID: 'Model ID', modelDisplayName: 'Display name',
     fetchModels: 'Fetch available models', resetModels: 'Use automatic catalog', addModel: 'Add model', cancel: 'Cancel',
@@ -80,8 +80,8 @@ export const messages = {
     loginPermission: 'The operating system did not apply the login startup setting. Check login-item permissions in system settings.',
   },
   'zh-CN': {
-    webImages: 'ChatGPT 网页图片 · 实验性', webImagesHelp: '图片工具使用独立的 ChatGPT 网页登录，文字保持所选服务商。图片请求会在该账号中创建普通聊天记录。需要认证时，请在图片窗口完成官方验证。模型、质量和尺寸由 ChatGPT 网页决定。',
-    webImagesOpen: '打开图片登录', webImagesDisconnect: '清除图片登录', webImages_disconnected: '尚未连接', webImages_signin: '请在图片窗口完成登录或验证', webImages_ready: '网页输入框可用 · 图片权限在请求时校验', webImages_generating: '正在通过 ChatGPT 网页生成图片…', webImages_attention: '请打开图片窗口查看结果或额度',
+    webImages: 'ChatGPT 网页图片备用 · 实验性', webImagesHelp: '优先使用已保存订阅账号和 API 的现有凭据直接生成；仅在符合条件的失败后尝试此网页备用。此可选方式需要独立网页登录，可能创建普通聊天记录。生成过程中不自动弹出浏览器窗口。模型、质量和尺寸由 ChatGPT 网页决定。',
+    webImagesOpen: '打开图片登录', webImagesDisconnect: '清除图片登录', webImages_disconnected: '尚未连接', webImages_signin: '网页备用需要登录 · 请手动打开图片窗口', webImages_ready: '网页输入框可用 · 图片权限在请求时校验', webImages_generating: '正在通过 ChatGPT 网页生成图片…', webImages_attention: '请打开图片窗口查看结果或额度',
     uninstall: '彻底卸载 easy-switch', uninstallDetail: '恢复客户端连接，并删除软件、已保存的服务商、独立登录副本、偏好设置、下载和缓存。保留 Codex/Claude 原有登录及会话。此操作不可撤销。',
     modelCatalog: '模型目录', modelID: '模型 ID', modelDisplayName: '显示名称',
     fetchModels: '获取可用模型', resetModels: '恢复自动目录', addModel: '添加模型', cancel: '取消',
