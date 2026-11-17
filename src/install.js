@@ -5,12 +5,14 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
-import { parse } from 'smol-toml';
+import { parse, stringify } from 'smol-toml';
 import { init, atomic } from './store.js';
 import { saveNetwork } from './network.js';
 import { restoreClaude } from './claude-config.js';
 import { restoreClaudeDesktop } from './claude-desktop.js';
 import { removeCompletion } from './completion.js';
+import { userPrefix, removeLauncher } from './linux-package.js';
+import { codexBinary } from './codex-binary.js';
 
 const providerName = 'easy_switch';
 const unitName = 'easy-switch.service';
@@ -21,12 +23,34 @@ export function writeText(file, text) {
   try { fs.writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' }); fs.renameSync(tmp, file); }
   finally { fs.rmSync(tmp, { force: true }); }
 }
+// Edit only the managed scalar, preserving comments and unrelated settings.
+export function setting(text, table, key, value) {
+  const before = parse(text), expected = JSON.parse(JSON.stringify(before));
+  const target = table ? (expected[table] ??= {}) : expected;
+  if (value === undefined) delete target[key]; else target[key] = value;
+  const headers = [...text.matchAll(/^[ \t]*\[[^\r\n]*\][ \t]*(?:#[^\r\n]*)?$/gm)];
+  const index = table ? headers.findIndex(match => match[0].trim() === `[${table}]`) : -1;
+  const start = table ? (index < 0 ? text.length : headers[index].index + headers[index][0].length) : 0;
+  const end = table ? (index < 0 ? text.length : headers[index + 1]?.index ?? text.length) : headers[0]?.index ?? text.length;
+  const pattern = new RegExp(`^[ \\t]*(?:${key}|"${key}"|'${key}')[ \\t]*=[^\\r\\n]*(?:\\r?\\n|$)`, 'm');
+  const line = value === undefined ? '' : stringify({ [key]: value });
+  const section = text.slice(start, end);
+  let result;
+  if (pattern.test(section)) result = text.slice(0, start) + section.replace(pattern, line) + text.slice(end);
+  else if (value === undefined) result = text;
+  else if (table && index < 0) result = `${text}\n[${table}]\n${line}`;
+  else result = text.slice(0, start) + '\n' + line + text.slice(start);
+  if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), expected)) throw new Error('Cannot safely update managed settings in this TOML layout.');
+  return result;
+}
+
 function providerConfig(port, token, nativeAuth = false) {
   return {
     name: 'easy-switch', base_url: `http://127.0.0.1:${port}/v1`,
     model_catalog_url: `http://127.0.0.1:${port}/v1/models`,
     experimental_bearer_token: token,
     wire_api: 'responses', requires_openai_auth: false, supports_websockets: false,
+    capabilities: { remote_compaction: 'unsupported' },
     http_headers: { Authorization: `Bearer ${token}`, ...(nativeAuth ? { 'X-Easy-Switch-Token': token, 'x-openai-actor-authorization': `Bearer ${token}` } : {}) },
   };
 }
@@ -43,10 +67,10 @@ export function patchedConfig(original, port, token, nativeAuth = false) {
   const provider = providerConfig(port, token, nativeAuth);
   // Local actor auth exposes native images without tying the client's send gate
   // or text identity to the quota of a particular subscription account.
-  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}", "x-openai-actor-authorization" = "Bearer ${token}"` : ''} }\n`;
+  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "easy-switch"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\ncapabilities = { remote_compaction = "unsupported" }\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Easy-Switch-Token" = "${token}", "x-openai-actor-authorization" = "Bearer ${token}"` : ''} }\n`;
   const expected = { ...before, model_provider: providerName, model_providers: { ...before.model_providers, [providerName]: provider } };
   if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), JSON.parse(JSON.stringify(expected)))) throw new Error('TOML 结构复杂，无法只修改代理设置；未写入配置');
-  return result;
+  return setting(result, 'features', 'api_key_model_discovery', true);
 }
 export function prepareConfig(root, codexHome, port, token) {
   const file = path.join(codexHome, 'config.toml');
@@ -57,20 +81,28 @@ export function prepareConfig(root, codexHome, port, token) {
     const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
     if (record.file !== file || record.port !== port) throw new Error('安装路径或端口发生变化，请先恢复原路径/端口；未修改配置');
     const current = parse(original);
-    const expected = providerConfig(port, token), legacy = { ...expected }; delete legacy.model_catalog_url; delete legacy.experimental_bearer_token;
+    const expected = providerConfig(port, token);
     const managed = JSON.parse(JSON.stringify(current.model_providers?.[providerName] ?? null));
-    const upgrade = isDeepStrictEqual(managed, legacy);
-    if (current.model_provider !== providerName || !isDeepStrictEqual(managed, expected) && !upgrade) {
+    const legacy = { ...expected };
+    for (const key of ['model_catalog_url', 'experimental_bearer_token', 'capabilities']) if (!Object.hasOwn(managed || {}, key)) delete legacy[key];
+    if (current.model_provider !== providerName || !isDeepStrictEqual(managed, legacy)) {
       throw new Error('easy-switch 代理接入配置发生变化，请检查 model_provider、代理地址与本地令牌；未覆盖你的修改');
     }
+
     // Model preferences, project settings, and comments belong to the user.
     return { apply() {
       if (fs.readFileSync(file, 'utf8') !== original) throw new Error('安装期间配置被修改，停止写入');
-      if (upgrade) {
-        const installed = original.replace(/^(\s*\[model_providers\.easy_switch\][^\r\n]*\r?\n)/m, `$1model_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\n`);
-        const parsed = parse(installed);
-        if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parsed)), JSON.parse(JSON.stringify({ ...current, model_providers: { ...current.model_providers, [providerName]: expected } })))) throw new Error('无法安全升级模型目录配置；未写入配置');
-        atomic(recordFile, { ...record, installedHash: digest(installed) });
+      const additions = [
+        !managed.model_catalog_url && `model_catalog_url = "http://127.0.0.1:${port}/v1/models"`,
+        !managed.experimental_bearer_token && `experimental_bearer_token = "${token}"`,
+        !managed.capabilities && 'capabilities = { remote_compaction = "unsupported" }',
+      ].filter(Boolean).join('\n');
+      let installed = additions ? original.replace(/^(\s*\[model_providers\.easy_switch\][^\r\n]*\r?\n)/m, `$1${additions}\n`) : original;
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(installed).model_providers?.[providerName])), expected)) throw new Error('无法安全升级模型目录配置；未写入配置');
+      installed = setting(installed, 'features', 'api_key_model_discovery', true);
+      if (installed !== original) {
+        // Preserve the original strict restore check after unrelated user edits.
+        atomic(recordFile, { ...record, installedHash: digest(original) === record.installedHash ? digest(installed) : record.installedHash });
         writeText(file, installed);
       }
     } };
@@ -111,11 +143,7 @@ function linux() {
 function unitFile() { return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user', unitName); }
 export async function install(root, port) {
   linux();
-  const binary = process.env.SWITCH_CODEX_BIN || 'codex';
-  const executable = path.isAbsolute(binary) ? binary : (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, binary)).find(file => {
-    try { fs.accessSync(file, fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
-  });
-  if (!executable) throw new Error('Codex CLI not found; install it before running ./install.sh');
+  const executable = codexBinary();
   const { token } = init(root);
   const codexHome = path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
   const plan = prepareConfig(root, codexHome, port, token);
@@ -163,7 +191,10 @@ export function service(action, root, { execute = command, userHome = os.homedir
     execute('systemctl', ['--user', 'daemon-reload']);
     removeCompletion(userHome, zshHome);
     fs.rmSync(root, { recursive: true, force: true });
-    execute('npm', ['uninstall', '--global', '--ignore-scripts', 'easy-switch']);
+    removeLauncher(userHome);
+    const prefix = userPrefix(userHome);
+    if (fs.existsSync(path.join(prefix, 'node_modules', 'easy-switch', 'package.json'))) fs.rmSync(prefix, { recursive: true, force: true });
+    else execute('npm', ['uninstall', '--global', '--ignore-scripts', 'easy-switch']);
     console.log('已恢复客户端配置并删除服务、工具、服务商凭据、缓存和补全；保留原客户端会话及用户 linger 设置。');
   } else if (action === 'restart') command('systemctl', ['--user', 'restart', unitName]);
   else if (action === 'status') console.log(command('systemctl', ['--user', 'status', unitName, '--no-pager']));

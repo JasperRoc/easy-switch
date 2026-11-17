@@ -2,7 +2,7 @@
 
 # easy-switch：更好的 AI 会话体验
 
-![Node.js](https://img.shields.io/badge/Node.js-22%2B-417E38?style=flat-square)
+![Node.js](https://img.shields.io/badge/Node.js-20.18.1%2B-417E38?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-2563EB?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
@@ -42,7 +42,7 @@ Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应
 
 ### 🐧 Linux 服务器命令行
 
-需要 **Linux + systemd/logind、Node.js 22+、npm、Git 和 Codex CLI**。请使用运行 Codex 或远程扩展的服务器账号安装。
+需要 **Linux + systemd/logind、Git，以及 Codex CLI 或 VS Code 远程扩展**。请使用运行客户端的服务器账号安装。已有 Node.js 20.18.1+ 和 npm 时直接复用；版本过低或未安装时，安装器会下载并校验独立运行时，不修改系统 Node.js。
 
 #### 1. 📦 克隆项目
 
@@ -57,12 +57,15 @@ cd easy-switch
 ./install.sh
 ```
 
-安装器注册 `switch` 命令、启动 systemd 后台服务、启用开机启动，并备份和更新 Codex 配置。如果开机启动需要管理员协助，按安装器提示处理即可。首次安装后，重启 Codex 或重载远程编辑器窗口；之后切换上游无需重启。
+工具安装在当前用户的 `~/.local/share/easy-switch`，命令位于 `~/.local/bin/switch`，不需要全局 npm 写入权限。安装后打开新终端或执行 `source ~/.bashrc`（Zsh 使用 `source ~/.zshrc`）。安装器注册 `switch` 命令、启动 systemd 后台服务、启用开机启动，并备份和更新 Codex 配置。如果开机启动需要管理员协助，按安装器提示处理即可。首次安装后，重启 Codex 或重载远程编辑器窗口；之后切换上游无需重启。
 
 #### 3. ⌨️ 命令介绍
 
 | 命令 | 作用 |
 | --- | --- |
+| `switch` | 打开键盘菜单，切换、添加、修改、删除服务商或调整顺序 |
+| `switch add` | 交互选择客户端与 API/订阅方式 |
+| `switch <alias>` | 直接切换 Codex 服务商 |
 | `switch codex add account <alias>` | 添加 ChatGPT 订阅账号 |
 | `switch codex add api <alias>` | 添加官方或第三方 Responses API |
 | `switch codex edit <alias>` | 修改别名、Base URL 或密钥，密钥留空保留 |
@@ -79,7 +82,7 @@ cd easy-switch
 | `switch current` | 分别显示 Codex、Claude 当前服务商 |
 | `switch codex current / switch claude current` | 仅查看指定客户端的当前别名 |
 | `switch service status` | 查看后台服务状态 |
-| `switch uninstall` | 恢复客户端设置，删除服务、独立凭据、缓存、补全及全局安装包 |
+| `switch uninstall` | 恢复客户端设置，删除服务、独立凭据、缓存、补全、当前用户安装包及独立运行时 |
 | `switch service restart` | 重启服务，会中断进行中的请求 |
 | `switch service uninstall` | 彻底卸载的兼容入口，删除已保存凭据前需确认 |
 | `switch help` | 查看命令帮助 |
@@ -94,7 +97,7 @@ Codex 与 Claude 的服务商、凭据、当前选择和备用队列相互独立
 
 安装后重新打开 Bash/Zsh 终端，即可使用 **Tab 补全**，例如 `switch per<Tab>` 补全账号别名、`switch service re<Tab>` 补全子命令。当前终端可执行 `source ~/.bashrc`，Zsh 用户执行 `source "${ZDOTDIR:-$HOME}/.zshrc"`。添加 API 时只需填写地址和密钥，文字请求的模型与推理强度沿用 Codex 当前配置。
 
-后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。 如果 0.1.1 及更早版本因模型设置变化而阻止更新，也请通过上述源码安装方式升级一次。
+旧版全局安装在系统 Node.js 过低的服务器上，请先通过 `git pull --ff-only` 和 `./install.sh` 升级一次，迁移到当前用户目录。后续运行 `switch update` 即可更新，无需进入源码目录。更新会重启后台代理，请在当前任务结束后执行。尚无此命令的旧版本需先执行一次 `git pull --ff-only` 和 `./install.sh`。 如果 0.1.1 及更早版本因模型设置变化而阻止更新，也请通过上述源码安装方式升级一次。
 
 如果服务器需要外网代理，请在安装或更新前设置 `HTTP_PROXY` / `HTTPS_PROXY`。工具会保存代理设置，供后台服务和后续更新使用；本机地址始终直连。详见[外网代理配置](usage.md#outbound-network-proxy)。
 
@@ -125,6 +128,10 @@ Codex 支持 Responses 兼容 API 与 ChatGPT 订阅；Claude Code 支持 Anthro
 ### Claude Desktop 如何使用第三方模型？
 
 先打开 Claude Desktop 一次，在 **Claude** 下添加服务商，再完全退出并重新打开 Desktop。Desktop 与 CLI 会共同发现所有已配置 Claude 服务商的模型：订阅的 Fable、Opus、Haiku 与三个 DeepSeek 真实名称可以同时出现。内部兼容路由 ID 可避免 CLI 过滤非 Claude 条目。选择 DeepSeek 条目时，重试保持该模型；也可在 API 条目中独立设置 **Fable／Opus／Sonnet／Haiku** 映射，例如 Fable → DeepSeek V4 Pro、Opus → DeepSeek V4.1 Flash、Haiku → DeepSeek V4 Flash，规则由你决定。系列请求会在备用服务商上应用其各自映射，订阅则使用原始 Claude 模型。仅显示官方菜单的客户端同样可使用这些映射。升级后请重启客户端刷新目录；内置条目和托管策略限制仍然生效。上游需支持 Anthropic Messages、流式响应与工具调用。配置、示例和测试范围见 [Claude 指南](claude-code.md)。
+
+### 长会话还能自动压缩上下文吗？
+
+可以。精确匹配的官方模型会保留上下文窗口参数，服务商返回的上下文窗口和压缩阈值也会保留。easy-switch 配置 Codex 通过 Responses 生成可读续接摘要，便于切换上游后重放；旧客户端的 `/responses/compact` 请求也会生成可迁移检查点。已有的其他上游加密检查点会原样保留并尝试兼容服务商；easy-switch 无法解密不可用上游的检查点，也不会凭空恢复客户端未提供的历史。更新后需要重新加载客户端一次以应用配置。
 
 ### 为什么 Codex 列出了我的 API 不支持的模型？
 

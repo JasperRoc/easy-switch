@@ -10,11 +10,16 @@ import { claudeHome, startClaudeLogin, removeClaudeLogin } from './claude-auth.j
 import { activateClaude, restoreClaude } from './claude-config.js';
 import { claudeFamilies, claudeModelEnvironment } from './claude-models.js';
 import { editOrder } from './order.js';
+import { choose } from './menu.js';
 import { candidates } from './completion.js';
 import { updateTool } from './update.js';
 import { service } from './install.js';
+import { codexBinary } from './codex-binary.js';
 
 const help = `easy-switch
+  switch                      交互选择客户端、服务商或管理操作
+  switch add                  交互选择 Codex/Claude 与 API/订阅
+  switch <alias>              快速切换 Codex 服务商
   switch codex add api [alias]       添加官方或第三方 Responses API
   switch codex add account [alias]   通过 Codex 设备认证添加订阅账号
   switch claude add api [alias]      添加 Anthropic Messages API
@@ -32,9 +37,44 @@ const help = `easy-switch
 环境：SWITCH_HOME、SWITCH_PORT（默认 18345）、SWITCH_CODEX_BIN
 首次安装：./install.sh；后续更新：switch update`;
 const args = process.argv.slice(2);
-const appRoot = home(), client = ['codex', 'claude'].includes(args[0]) ? args.shift() : null, isClaude = client === 'claude';
-const root = isClaude ? path.join(appRoot, 'claude') : appRoot;
-const prefix = `switch ${client || 'codex'}`;
+const appRoot = home();
+let client = ['codex', 'claude'].includes(args[0]) ? args.shift() : null;
+let isClaude, root, prefix;
+function selectClient(value) {
+  client = value; isClaude = client === 'claude'; root = isClaude ? path.join(appRoot, 'claude') : appRoot;
+  prefix = `switch ${client || 'codex'}`;
+}
+selectClient(client);
+async function interactive() {
+  if (!client) {
+    const value = await choose('easy-switch · 选择客户端', ['codex', 'claude'].map(value => ({ value, label: value === 'codex' ? 'Codex' : 'Claude' })));
+    if (!value) return false;
+    selectClient(value);
+  }
+  if (!args.length) {
+    const state = init(root);
+    const action = await choose(`easy-switch · ${isClaude ? 'Claude' : 'Codex'}`, [
+      ...providerOrder(state).map(alias => ({ value: alias, label: `${state.active === alias ? '●' : '○'} ${alias} · ${state.providers[alias].type}` })),
+      { value: 'add', label: '+ 添加服务商' }, { value: 'edit', label: '修改服务商' },
+      { value: 'remove', label: '删除服务商' }, { value: 'order', label: '调整备用顺序' },
+    ]);
+    if (!action) return false;
+    args.push(action);
+    if (['edit', 'remove'].includes(action)) {
+      const aliases = providerOrder(state);
+      if (!aliases.length) throw new Error('尚未添加账号/API');
+      const alias = await choose('选择服务商', aliases.map(value => ({ value, label: value })));
+      if (!alias) return false;
+      args.push(alias);
+    }
+  }
+  if (args[0] === 'add' && args.length === 1) {
+    const type = await choose('添加登录方式', [{ value: 'api', label: 'API 服务商' }, { value: 'account', label: '订阅账号' }]);
+    if (!type) return false;
+    args.push(type);
+  }
+  return true;
+}
 const connectClaude = () => {
   const state = init(root);
   if (!Object.keys(state.providers).length) return restoreClaude(path.join(appRoot, 'claude-session.json'));
@@ -50,7 +90,7 @@ async function ask(label, secret = false) {
 }
 function codex(args, env = process.env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.SWITCH_CODEX_BIN || 'codex', args, { env, stdio: 'inherit' });
+    const child = spawn(process.platform === 'linux' ? codexBinary() : process.env.SWITCH_CODEX_BIN || 'codex', args, { env, stdio: 'inherit' });
     child.on('error', reject);
     child.on('exit', (code, signal) => resolve(code ?? (signal ? 130 : 1)));
   });
@@ -63,6 +103,7 @@ async function login(accountHome) {
   fs.chmodSync(path.join(accountHome, 'auth.json'), 0o600);
 }
 async function main() {
+  if ((!args.length || args[0] === 'add' && args.length === 1) && process.stdin.isTTY && process.stdout.isTTY && !await interactive()) return;
   const [command, type, name] = args;
   if (!command || ['help', '--help', '-h'].includes(command)) return console.log(help);
   if (command === '__complete') return console.log(candidates(args.slice(1), root).join('\n'));

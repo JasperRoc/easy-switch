@@ -15,19 +15,20 @@ function fixture(t) {
   prepareConfig(root, codexHome, 19999, init(root).token).apply();
   return { root, codexHome };
 }
-test('update installs an archive, restores installation environment, and cleans temporary source', t => {
+test('update invokes the current-user installer with its recorded environment and cleans temporary source', t => {
   const { root, codexHome } = fixture(t);
   const calls = [];
   updateTool(root, (binary, args, options) => {
     calls.push({ binary, args, options });
-    if (args[0] === 'pack') return '[{"filename":"easy-switch-0.1.0.tgz"}]';
-    if (args[0] === 'root') return '/global/node_modules';
   });
   assert.deepEqual(calls[0].args.slice(0, 6), ['clone', '--depth', '1', '--branch', 'main', 'https://github.com/JasperRoc/easy-switch.git']);
-  assert.match(calls[3].args.at(-1), /easy-switch-0\.1\.0\.tgz$/);
-  assert.equal(calls[5].options.env.CODEX_HOME, codexHome);
-  assert.equal(calls[5].options.env.SWITCH_HOME, root);
-  assert.equal(calls[5].options.env.SWITCH_PORT, '19999');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].binary, 'sh');
+  assert.equal(calls[1].args[0], path.join(calls[0].args.at(-1), 'install.sh'));
+  assert.equal(calls[1].options.env.CODEX_HOME, codexHome);
+  assert.equal(calls[1].options.env.SWITCH_HOME, root);
+  assert.equal(calls[1].options.env.SWITCH_PORT, '19999');
+  assert.ok(calls[1].options.env.PATH.startsWith(path.dirname(process.execPath) + path.delimiter));
   assert.ok(!fs.existsSync(path.dirname(calls[0].args.at(-1))));
 });
 test('download failure stops before installation and removes temporary directory', t => {
@@ -60,8 +61,6 @@ test('update forwards stored proxy settings to git, npm, and service setup', t =
       assert.equal(options.env.HTTPS_PROXY, 'http://127.0.0.1:20000');
       assert.equal(options.env.https_proxy, 'http://127.0.0.1:20000');
       assert.ok(options.env.NO_PROXY.includes('127.0.0.1'));
-      if (args[0] === 'pack') return '[{"filename":"easy-switch-test.tgz"}]';
-      if (args[0] === 'root') return '/global/node_modules';
     });
   } finally {
     for (const name of names) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; }
@@ -77,9 +76,7 @@ test('update permits model preference changes without rewriting the configuratio
   let calls = 0;
   updateTool(root, (_binary, args) => {
     calls++;
-    if (args[0] === 'pack') return '[{"filename":"easy-switch-test.tgz"}]';
-    if (args[0] === 'root') return '/global/node_modules';
   });
-  assert.equal(calls, 6);
+  assert.equal(calls, 2);
   assert.equal(fs.readFileSync(file, 'utf8'), changed);
 });

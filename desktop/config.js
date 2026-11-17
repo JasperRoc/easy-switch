@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { parse, stringify } from 'smol-toml';
+import { parse } from 'smol-toml';
 import { createHash } from 'node:crypto';
 import { atomic, readState, providerOrder, accountAuth } from '../src/store.js';
-import { patchedConfig, writeText } from '../src/install.js';
+import { patchedConfig, setting, writeText } from '../src/install.js';
 
 const provider = 'easy_switch';
 const normalized = value => JSON.parse(JSON.stringify(value));
@@ -17,30 +17,10 @@ function subject(auth) {
   try { return JSON.parse(Buffer.from(auth.tokens.id_token.split('.')[1], 'base64url')).sub; } catch { return null; }
 }
 
-// Edit only the managed scalar, preserving comments and unrelated settings.
-function setting(text, table, key, value) {
-  const before = parse(text), expected = normalized(before);
-  const target = table ? (expected[table] ??= {}) : expected;
-  if (value === undefined) delete target[key]; else target[key] = value;
-  const headers = [...text.matchAll(/^[ \t]*\[[^\r\n]*\][ \t]*(?:#[^\r\n]*)?$/gm)];
-  const index = table ? headers.findIndex(match => match[0].trim() === `[${table}]`) : -1;
-  const start = table ? (index < 0 ? text.length : headers[index].index + headers[index][0].length) : 0;
-  const end = table ? (index < 0 ? text.length : headers[index + 1]?.index ?? text.length) : headers[0]?.index ?? text.length;
-  const pattern = new RegExp(`^[ \\t]*(?:${key}|"${key}"|'${key}')[ \\t]*=[^\\r\\n]*(?:\\r?\\n|$)`, 'm');
-  const line = value === undefined ? '' : stringify({ [key]: value });
-  const section = text.slice(start, end);
-  let result;
-  if (pattern.test(section)) result = text.slice(0, start) + section.replace(pattern, line) + text.slice(end);
-  else if (value === undefined) result = text;
-  else if (table && index < 0) result = `${text}\n[${table}]\n${line}`;
-  else result = text.slice(0, start) + '\n' + line + text.slice(start);
-  if (!same(parse(result), expected)) throw new Error('Cannot safely update native image settings in this TOML layout.');
-  return result;
-}
 
 function sessionConfig(original, port, token, nativeAuth = false) {
   // Desktop rollout defaults must not disable our explicitly configured catalog.
-  return setting(patchedConfig(original, port, token, nativeAuth), 'features', 'api_key_model_discovery', true);
+  return patchedConfig(original, port, token, nativeAuth);
 }
 
 function withNativeSettings(text) {

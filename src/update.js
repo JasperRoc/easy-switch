@@ -22,13 +22,9 @@ export function updateTool(root, execute = run) {
   try {
     console.log('正在更新至官方仓库 main 分支；完成后将重启代理，进行中的请求会中断。');
     execute('git', ['clone', '--depth', '1', '--branch', 'main', 'https://github.com/JasperRoc/easy-switch.git', checkout], { env });
-    execute('npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: checkout, env });
-    const packed = JSON.parse(execute('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: checkout, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
-    const archive = path.join(temp, path.basename(packed[0].filename));
-    // Install a tarball, not a link into the temporary checkout.
-    execute('npm', ['install', '--global', '--ignore-scripts', archive], { env });
-    const modules = execute('npm', ['root', '--global'], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-    execute(process.execPath, [path.join(modules, 'easy-switch', 'src', 'setup.js')], { env });
+    // Use the same current-user installation/runtime path as the first install.
+    // The installer prepends its selected runtime before invoking npm.
+    execute('sh', [path.join(checkout, 'install.sh')], { env: { ...env, PATH: path.dirname(process.execPath) + path.delimiter + (env.PATH || '') } });
     console.log('easy-switch 更新完成。');
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { candidates, installCompletion, completionScript } from '../src/completion.js';
 import { addProvider } from '../src/store.js';
+import { installLauncher } from '../src/linux-package.js';
 
 test('completion exposes commands and aliases, excludes used order aliases and secrets', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-complete-'));
@@ -46,10 +47,9 @@ test('completion installation preserves shell configuration and is idempotent', 
 test('Bash and Zsh completion scripts pass the current word and exclude used aliases', { skip: process.platform === 'win32' }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-shell-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const cli = new URL('../src/cli.js', import.meta.url);
-  fs.symlinkSync(cli, path.join(root, 'switch'));
+  installLauncher(root);
   for (const alias of ['personal', 'relay']) addProvider(alias, { type: 'api', baseUrl: 'https://example.com', apiKey: 'SECRET' }, root);
-  const env = { ...process.env, PATH: `${root}:${process.env.PATH}`, SWITCH_HOME: root };
+  const env = { ...process.env, PATH: `${path.join(root, '.local', 'bin')}:${process.env.PATH}`, SWITCH_HOME: root };
   const scripts = {
     bash: completionScript('bash') + '\nCOMP_WORDS=(switch order personal re); COMP_CWORD=3; _easy_switch_complete; printf "%s\\n" "${COMPREPLY[@]}"',
     zsh: 'compdef() { :; }\n' + completionScript('zsh') + '\ncompadd() { shift; printf "%s\\n" "$@"; }; words=(switch order personal re); CURRENT=4; _easy_switch_complete',

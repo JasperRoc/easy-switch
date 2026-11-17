@@ -86,7 +86,7 @@ test('account adapter isolates credentials and rereads updated login', async t =
   assert.equal(JSON.parse(requests[0].body).instructions, '');
 });
 
-test('rejects unauthorized, incremental and opaque context rather than silently losing history', async t => {
+test('rejects unauthorized and incomplete server-side history without contacting an upstream', async t => {
   const { root, token } = fixture(t);
   let calls = 0;
   const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; throw Error('should not reach'); } }));
@@ -94,8 +94,6 @@ test('rejects unauthorized, incremental and opaque context rather than silently 
   for (const data of [
     { ...payload, previous_response_id: 'resp_old' },
     { ...payload, conversation: 'conv_old' },
-    { ...payload, input: [{ type: 'compaction', encrypted_content: 'opaque' }] },
-    { ...payload, input: [{ type: 'item_reference', id: 'old' }] },
   ]) assert.equal((await send(proxy, token, data)).status, 400);
   assert.equal(calls, 0);
 });
@@ -934,4 +932,62 @@ test('isolated web image success, sign-in and exhausted quota never affect the A
  }
  assert.equal(images,3);assert.equal(texts,3);
  const denied=await fetch(proxy+'/v1/images/generations',{method:'POST',body:'{}'});assert.equal(denied.status,401);assert.equal(images,3);
+});
+
+test('standalone compaction uses a readable summary and continues on another upstream after restart', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const summary = 'Goal: preserve test constraints. Completed: first change. Next: verify second change.';
+  const mock = async (url, options) => {
+    const data = JSON.parse(options.body); calls.push({ url, data });
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: summary }] }] } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const first = await listen(t, createProxy({ root, fetchImpl: mock }));
+  const compacted = await fetch(first + '/v1/responses/compact', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ ...payload, tools: [{ type: 'function', name: 'shell' }] }) });
+  assert.equal(compacted.status, 200);
+  const compactedBody = await compacted.json();
+  assert.equal(calls[0].url, 'https://first.example/v1/responses');
+  assert.match(JSON.stringify(calls[0].data.input), /hello/);
+  assert.equal(calls[0].data.tools, undefined);
+  assert.equal(compactedBody.output[0].type, 'compaction');
+  assert.ok(!JSON.stringify(compactedBody).includes(summary), 'checkpoint is encrypted at rest in Codex history');
+  activate('second', root);
+  const second = await listen(t, createProxy({ root, fetchImpl: mock }));
+  const response = await send(second, token, { ...payload, input: [...compactedBody.output, { role: 'user', content: 'continue' }] });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(calls[1].url, 'https://second.example/v1/responses');
+  assert.equal(calls[1].data.input[0].content[0].text, summary);
+  assert.equal(calls[1].data.input[1].content, 'continue');
+});
+
+test('legacy opaque checkpoints remain intact and can retry a compatible fallback', async t => {
+  const { root, token } = fixture(t), inputs = [];
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    inputs.push(JSON.parse(options.body).input);
+    return url.includes('first') ? Response.json({ error: { code: 'invalid_encrypted_content' } }, { status: 400 })
+      : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const input = [{ type: 'compaction', encrypted_content: 'upstream-checkpoint' }, { role: 'user', content: 'continue' }];
+  const response = await send(proxy, token, { ...payload, input });
+  assert.equal(response.status, 200); await response.text();
+  assert.deepEqual(inputs, [input, input]);
+  assert.equal(readState(root).active, 'first', 'a checkpoint rejection must not globally disable a healthy preferred provider');
+});
+
+test('local checkpoints are authenticated and matching item references resolve without duplicate tool calls', async t => {
+  const { checkpoint } = await import('../src/compaction.js');
+  const { root, token } = fixture(t); addProvider('api', { type: 'api', apiKey: 'fixture' }, root);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    calls++;
+    const input = JSON.parse(options.body).input;
+    assert.equal(input.length, 2); assert.equal(input[0].call_id, 'call'); assert.equal(input[1].output, 'done');
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const invalid = await send(proxy, token, { ...payload, input: [checkpoint('summary', 'wrong-token')] });
+  assert.equal(invalid.status, 400); assert.equal(calls, 0);
+  const call = { type: 'function_call', id: 'fc', call_id: 'call', name: 'shell', arguments: '{}' };
+  const response = await send(proxy, token, { ...payload, input: [call, { type: 'item_reference', id: 'fc' }, { type: 'function_call_output', call_id: 'call', output: 'done' }] });
+  assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1);
 });

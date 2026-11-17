@@ -11,6 +11,7 @@ import { providerModels } from './provider-models.js';
 
 // Client metadata only enriches exact provider IDs; it never supplies available IDs.
 const clientCatalogs = new Map();
+const bundledMetadata = JSON.parse(fs.readFileSync(new URL('./codex-model-metadata.json', import.meta.url), 'utf8')).models;
 function metadataFromModel(model) {
   return { ...model.metadata, display_name: model.label,
     default_reasoning_level: model.defaultEffort ?? null,
@@ -50,7 +51,10 @@ async function enrichCodexModels(models, metadataImpl) {
   if (!visible.length) return [];
   let native;
   try { native = visible.every(model => model.metadataReady) ? [] : await metadataImpl(); } catch { native = []; }
-  const metadata = new Map(native.map((model, priority) => [model.id, { priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model) }]));
+  const metadata = new Map(bundledMetadata.map(model => [model.slug, model]));
+  for (const [priority, model] of native.entries()) metadata.set(model.id, {
+    ...metadata.get(model.id), priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model),
+  });
   return visible.map(model => {
     const reference = metadata.get(model.id);
     const details = { ...reference, ...model.metadata };
@@ -151,9 +155,9 @@ export async function discoverModels(provider, root, { fetchImpl, signal, client
       })), metadataImpl), notice: 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.' };
     }
     if (!Array.isArray(result.data)) throw Error();
-    const ids = [...new Set(result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && codexTextModel({ id: item.id, metadata: item })).map(item => item.id))];
-    return { models: await enrichCodexModels(ids.map(id => ({ id, label: id })), metadataImpl),
-      notice: ids.length ? '目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
+    const entries = new Map(result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && codexTextModel({ id: item.id, metadata: item })).map(item => [item.id, item]));
+    return { models: await enrichCodexModels([...entries].map(([id, metadata]) => ({ id, label: id, metadata })), metadataImpl),
+      notice: entries.size ? '目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
     if (signal?.aborted) throw signal.reason;
     throw new Error(provider.type === 'account'

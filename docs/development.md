@@ -96,7 +96,7 @@ The desktop renderer uses a small icon menu for language and appearance, native 
 
 Large desktop installers use four bounded HTTP range requests with completed-part receipts. Resumed files still need the full GitHub SHA-256 digest before installation. Servers that ignore Range use the single-stream verifier. macOS staging renames a same-volume app instead of recursively copying it; cross-volume updates copy and retain rollback behavior. Provider catalogs persist observed model metadata with hashed provider/credential fingerprints, are reused for up to 24 hours, and refresh in the background. A stale cache never establishes an inference model exclusion.
 
-`desktop/uninstall.js` restores client recovery records before removing data, and `uninstall-cli.cjs` performs cleanup after Electron exits. macOS exposes complete removal in Settings; deleting an app bundle in Finder has no uninstall hook. Windows NSIS runs the headless cleanup on an actual uninstall and skips it during updates. Linux `switch uninstall` also removes managed completion blocks and its global npm package. Original client credentials and conversation directories are outside the removal scope.
+`desktop/uninstall.js` restores client recovery records before removing data, and `uninstall-cli.cjs` performs cleanup after Electron exits. macOS exposes complete removal in Settings; deleting an app bundle in Finder has no uninstall hook. Windows NSIS runs the headless cleanup on an actual uninstall and skips it during updates. Linux `switch uninstall` also removes managed completion blocks and its current-user package and private runtime. Original client credentials and conversation directories are outside the removal scope.
 
 ## Isolated web image routing
 

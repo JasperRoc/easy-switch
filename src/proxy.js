@@ -12,6 +12,7 @@ import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
 import { imageUnavailable } from './images.js';
 import { createCodexCatalog } from './catalog.js';
+import { checkpoint, expandContext, compactionRejected, readSummary, summaryPrompt } from './compaction.js';
 
 function authorized(req, token) {
   // Native subscription auth replaces Authorization inside Codex. The dedicated
@@ -108,7 +109,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         return res.end(JSON.stringify(result));
       }
       const image = ['/v1/images/generations', '/v1/images/edits'].includes(req.url);
-      if (req.method !== 'POST' || (!image && req.url !== '/v1/responses')) return error(res, 404, '仅支持 Responses 和图片生成/编辑请求');
+      const compact = req.url === '/v1/responses/compact';
+      if (req.method !== 'POST' || (!image && !compact && req.url !== '/v1/responses')) return error(res, 404, '仅支持 Responses、上下文压缩和图片生成/编辑请求');
       const raw = await body(req);
       const contentType = req.headers['content-type'] || 'application/json';
       if (image && !/^(?:application\/json|multipart\/form-data)(?:;|$)/i.test(contentType)) return error(res, 400, '图片请求须使用 JSON 或 multipart/form-data');
@@ -123,8 +125,11 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (!image) {
         if (payload.previous_response_id || payload.conversation) return error(res, 400, '切换代理要求完整 input；不支持上游响应 ID / conversation 引用');
         if (!Array.isArray(payload.input) && typeof payload.input !== 'string') return error(res, 400, '缺少 input');
-        if (Array.isArray(payload.input) && payload.input.some(i => i.type === 'compaction' || i.type === 'item_reference')) return error(res, 400, '上下文含不可跨上游重放的压缩/引用项；请新建会话或使用可重放的本地摘要');
+        try { payload.input = expandContext(payload.input, state.token); }
+        catch { return error(res, 400, '无法解读本地压缩检查点；请检查 easy-switch 是否仍使用原来的配置目录和本地令牌。'); }
       }
+      const compactTrigger = !image && Array.isArray(payload.input) && payload.input.some(item => item.type === 'compaction_trigger');
+      const summarizing = compact || compactTrigger;
       if (!state.providers[state.active]) return error(res, 409, '请先添加并选择账号/API');
       if (manualGeneration !== (state.manualGeneration || 0)) {
         cooldown.clear(); imageCooldown.clear(); modelCooldown.clear(); manualGeneration = state.manualGeneration || 0;
@@ -134,6 +139,12 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         delete payload.previous_response_id;
         payload.store = false;
         payload.stream = true;
+        if (summarizing) {
+          if (typeof payload.input === 'string') payload.input = [{ role: 'user', content: payload.input }];
+          payload.input = payload.input.filter(item => item.type !== 'compaction_trigger');
+          payload.input.push({ role: 'user', content: summaryPrompt });
+          delete payload.tools; delete payload.tool_choice; delete payload.context_management;
+        }
       }
       const requestedModel = payload?.model;
       const modelKey = alias => JSON.stringify([requestedModel, alias]);
@@ -186,11 +197,11 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           }
           headers.originator ||= 'codex_cli_rs';
           headers['OpenAI-Beta'] = 'responses=experimental';
-          url = 'https://chatgpt.com/backend-api/codex' + req.url.slice(3);
+          url = 'https://chatgpt.com/backend-api/codex' + (compact ? '/responses' : req.url.slice(3));
           if (!image) outgoing.instructions ??= '';
         } else {
           headers.authorization = `Bearer ${provider.apiKey}`;
-          url = provider.baseUrl + req.url.slice(3);
+          url = provider.baseUrl + (compact ? '/responses' : req.url.slice(3));
         }
         if (!image) {
           if (rejectedModel) outgoing.model = rejectedModel;
@@ -224,15 +235,17 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         const failureMessage = message || JSON.stringify(startup?.error);
         const imageDenied = image && imageUnavailable(upstream.ok && startup?.error ? 403 : upstream.status, message || JSON.stringify(startup?.error));
         const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
-        if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied) {
+        const contextDenied = !image && compactionRejected(upstream.ok && startup?.error ? 400 : upstream.status, failureMessage);
+        if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied || contextDenied) {
           const status = capacity ? 503 : !upstream.ok ? quotaStatus || upstream.status : streamStatus || (imageDenied ? 403 : 400);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
-          if (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied) {
+          if (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied || contextDenied) {
+            if (contextDenied) modelRouting = true;
             if (modelDenied) {
               modelRouting = true; rejectedModel ??= outgoing.model;
               modelCooldown.set(modelKey(alias), now() + 60000);
               if (modelCooldown.size > 256) modelCooldown.delete(modelCooldown.keys().next().value);
-            } else (image ? imageCooldown : cooldown).set(alias, now() + 60000);
+            } else if (!contextDenied) (image ? imageCooldown : cooldown).set(alias, now() + 60000);
             cooling.set(alias, now() + 60000);
             let next = attempt + 1 < maxAttempts && !abort.signal.aborted && (image ? imageAlternate(alias, attempted) : alternate(state, alias, cooling, now(), attempted, accepts));
             if (modelRouting) {
@@ -286,8 +299,19 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             return error(res, status, `图片请求已路由到 ${alias}，该图片上游返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}；${detail}。`);
           }
           if (modelDenied) { await stream?.cancel(); return error(res, status, `备用服务商均无法使用模型 ${outgoing.model}；请添加有权限的服务商或选择其他模型。`); }
+          if (contextDenied) { await stream?.cancel(); return error(res, status, '现有加密检查点被上游拒绝，原始上下文已保留；请恢复能解读此检查点的原上游后重试压缩。更新后的会话使用可跨上游的摘要。'); }
           await stream?.cancel();
           return error(res, status, `上游 ${alias} 返回 HTTP ${status}；已尝试：${[...attempted].join(' → ')}${status === 403 ? recoverable(status, failureMessage) ? '；没有可用的备用服务商，请检查备用登录、额度或冷却状态' : '；上游明确拒绝此请求，未通过其他服务商重试' : ''}`);
+        }
+        if (summarizing) {
+          const { summary, usage } = await readSummary(stream);
+          const item = checkpoint(summary, state.token);
+          const response = { id: item.id, object: 'response.compaction', created_at: Math.floor(Date.now() / 1000), output: [item], ...(usage ? { usage } : {}) };
+          res.writeHead(200, { 'content-type': compact ? 'application/json' : 'text/event-stream', 'cache-control': 'no-store', 'x-switch-alias': alias });
+          return res.end(compact ? JSON.stringify(response) : [
+            { type: 'response.output_item.done', output_index: 0, item },
+            { type: 'response.completed', response: { ...response, status: 'completed' } },
+          ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
         }
         if (image && !stream && !/^application\/json(?:;|$)/i.test(upstream.headers.get('content-type') || '')) {
           await upstream.body?.cancel(); return error(res, 502, '上游未返回图片 JSON 响应');

@@ -47,7 +47,7 @@ export function installCompletion(userHome = os.homedir(), zshHome = process.env
     const file = path.join(dir, `${shell}.sh`);
     fs.writeFileSync(file, completionScript(shell));
     const original = fs.existsSync(rc) ? fs.readFileSync(rc, 'utf8') : '';
-    const block = `${start}\n[ -r ${quote(file)} ] && . ${quote(file)}\n${end}`;
+    const block = `${start}\nexport PATH=${quote(path.join(userHome, '.local', 'bin'))}:"$PATH"\n[ -r ${quote(file)} ] && . ${quote(file)}\n${end}`;
     const from = original.indexOf(start), to = original.indexOf(end, from);
     if (from >= 0 && to < 0) throw new Error(`Incomplete easy-switch completion block in ${rc}`);
     const result = from < 0 ? `${original}${original.endsWith('\n') || !original ? '' : '\n'}\n${block}\n`
@@ -65,5 +65,7 @@ export function removeCompletion(userHome = os.homedir(), zshHome = process.env.
     const tail = to + end.length;
     fs.writeFileSync(rc, original.slice(0, from) + original.slice(tail + (original[tail] === '\n' ? 1 : 0)));
   }
-  fs.rmSync(path.join(userHome, '.local', 'share', 'easy-switch'), { recursive: true, force: true });
+  const directory = path.join(userHome, '.local', 'share', 'easy-switch');
+  fs.rmSync(path.join(directory, 'completions'), { recursive: true, force: true });
+  try { fs.rmdirSync(directory); } catch (error) { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; }
 }

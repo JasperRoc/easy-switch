@@ -2,7 +2,7 @@
 
 # easy-switch: A better AI conversation experience
 
-![Node.js](https://img.shields.io/badge/Node.js-22%2B-417E38?style=flat-square)
+![Node.js](https://img.shields.io/badge/Node.js-20.18.1%2B-417E38?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-2563EB?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Experimental-D97706?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](docs/LICENSE)
@@ -42,7 +42,7 @@ Windows packages have no publisher signature. macOS packages use ad hoc signing 
 
 ### 🐧 Linux server CLI
 
-Requires **Linux with systemd/logind, Node.js 22+, npm, Git, and Codex CLI**. Install as the server user that runs Codex or the remote extension.
+Requires **Linux with systemd/logind, Git, and Codex CLI or its VS Code Remote extension**. Install as the server user that runs the client. The installer uses Node.js 20.18.1+ with npm when available; otherwise it downloads a checksum-verified private Node.js runtime without changing your system version.
 
 #### 1. 📦 Clone the project
 
@@ -57,12 +57,15 @@ cd easy-switch
 ./install.sh
 ```
 
-The installer registers `switch`, starts the systemd background service, enables boot startup, and backs up and updates Codex configuration. If boot startup requires administrator assistance, follow the installer's instructions. Restart Codex or reload the remote editor window once after installation; subsequent provider switches do not require a restart.
+The tool installs under `~/.local/share/easy-switch`; `~/.local/bin/switch` uses an absolute runtime path, independent of the terminal’s Node version. Open a new terminal or run `source ~/.bashrc` (`source ~/.zshrc` for Zsh) after installation. The installer registers `switch`, starts the systemd background service, enables boot startup, and backs up and updates Codex configuration. If boot startup requires administrator assistance, follow the installer's instructions. Restart Codex or reload the remote editor window once after installation; subsequent provider switches do not require a restart.
 
 #### 3. ⌨️ Use the commands
 
 | Command | Purpose |
 | --- | --- |
+| `switch` | Open the keyboard menu to switch, add, edit, remove or reorder providers |
+| `switch add` | Choose the client and API/subscription interactively |
+| `switch <alias>` | Switch Codex directly |
 | `switch codex add account <alias>` | Add a ChatGPT subscription account |
 | `switch codex add api <alias>` | Add an official or third-party Responses API |
 | `switch codex edit <alias>` | Edit alias, Base URL or key; a blank key preserves it |
@@ -79,7 +82,7 @@ The installer registers `switch`, starts the systemd background service, enables
 | `switch current` | Show both current providers, labeled Codex and Claude |
 | `switch codex current / switch claude current` | Show only the specified client’s alias |
 | `switch service status` | Inspect the background service |
-| `switch uninstall` | Restore client settings, remove the service, saved credentials, caches, completions and the global package |
+| `switch uninstall` | Restore client settings, remove the service, saved credentials, caches, completions, user package and private runtime |
 | `switch service restart` | Restart the service; interrupts in-flight requests |
 | `switch service uninstall` | Alias for complete uninstall; asks before deleting saved credentials |
 | `switch help` | Show command help |
@@ -94,7 +97,7 @@ Model and reasoning-effort selection stays in Codex or Claude Code. The desktop 
 
 After installation, open a new Bash/Zsh terminal to enable **Tab completion**, such as `switch per<Tab>` for aliases or `switch service re<Tab>` for subcommands. To enable it in the current terminal, run `source ~/.bashrc`, or `source "${ZDOTDIR:-$HOME}/.zshrc"` for Zsh. API setup asks only for the endpoint and key; the model follows the current Codex configuration for text requests.
 
-Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`. If version 0.1.1 or earlier blocks an update after changing model settings, use the same source-install steps once.
+When upgrading an older global installation on a server with an outdated shell Node.js, first run `git pull --ff-only` and `./install.sh` once to migrate it to the user installation. Run `switch update` for subsequent updates from any directory. Updates restart the proxy, so wait for active tasks to finish first. Older installations without this command need one initial `git pull --ff-only` followed by `./install.sh`. If version 0.1.1 or earlier blocks an update after changing model settings, use the same source-install steps once.
 
 If your server needs an Internet proxy, set `HTTP_PROXY` / `HTTPS_PROXY` before installation or update. The tool saves these settings for the background service and future updates; loopback addresses always connect directly. See [outbound proxy configuration](docs/usage.md#outbound-network-proxy).
 
@@ -125,6 +128,10 @@ Codex supports Responses-compatible APIs and ChatGPT subscriptions; Claude Code 
 ### How does Claude Desktop use a third-party model?
 
 Open Claude Desktop once, add providers under **Claude**, then fully quit and reopen Desktop. Desktop and CLI discover all configured Claude providers’ models together: a subscription’s Fable, Opus and Haiku can appear beside three real DeepSeek model names. Internal compatible route IDs let CLI discovery retain non-Claude entries. Select a DeepSeek entry to keep that model across retries, or configure independent **Fable / Opus / Sonnet / Haiku** mappings on an API entry. For example, Fable → DeepSeek V4 Pro, Opus → DeepSeek V4.1 Flash and Haiku → DeepSeek V4 Flash; you choose the rules. Family requests apply each fallback provider’s own mapping, while a subscription uses the original Claude model. A client limited to its official menu can use the same mappings. Restart clients after upgrading to refresh discovery. Existing built-in entries and managed restrictions still apply. Upstreams must support Anthropic Messages, streaming and tools. See the [Claude guide](docs/claude-code.md) for configuration, examples and testing limits.
+
+### Can long conversations still compact automatically?
+
+Yes. Exact official model IDs retain their context-window metadata, and provider-supplied context/compaction limits are preserved. easy-switch configures Codex to create readable continuation summaries through Responses, so summaries can be replayed after switching upstreams. Legacy `/responses/compact` requests also produce portable checkpoints. Existing opaque checkpoints from a different gateway remain intact and are tried on compatible providers; easy-switch cannot decrypt an unavailable provider’s checkpoint or recover history the client no longer supplies. Reload the client once after updating to apply these settings.
 
 ### Why does Codex list a model my API cannot use?
 

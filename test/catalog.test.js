@@ -270,3 +270,18 @@ test('packaged official metadata enriches exact IDs without launching an extra C
  const result=await discoverModels({type:'api',baseUrl:'https://api.example/v1',apiKey:'fixture'},root,{binary,fetchImpl:async()=>Response.json({data:[{id:'gpt-6.1-sol'}]})});
  assert.deepEqual(result.models.map(model=>model.id),['gpt-6.1-sol']);assert.equal(result.models[0].label,'Official Sol');assert.deepEqual(result.models[0].efforts,['low','high']);
 });
+
+test('exact official model IDs retain context and compaction metadata even without a local Codex helper', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-context-catalog-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const providers = { api: { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' } };
+  const catalog = createCodexCatalog({ root, metadataImpl: async () => [], fetchImpl: async () => Response.json({ data: [
+    { id: 'gpt-6.1-sol' }, { id: 'vendor-model', context_window: 64000, auto_compact_token_limit: 50000 },
+  ] }) });
+  const { models } = await catalog.union({ providers, order: ['api'] }, '0.163.0', new AbortController().signal);
+  assert.deepEqual(models.map(model => model.slug), ['gpt-6.1-sol', 'vendor-model']);
+  assert.equal(models[0].context_window, 272000);
+  assert.equal(models[0].auto_compact_token_limit, null, 'Codex derives its native threshold from the context window when no explicit limit is provided');
+  assert.equal(models[1].context_window, 64000);
+  assert.equal(models[1].auto_compact_token_limit, 50000);
+});

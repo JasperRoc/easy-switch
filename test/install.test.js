@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { parse } from 'smol-toml';
 import { patchedConfig, prepareConfig, restoreConfig, unitText } from '../src/install.js';
 
@@ -26,6 +27,7 @@ test('updating a legacy installation enables authenticated model discovery witho
   const file = path.join(codexHome, 'config.toml'), original = '# My settings\nmodel="selected-model"\n';
   fs.writeFileSync(file, original); prepareConfig(root, codexHome, 18345, 'token').apply();
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^model_catalog_url.*\n/m, '').replace(/^experimental_bearer_token.*\n/m, ''));
+  recordLegacyHash(root, file);
   prepareConfig(root, codexHome, 18345, 'token').apply();
   const installed = fs.readFileSync(file, 'utf8'), config = parse(installed);
   assert.equal(config.model, 'selected-model'); assert.match(installed, /# My settings/);
@@ -100,3 +102,25 @@ test('Linux full uninstall restores client settings, removes account data and co
  assert.deepEqual(calls.at(-1),['npm',['uninstall','--global','--ignore-scripts','easy-switch']]);
  assert.ok(!fs.readFileSync(path.join(home,'.bashrc'),'utf8').includes('easy-switch'));
 });
+
+test('Linux configuration explicitly enables discovery and portable compaction through legacy upgrades', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-legacy-portable-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'), file = path.join(codexHome, 'config.toml'); fs.mkdirSync(codexHome);
+  const original = '# User settings\n[features]\napi_key_model_discovery=false\nshell_tool=true\n';
+  fs.writeFileSync(file, original); prepareConfig(root, codexHome, 18345, 'token').apply();
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^model_catalog_url.*\n/m, '').replace(/^experimental_bearer_token.*\n/m, '').replace(/^capabilities.*\n/m, '').replace('api_key_model_discovery = true','api_key_model_discovery = false'));
+  recordLegacyHash(root, file);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const installed = parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(installed.features.api_key_model_discovery, true);
+  assert.equal(installed.features.shell_tool, true);
+  assert.equal(installed.model_providers.easy_switch.capabilities.remote_compaction, 'unsupported');
+  restoreConfig(root); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+
+function recordLegacyHash(root, file) {
+  const recordFile = path.join(root, 'installation.json');
+  const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  fs.writeFileSync(recordFile, JSON.stringify({ ...record, installedHash: createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
+}

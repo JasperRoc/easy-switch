@@ -165,7 +165,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const account = await call('account/read', { refreshToken: false });
   assert.equal(account.requiresOpenaiAuth, false, 'local routing must not inherit a subscription-only send gate');
   assert.equal(account.account, null, 'the selected API must not be represented as the native subscription account');
-  if (nativeAuth) await call('experimentalFeature/enablement/set', { enablement: { api_key_model_discovery: false } });
+  await call('experimentalFeature/enablement/set', { enablement: { api_key_model_discovery: false } });
   const models = await call('model/list', { includeHidden: false });
   assert.deepEqual(models.data.map(model => model.model), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-sol', 'provider-A-only', 'provider-B-only'], 'official Codex keeps official model order ahead of provider-specific models: ' + stderr);
   assert.equal(models.data[0].displayName, 'GPT-6.1-Sol');
@@ -318,4 +318,68 @@ test('real Codex with a Free login continues its same turn and model through an 
   assert.ok(calls.every(call => call.payload.model === 'gpt-5.1-codex'));
   assert.match(JSON.stringify(calls.at(-1).payload.input), /First message/);
   assert.equal(readState(root).active, 'free');
+});
+
+for (const native of [false, true, 'v2']) test(`real Codex ${native === 'v2' ? 'remote compaction compatibility' : native ? 'desktop actor tools' : 'Linux configuration'} automatically compacts and continues the same thread on a fallback`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-auto-compact-')), root = path.join(directory, 'switch'), codexHome = path.join(directory, 'codex');
+  const { token } = init(root), calls = [], notifications = [];
+  const model = 'gpt-6.1-sol';
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  let summaries = 0, failFirst = false;
+  const server = createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, fetchImpl: async (url, options) => {
+    if (options.method !== 'POST') return Response.json({ data: [{ id: model, context_window: 12000, auto_compact_token_limit: 10000 }] });
+    const body = JSON.parse(options.body);
+    const summary = /Summarize the conversation\.|Create a concise continuation summary/.test(JSON.stringify(body.input));
+    calls.push({ url, body, summary });
+    if (url.includes('first') && failFirst) return Response.json({ error: { code: 'insufficient_quota' } }, { status: 429 });
+    if (summary) summaries++;
+    const text = summary ? 'Portable summary: preserve goal ALPHA and pending work BETA.' : 'Turn complete.';
+    const item = { id: 'msg_' + calls.length, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
+    const response = { id: 'resp_' + calls.length, status: 'completed', output: [item], usage: { input_tokens: summary ? 100 : 11000, output_tokens: 20, total_tokens: summary ? 120 : 11020 } };
+    const events = [{ type: 'response.created', response: { id: response.id, output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item }, { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response }];
+    return new Response(events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  fs.mkdirSync(codexHome);
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), `model="${model}"\ncompact_prompt="Summarize the conversation."\nmodel_post_turn_compact_threshold_percent=0\n`);
+  if (native) {
+    atomic(path.join(codexHome, 'auth.json'), { tokens: { access_token: 'fixture', account_id: 'fixture' } });
+    activateSession(root, codexHome, server.address().port, token);
+  } else prepareConfig(root, codexHome, server.address().port, token).apply();
+  if (native === 'v2') {
+    const config = path.join(codexHome, 'config.toml'); fs.writeFileSync(config, fs.readFileSync(config, 'utf8').replace('remote_compaction = "unsupported"', 'remote_compaction = "v2"'));
+  }
+  const child = spawn(process.env.SWITCH_TEST_CODEX, ['app-server'], { cwd: directory, env: { ...process.env, CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(async () => {
+    if (child.exitCode === null) { child.kill(); await once(child, 'exit'); }
+    server.closeAllConnections(); server.close(); fs.rmSync(directory, { recursive: true, force: true });
+  });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const pending = new Map(); let next = 1, completed;
+  readline.createInterface({ input: child.stdout }).on('line', line => {
+    const message = JSON.parse(line);
+    if (pending.has(message.id)) { const { resolve, reject } = pending.get(message.id); pending.delete(message.id); message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result); }
+    if (message.method) notifications.push(message);
+    if (message.method === 'turn/completed') completed?.(message.params.turn);
+  });
+  const call = (method, params) => new Promise((resolve, reject) => { const id = next++; pending.set(id, { resolve, reject }); child.stdin.write(JSON.stringify({ id, method, params }) + '\n'); });
+  await call('initialize', { clientInfo: { name: 'switch_compact_test', version: '0.1.0' } });
+  child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+  await call('experimentalFeature/enablement/set', { enablement: { api_key_model_discovery: false } });
+  const list = await call('model/list', { includeHidden: false }); assert.deepEqual(list.data.map(item => item.model), [model]);
+  const { thread } = await call('thread/start', { cwd: directory, approvalPolicy: 'never', sandbox: 'read-only' });
+  for (const text of ['Remember goal ALPHA and pending work BETA.', 'Continue the same task after automatic compaction.']) {
+    const turn = new Promise(resolve => { completed = resolve; });
+    await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text, text_elements: [] }] });
+    assert.equal((await turn).status, 'completed', stderr + JSON.stringify(calls));
+    failFirst = true;
+  }
+  assert.ok(summaries > 0, 'the actual client automatically requested compaction using the catalog threshold: ' + JSON.stringify(calls));
+  assert.ok(notifications.some(message => message.method === 'item/completed' && message.params.item.type === 'contextCompaction'));
+  const final = calls.at(-1); assert.ok(final.url.includes('second'));
+  assert.match(JSON.stringify(final.body.input), /Portable summary: preserve goal ALPHA and pending work BETA/);
+  assert.match(JSON.stringify(final.body.input), /Continue the same task/);
+  assert.ok(calls.every(call => !call.body.input.some(item => item.type === 'compaction_trigger')), 'current clients use local readable summaries');
 });
