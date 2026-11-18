@@ -310,14 +310,13 @@ test('startup with both routes disabled still restores a recovery record without
   assert.equal(fs.existsSync(runtime.recordFile), false);
 });
 
-test('independent web image tools enable over an API with no subscription and restore the unchanged native login',async t=>{
+test('image tools use the saved API and restore the unchanged native login',async t=>{
  const {runtime,codexHome,root,file,original}=await setup(t);init(root);
- let enabled=true;runtime.externalImages=()=>enabled;
  const authFile=path.join(codexHome,'auth.json'),auth='{"auth_mode":"apikey","OPENAI_API_KEY":"private-original"}\n';fs.writeFileSync(authFile,auth);
  addProvider('api',{type:'api',baseUrl:'https://api.example/v1',apiKey:'private-api'},root);
  await runtime.start();assert.equal(runtime.imageTools,true);assert.equal(parse(fs.readFileSync(file,'utf8')).features.image_generation,true);
  assert.equal(parse(fs.readFileSync(file,'utf8')).cli_auth_credentials_store,'ephemeral');assert.equal(fs.readFileSync(authFile,'utf8'),auth);
- enabled=false;runtime.syncTools();assert.equal(runtime.imageTools,true,'a saved API keeps its native image tools without the web fallback');assert.equal(fs.readFileSync(authFile,'utf8'),auth);
+ runtime.syncTools();assert.equal(runtime.imageTools,true,'a saved API keeps its native image tools without additional settings');assert.equal(fs.readFileSync(authFile,'utf8'),auth);
  await runtime.stop();assert.equal(fs.readFileSync(file,'utf8'),original);assert.equal(fs.readFileSync(authFile,'utf8'),auth);
 });
 

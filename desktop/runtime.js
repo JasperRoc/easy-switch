@@ -35,8 +35,8 @@ export function repairPreferencesAccess(file, { platform = process.platform, run
 }
 
 export class DesktopRuntime {
-  constructor({ root, codexHome, claudeHome, claudeDesktop, binary, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath, imageHandler, externalImages = () => false }) {
-    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, binary, port, reauth, claudeReauth, createServer, guardExec, imageHandler, externalImages });
+  constructor({ root, codexHome, claudeHome, claudeDesktop, binary, port = 18345, reauth, claudeReauth, createServer = createProxy, guardExec = process.execPath, imageHandler }) {
+    Object.assign(this, { root, codexHome, claudeHome, claudeDesktop, binary, port, reauth, claudeReauth, createServer, guardExec, imageHandler });
     this.recordFile = path.join(root, 'desktop-session.json');
     this.server = null; this.guard = null; this.activeRequests = 0; this.active = false;
     this.pending = Promise.resolve();
@@ -71,7 +71,7 @@ export class DesktopRuntime {
       } catch (error) { this.routes[client] = false; throw error; }
     });
   }
-  syncTools() { if (this.clientEnabled('codex')) this.imageTools = syncSession(this.root, this.codexHome, this.externalImages()); }
+  syncTools() { if (this.clientEnabled('codex')) this.imageTools = syncSession(this.root, this.codexHome); }
   syncClaude() {
     if (!this.clientEnabled('claude')) return;
     const state = init(path.join(this.root, 'claude'));

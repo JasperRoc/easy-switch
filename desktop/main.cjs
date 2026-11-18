@@ -12,7 +12,7 @@ fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 app.setAppLogsPath(path.join(root, 'logs'));
 const ownsLock = app.requestSingleInstanceLock();
-let window, tray, controller, updater, webImages, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '';
+let window, tray, controller, updater, accountImages, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '';
 let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
 const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
@@ -32,7 +32,7 @@ function report(error) {
   window?.webContents.send('easy-switch:changed');
   dialog.showErrorBox(`easy-switch ${app.getVersion()}`, startupError);
 }
-function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), webImages: webImages.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
+function snapshot(details = activity?.visible() ?? true) { const preferences = controller.preferences(); return { ...controller.snapshot({ usage: details }), error: startupError, version: app.getVersion(), update: updater.snapshot(), menuBarHidden: process.platform === 'darwin' && tray && menuBarHidden(tray.getBounds(), screen.getAllDisplays()), language: uiLanguage, theme: preferences.theme || 'system', dark: nativeTheme.shouldUseDarkColors, platform: process.platform, loginItem: loginItem.openAtLogin }; }
 function updateTray(state = snapshot(false)) {
   if (!controller || !tray) return;
   uiClient = state.client || 'codex';
@@ -78,16 +78,15 @@ async function boot() {
   const { DesktopController } = await import('./controller.js');
   const { claudeDesktopPaths } = await import('../src/claude-desktop.js');
   const { DesktopUpdater } = await import('./updater.js');
-  const { WebImages } = await import('./web-images.js');
+  const { AccountImages } = await import('./account-images.js');
   const i18n = await import('./i18n.js'); translate = i18n.translate;
   loginItem = app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {});
   const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const bundled = app.isPackaged ? path.join(process.resourcesPath, 'codex', exe) : path.join(__dirname, '..', '.desktop-cache', `codex-${process.platform}-${process.arch}`, exe);
   const binary = process.env.SWITCH_CODEX_BIN || bundled;
   controller = new DesktopController({ root, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), claudeDesktop: claudeDesktopPaths(), binary, port: Number(process.env.SWITCH_PORT ?? 18345), guardExec: process.execPath });
-  webImages = new WebImages({ root, BrowserWindow, session, nativeImage, enabled: () => controller.preferences().webImages === true,
-    network: () => controller.network(), changed: () => window?.webContents.send('easy-switch:changed') });
-  controller.runtime.imageHandler = request => webImages.handle(request);
+  accountImages = new AccountImages({ root, BrowserWindow, session, nativeImage, network: () => controller.network() });
+  controller.runtime.imageHandler = request => accountImages.handle(request);
   const updateSession = session.fromPartition('easy-switch-updates', { cache: false });
   updater = new DesktopUpdater({ root, current: app.getVersion(),
     systemFetch: (url, options) => updateSession.fetch(url, { ...options, credentials: 'omit' }),
@@ -126,19 +125,13 @@ async function boot() {
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
-        case 'stop': await controller.stop(); webImages.close(); result = snapshot(); break;
-        case 'routing': await controller.setRouting(payload); if (payload.client === 'codex' && !payload.enabled) { await webImages.flush(); webImages.close(); } startupError = ''; result = snapshot(); break;
+        case 'stop': await controller.stop(); accountImages.close(); result = snapshot(); break;
+        case 'routing': await controller.setRouting(payload); if (payload.client === 'codex' && !payload.enabled) { accountImages.close(); } startupError = ''; result = snapshot(); break;
         case 'preferences':
           controller.setPreferences(payload); uiLanguage = i18n.normalizeLanguage(controller.preferences().language || app.getLocale());
           nativeTheme.themeSource = controller.preferences().theme || 'system';
           window.webContents.send('easy-switch:changed'); nativeMenu(); result = snapshot(); break;
         case 'autostart': setAutoStart(payload); result = snapshot(); break;
-        case 'web-images-open': await webImages.connect(); return webImages.snapshot();
-        case 'web-images-disconnect': await webImages.disconnect(); return webImages.snapshot();
-        case 'web-images-toggle':
-          if (typeof payload !== 'boolean') throw new Error('Invalid web image setting.');
-          if (webImages.pending) throw new Error('Wait for the current image request before changing web image routing.');
-          controller.setPreferences({ webImages: payload }); if (!payload) webImages.close(); result = snapshot(); break;
         case 'open-login': {
           const url = controller.currentLogin?.url;
           if (url === 'https://auth.openai.com/codex/device' || /^https:\/\/(?:claude\.com|claude\.ai)\/(?:cai\/)?oauth\/authorize\?/.test(url || '')) await shell.openExternal(url);
@@ -153,8 +146,7 @@ async function boot() {
             if (choice.response !== 1) return updater.snapshot();
           }
           await controller.stop();
-          await webImages.flush();
-          webImages.close();
+          accountImages.close();
           try { await updater.install({ codexHome: controller.codexHome }); }
           catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
           quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
@@ -167,7 +159,7 @@ async function boot() {
           if ([controller.codexHome, controller.runtime.claudeHome].some(directory => path.resolve(directory) === root || path.resolve(directory).startsWith(root + path.sep)))
             throw new Error('Client data is inside the application data directory. Move it before uninstalling.');
           await controller.stop(); setAutoStart(false); activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer);
-          webImages.close();
+          accountImages.close();
           const worker = path.join(__dirname, 'uninstall-cli.cjs');
           const args = [worker, '--parent', String(process.pid), '--root', root];
           if (app.isPackaged) args.push('--application', process.platform === 'darwin' ? path.resolve(path.dirname(process.execPath), '..', '..') : path.dirname(process.execPath));
@@ -220,7 +212,7 @@ else {
         if (choice.response !== 1) return;
       }
       quitting = true;
-      try { await controller?.stop(); await webImages?.flush(); webImages?.close(); activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); quitReady = true; app.quit(); }
+      try { await controller?.stop(); accountImages?.close(); activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); quitReady = true; app.quit(); }
       catch (error) { quitting = false; report(error); }
     })().catch(report);
   });

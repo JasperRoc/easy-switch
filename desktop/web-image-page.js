@@ -1,4 +1,4 @@
-// These functions run in an isolated browser world against the normal ChatGPT UI.
+// These functions run in an isolated browser world against the official image UI.
 // They use the page's own composer and never read tokens, cookies or page globals.
 export function inspectImagePage() {
   const visible = element => !!element && !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);

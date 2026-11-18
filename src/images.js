@@ -1,3 +1,11 @@
+import { recoverable, rejectionStatus } from './failover.js';
+
+export function accountImageFallback(status, message) {
+  return recoverable(403, message) && (imageUnavailable(status, message) || status === 403)
+    && ![401, 402, 429].includes(rejectionStatus(message))
+    && !/\b(?:image_generation_limit|rate_limit|usage_limit|insufficient_quota|quota|credits?)(?:\b|_)/i.test(message);
+}
+
 export function imageUnavailable(status, message) {
   if (![400, 403, 404, 405, 501].includes(status)) return false;
   try {

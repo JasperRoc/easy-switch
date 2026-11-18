@@ -13,7 +13,7 @@ import { createProxy } from '../src/proxy.js';
 import { prepareConfig } from '../src/install.js';
 import { activateSession, syncSession } from '../desktop/config.js';
 
-for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) test(`real Codex app-server (${nativeAuth === 'web' ? 'isolated web image route' : nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free-bridge' ? 'API login bridged to Free image tools' : nativeAuth === 'free' ? 'Free native image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and client models preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
+for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) test(`real Codex app-server (${nativeAuth === 'web' ? 'saved account page images' : nativeAuth === 'bridge' ? 'API login bridged to subscription tools' : nativeAuth === 'free-bridge' ? 'API login bridged to Free image tools' : nativeAuth === 'free' ? 'Free native image tools' : nativeAuth ? 'native subscription tools' : 'API mode'}): same thread, failover and client models preserve parallel tasks and tool continuation`, { skip: !process.env.SWITCH_TEST_CODEX, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-codex-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'switch');
@@ -100,11 +100,11 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const proxy = await serve(createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, wait: async () => {}, imageHandler: nativeAuth === 'web' ? async ({raw}) => {
     webCalls++; imageCalls++; assert.equal(JSON.parse(raw).model, 'gpt-image-2');
     return Response.json(webStatus === 200 ? { created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] }
-      : { error: { message: 'ChatGPT web image quota exhausted' } }, { status: webStatus });
+      : { error: { message: 'ChatGPT account image quota exhausted' } }, { status: webStatus });
   } : undefined, fetchImpl: async (url, options) => {
     if (url.endsWith('/images/generations')) {
       if (nativeAuth === 'web') {
-        if (!directImage) return Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 404 });
+        if (!directImage) return Response.json({ error: { code: webStatus === 429 && options.headers.authorization !== 'Bearer fixture-subscription' ? 'insufficient_quota' : 'image_generation_not_supported' } }, { status: webStatus === 429 && options.headers.authorization !== 'Bearer fixture-subscription' ? 429 : 404 });
         imageCalls++; return Response.json({ created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] });
       }
       imageCalls++;
@@ -241,7 +241,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   if (nativeAuth) {
     const accountHome = path.join(root, 'accounts', 'image-subscription');
     const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
-    if (nativeAuth !== 'web') {
+    {
       atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture-subscription', account_id: 'fixture', ...(free ? { id_token: jwt } : {}) } });
       addProvider('images', { type: 'account', accountHome }, root);
     }
@@ -256,7 +256,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
     assert.match(JSON.stringify(result), /image_url|generated image|output_hint/);
     assert.equal(readState(root).active, textProvider, 'image generation leaves the text provider selected');
     if (nativeAuth === 'web') {
-      assert.equal(fs.existsSync(path.join(codexHome, 'auth.json')), false, 'web images never create a Codex account');
+      assert.equal(fs.existsSync(path.join(codexHome, 'auth.json')), false, 'account page images never replace the Codex identity');
       webStatus = 429; imageIssued = false;
       const exhausted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
       await call('turn/start', {threadId: thread.id, input: [{type: 'text', text: 'Try another image', text_elements: []}]});
@@ -267,10 +267,10 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
       await call('turn/start', {threadId: thread.id, input: [{type: 'text', text: 'Continue text after image quota is exhausted', text_elements: []}]});
       assert.equal((await continued).status, 'completed'); assert.equal(requests.at(-1).authorization, 'Bearer b');
       assert.equal(readState(root).active, textProvider); assert.equal(imageCalls, 2);
-      directImage = true; imageTurn = true; imageIssued = false;
+      activate(textProvider, root); directImage = true; imageTurn = true; imageIssued = false;
       const direct = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
       await call('turn/start', {threadId: thread.id, input: [{type: 'text', text: 'Generate with the native API without opening web images', text_elements: []}]});
-      assert.equal((await direct).status, 'completed'); assert.equal(imageCalls, 3); assert.equal(webCalls, 2, 'a working API preempts an enabled web fallback');
+      assert.equal((await direct).status, 'completed'); assert.equal(imageCalls, 3); assert.equal(webCalls, 2, 'a working image endpoint preempts the account page adapter');
       imageTurn = false;
     }
   }

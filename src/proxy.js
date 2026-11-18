@@ -10,7 +10,7 @@ import { inspectStartup } from './sse.js';
 import { createUpstreamFetch } from './network.js';
 import path from 'node:path';
 import { createClaudeHandler } from './claude-proxy.js';
-import { imageUnavailable } from './images.js';
+import { imageUnavailable, accountImageFallback } from './images.js';
 import { createCodexCatalog } from './catalog.js';
 import { checkpoint, expandContext, compactionRejected, readSummary, summaryPrompt } from './compaction.js';
 
@@ -115,17 +115,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       const contentType = req.headers['content-type'] || 'application/json';
       if (image && !/^(?:application\/json|multipart\/form-data)(?:;|$)/i.test(contentType)) return error(res, 400, '图片请求须使用 JSON 或 multipart/form-data');
       const payload = image && /^multipart\//i.test(contentType) ? null : jsonBody(raw);
-      const fallbackImage = async () => {
-        if (!image || !imageHandler) return false;
-        abort.signal.throwIfAborted();
-        const result = await imageHandler({ raw, contentType, route: req.url, signal: abort.signal, turnId: req.headers['x-codex-image-turn-id'] });
-        if (!result) return false;
-        res.removeHeader('x-switch-alias');
-        res.removeHeader('x-codex-imagegen-request-id');
-        res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-switch-image-route': 'chatgpt-web' });
-        await pipeline(Readable.fromWeb(result.body), res);
-        return true;
-      };
       if (!image) {
         if (payload.previous_response_id || payload.conversation) return error(res, 400, '切换代理要求完整 input；不支持上游响应 ID / conversation 引用');
         if (!Array.isArray(payload.input) && typeof payload.input !== 'string') return error(res, 400, '缺少 input');
@@ -135,7 +124,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       const compactTrigger = !image && Array.isArray(payload.input) && payload.input.some(item => item.type === 'compaction_trigger');
       const summarizing = compact || compactTrigger;
       if (!state.providers[state.active]) {
-        if (await fallbackImage()) return;
         return error(res, 409, '请先添加并选择账号/API');
       }
       if (manualGeneration !== (state.manualGeneration || 0)) {
@@ -175,7 +163,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
       if (accountsOnly || image && !accepts(state.providers[alias])) {
         const first = imageAlternate(null);
         if (!first) {
-          if (await fallbackImage()) return;
           const account = Object.values(state.providers).find(imageAccount);
           if (!account) return error(res, 403, '没有可用的图片上游；请添加具有图片权限的账号或图片 API。');
           let valid = false;
@@ -225,7 +212,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           if (abort.signal.aborted) throw failure;
           upstream = new Response('', { status: 502 });
         }
-        let stream, startup, message = '', imageRoute;
+        let stream, startup, message = '', imageRoute, imageSubmitted = false;
         try {
           if (!upstream.ok) {
             message = await rejectionText(upstream);
@@ -234,15 +221,21 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
             // quota, policy, authentication and uncertain transport failures
             // must not trigger another image submission on this account.
             if (image && provider.type === 'account' && /^application\/json(?:;|$)/i.test(contentType)
-                && recoverable(403, message) && (imageUnavailable(upstream.status, message) || upstream.status === 403)
-                && ![401, 402, 429].includes(rejectionStatus(message))
-                && !/\b(?:image_generation_limit|rate_limit|usage_limit|insufficient_quota|quota|credits?)(?:\b|_)/i.test(message)) {
+                && accountImageFallback(upstream.status, message)) {
               const imageHeaders = { ...headers }; delete imageHeaders['OpenAI-Beta'];
               upstream = await fetchImpl('https://chatgpt.com/backend-api/wham' + req.url.slice(3), {
                 method: 'POST', headers: imageHeaders, body: raw, signal: abort.signal, redirect: 'error',
               });
               imageRoute = 'chatgpt-account';
               message = upstream.ok ? '' : await rejectionText(upstream);
+            }
+            if (image && provider.type === 'account' && !upstream.ok && imageHandler && accountImageFallback(upstream.status, message)) {
+              const result = await imageHandler({ provider, raw, contentType, route: req.url, signal: abort.signal, turnId: req.headers['x-codex-image-turn-id'] });
+              if (result) {
+                upstream = result; imageRoute = 'chatgpt-account';
+                imageSubmitted = result.headers.get('x-switch-image-submitted') === '1';
+                message = upstream.ok ? '' : await rejectionText(upstream);
+              }
             }
           }
           if (upstream.ok && (!image || upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))) {
@@ -264,7 +257,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied || contextDenied) {
           const status = capacity ? 503 : !upstream.ok ? quotaStatus || upstream.status : streamStatus || (imageDenied ? 403 : 400);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
-          if (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied || contextDenied) {
+          if (!imageSubmitted && (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied || contextDenied)) {
             if (contextDenied) modelRouting = true;
             if (modelDenied) {
               modelRouting = true; rejectedModel ??= outgoing.model;
@@ -308,7 +301,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               capacityRetries++; continue;
             }
           }
-          if (image && (recoverable(status, failureMessage) || imageDenied || capacity || temporary) && await fallbackImage()) { await stream?.cancel(); return; }
           // Preserve the native terminal SSE error after the bounded retries.
           if (startup?.capacity) {
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-switch-alias': alias });

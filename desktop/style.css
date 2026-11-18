@@ -143,8 +143,6 @@ button.settings-nav[aria-pressed="true"] {background:var(--notice);color:var(--i
 .settings-card {position:relative;border-radius:20px;padding:0 20px;margin:0 0 14px;}
 .setting-row {display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:18px;min-height:68px;font-size:12px;border-bottom:1px solid var(--line);}
 .setting-row:last-child {border-bottom:0;}
-.web-images-setting {padding-bottom:16px;}
-.web-images-setting .help {margin:10px 0;}
 .setting-control {display:flex;align-items:center;justify-content:center;width:44px;}
 .workspace-footer {position:relative;z-index:10;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 var(--page-inset);}
 .workspace-footer .control-popover {top:auto;bottom:calc(100% + 10px);}

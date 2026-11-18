@@ -917,21 +917,29 @@ test('an image-capable API is tried after a Free subscription image rejection wi
   assert.equal(readState(root).active,'text');
 });
 
-test('isolated web image success, sign-in and exhausted quota never affect the API text selection or credentials',async t=>{
- const {root,token}=fixture(t);addProvider('api',{type:'api',baseUrl:'https://text.example/v1',apiKey:'private-text'},root);
- let images=0,status=200,texts=0,direct=0;
- const proxy=await listen(t,createProxy({root,imageHandler:async({raw,signal,route,turnId})=>{
-  images++;assert.ok(signal);assert.equal(route,'/v1/images/generations');assert.equal(JSON.parse(raw).prompt,'fixture');
-  assert.equal(turnId,'image-turn');
-  return Response.json(status===200?{data:[{b64_json:'fixture'}]}:{error:{message:'web quota or sign-in'}},{status});
- },fetchImpl:async(url,options)=>{if(url.endsWith('/images/generations')){direct++;return Response.json({error:{code:'image_generation_not_supported'}},{status:404});}texts++;assert.equal(url,'https://text.example/v1/responses');assert.equal(options.headers.authorization,'Bearer private-text');return new Response('data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});}}));
- for(status of [200,401,429]){
-  const result=await fetch(proxy+'/v1/images/generations',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json','x-codex-image-turn-id':'image-turn'},body:JSON.stringify({prompt:'fixture'})});
-  assert.equal(result.status,status);assert.equal(result.headers.get('x-switch-image-route'),'chatgpt-web');await result.text();
-  await(await send(proxy,token)).text();assert.equal(readState(root).active,'api');
- }
- assert.equal(images,3);assert.equal(texts,3);assert.equal(direct,3);
- const denied=await fetch(proxy+'/v1/images/generations',{method:'POST',body:'{}'});assert.equal(denied.status,401);assert.equal(images,3);
+test('saved account page images preserve API text selection after success and image quota exhaustion', async t => {
+  for (const status of [200, 429]) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'private-text' }, root);
+    const accountHome = path.join(root, 'account');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-account', account_id: 'account' } });
+    addProvider('account', { type: 'account', accountHome }, root);
+    let images = 0, texts = 0;
+    const proxy = await listen(t, createProxy({ root, imageHandler: async ({ provider, raw, signal, route, turnId }) => {
+      images++; assert.equal(provider.accountHome, accountHome); assert.ok(signal);
+      assert.equal(route, '/v1/images/generations'); assert.equal(JSON.parse(raw).prompt, 'fixture'); assert.equal(turnId, 'image-turn');
+      return Response.json(status === 200 ? { data: [{ b64_json: 'fixture' }] } : { error: { message: 'Image quota exhausted' } }, { status });
+    }, fetchImpl: async (url, options) => {
+      if (url.endsWith('/images/generations')) return url.includes('text.example') && status === 429
+        ? Response.json({ error: { code: 'insufficient_quota' } }, { status: 429 })
+        : Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 404 });
+      texts++; assert.equal(url, 'https://text.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer private-text');
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const result = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-codex-image-turn-id': 'image-turn' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(result.status, status); if (status === 200) assert.equal(result.headers.get('x-switch-image-route'), 'chatgpt-account'); await result.text();
+    await (await send(proxy, token)).text(); assert.equal(readState(root).active, 'api'); assert.equal(images, 1); assert.equal(texts, 1);
+  }
 });
 
 test('standalone compaction uses a readable summary and continues on another upstream after restart', async t => {
@@ -992,7 +1000,7 @@ test('local checkpoints are authenticated and matching item references resolve w
   assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1);
 });
 
-test('web fallback never intercepts successful saved subscriptions or APIs, regardless of plan label', async t => {
+test('account page fallback never intercepts successful saved subscriptions or APIs, regardless of plan label', async t => {
   for (const type of ['api', 'account']) {
     const { root, token } = fixture(t), calls = [];
     if (type === 'account') {
@@ -1011,7 +1019,7 @@ test('web fallback never intercepts successful saved subscriptions or APIs, rega
   }
 });
 
-test('native image fallback queue is exhausted before the optional webpage, and policy errors never reach it', async t => {
+test('an account page fallback follows its own direct endpoints and never receives policy refusals', async t => {
   for (const policy of [false, true]) {
     const { root, token } = fixture(t), calls = [];
     addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
@@ -1024,7 +1032,7 @@ test('native image fallback queue is exhausted before the optional webpage, and 
     } }));
     const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
     assert.equal(response.status, policy ? 403 : 200); await response.text();
-    assert.deepEqual(calls, policy ? ['free'] : ['free', 'free', 'api', 'web']);
+    assert.deepEqual(calls, policy ? ['free'] : ['free', 'free', 'web']);
     assert.equal(readState(root).active, 'api');
   }
 });
@@ -1088,7 +1096,7 @@ test('account image adapter does not resubmit quota, safety, authentication, val
   }
 });
 
-test('a rejected desktop image endpoint continues to the next account before any optional webpage', async t => {
+test('a rejected desktop image endpoint continues to the next account without a page adapter', async t => {
   const { root, token } = fixture(t), calls = [];
   addProvider('text', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text' }, root);
   for (const alias of ['first', 'second']) {
@@ -1096,7 +1104,7 @@ test('a rejected desktop image endpoint continues to the next account before any
     atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
     addProvider(alias, { type: 'account', accountHome }, root);
   }
-  const proxy = await listen(t, createProxy({ root, imageHandler: async () => { throw Error('No webpage needed'); }, fetchImpl: async (url, options) => {
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
     calls.push([url, options.headers.authorization]);
     return options.headers.authorization === 'Bearer first' ? Response.json({ detail: 'Forbidden' }, { status: 403 }) : Response.json({ data: [{ b64_json: 'second-image' }] });
   } }));
@@ -1108,4 +1116,19 @@ test('a rejected desktop image endpoint continues to the next account before any
     ['https://chatgpt.com/backend-api/codex/images/generations', 'Bearer second'],
   ]);
   assert.equal(readState(root).active, 'text');
+});
+
+test('an uncertain submitted account image request is not replayed on another provider', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['first', 'second']) {
+    const accountHome = path.join(root, alias); atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, imageHandler: async ({ provider }) => {
+    assert.equal(provider.accountHome, path.join(root, 'first')); calls.push('submitted');
+    return Response.json({ error: { message: 'Image result timed out after submission' } }, { status: 503, headers: { 'x-switch-image-submitted': '1' } });
+  }, fetchImpl: async (_url, options) => { calls.push(options.headers.authorization); return Response.json({ detail: 'Forbidden' }, { status: 403 }); } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  assert.equal(response.status, 503); await response.text(); assert.deepEqual(calls, ['Bearer first', 'Bearer first', 'submitted']);
+  assert.equal(readState(root).active, 'first');
 });

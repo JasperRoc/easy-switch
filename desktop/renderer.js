@@ -18,7 +18,7 @@ let editingProvider = null, settingsOpen = false;
 const resetAttempts = new Map();
 const t = (key, values) => {
   const text = translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values);
-  return key.startsWith('webImages') ? text : text.replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
+  return text.replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
 };
 function appearance() {
   language = normalizeLanguage(state.language);
@@ -250,8 +250,6 @@ function refresh(nextState) {
       control.title = control.getAttribute('aria-label');
     }
     $('version').textContent = `easy-switch ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').setAttribute('aria-checked', String(!!state.loginItem));
-    $('web-images-toggle').setAttribute('aria-checked', String(!!state.webImages?.enabled));
-    $('web-images-status').textContent = t('webImages_' + (state.webImages?.phase || 'disconnected'));
     $('preferences-warning').hidden = !state.preferencesError;
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
     $('native-images').hidden = !state.imageToolsBlocked;
@@ -492,9 +490,6 @@ for(const item of document.querySelectorAll('[data-language],button[data-theme]'
 document.addEventListener('click', event => { if (!event.target.closest('.icon-control')) closeMenus(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
 $('uninstall').addEventListener('click', () => call('uninstall').catch(error => showError(error)));
-$('web-images-open').addEventListener('click', () => call('web-images-open').then(() => refresh()).catch(error => showError(error)));
-$('web-images-disconnect').addEventListener('click', () => call('web-images-disconnect').then(() => refresh()).catch(error => showError(error)));
-$('web-images-toggle').addEventListener('click', () => run('web-images-toggle', !state.webImages?.enabled).catch(() => {}));
 $('autostart').addEventListener('click', async event => {
   const control = event.currentTarget; control.disabled = true;
   try { await run('autostart', !state.loginItem); } catch {} finally { control.disabled = false; }
