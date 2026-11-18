@@ -670,7 +670,7 @@ test('an API text provider without image support routes images to its only Free 
   assert.equal(await (await send(proxy, token)).text(), 'data: [DONE]\n\n');
 });
 
-test('image entitlement rejections fail over before output, including startup SSE, but safety refusals do not', async t => {
+test('image entitlement rejections try an account endpoint or backup before output; safety refusals do not', async t => {
   for (const style of ['http', 'sse', 'policy']) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['first', 'second']) {
@@ -691,7 +691,7 @@ test('image entitlement rejections fail over before output, including startup SS
     } }));
     const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
     assert.equal(response.status, style === 'policy' ? 403 : 200); await response.text();
-    assert.deepEqual(calls, style === 'policy' ? ['Bearer first'] : ['Bearer first', 'Bearer second']);
+    assert.deepEqual(calls, style === 'policy' ? ['Bearer first'] : style === 'http' ? ['Bearer first', 'Bearer first'] : ['Bearer first', 'Bearer second']);
     assert.equal(readState(root).active, 'first');
   }
 });
@@ -896,7 +896,7 @@ test('exhausted subscription image rejection names the actual image route withou
   assert.equal(response.status, 403); assert.equal(response.headers.get('x-switch-alias'), 'aos');
   const text = await response.text(); assert.match(text, /图片.*aos.*403/);
   assert.match(text, /已尝试：elias → aos/); assert.doesNotMatch(text, /private-|API_KEY|冷却/);
-  assert.equal(calls, 2); assert.equal(readState(root).active, 'aos');
+  assert.equal(calls, 3); assert.equal(readState(root).active, 'aos');
 });
 
 test('an image-capable API is tried after a Free subscription image rejection without changing the text selection', async t => {
@@ -913,7 +913,7 @@ test('an image-capable API is tried after a Free subscription image rejection wi
   } }));
   const response = await fetch(proxy + '/v1/images/generations', {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({model:'gpt-image-2',prompt:'fixture'})});
   assert.equal(response.status,200);await response.text();
-  assert.deepEqual(calls.map(item=>item.token),['Bearer free-key','Bearer text-key','Bearer images-key']);
+  assert.deepEqual(calls.map(item=>item.token),['Bearer free-key','Bearer free-key','Bearer text-key','Bearer images-key']);
   assert.equal(readState(root).active,'text');
 });
 
@@ -1024,7 +1024,88 @@ test('native image fallback queue is exhausted before the optional webpage, and 
     } }));
     const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
     assert.equal(response.status, policy ? 403 : 200); await response.text();
-    assert.deepEqual(calls, policy ? ['free'] : ['free', 'api', 'web']);
+    assert.deepEqual(calls, policy ? ['free'] : ['free', 'free', 'api', 'web']);
     assert.equal(readState(root).active, 'api');
   }
+});
+
+test('desktop account image endpoints reuse saved OAuth for generation and editing without changing text identity', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('api', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text-key' }, root);
+  const accountHome = path.join(root, 'account');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-oauth', account_id: 'saved-account' } });
+  addProvider('account', { type: 'account', accountHome }, root);
+  let web = 0;
+  const proxy = await listen(t, createProxy({ root, imageHandler: async () => { web++; throw Error('No webpage needed'); }, fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('/codex/images/')) return Response.json({ detail: 'Forbidden' }, { status: 403 });
+    if (url.includes('/wham/images/')) return Response.json({ created: 1, data: [{ b64_json: 'account-image' }], size: '1024x1024' });
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  for (const route of ['generations', 'edits']) {
+    const image = { model: 'gpt-image-2', prompt: 'fixture', n: 1, quality: 'low', background: 'transparent', size: 'auto',
+      ...(route === 'edits' ? { images: [{ image_url: 'data:image/png;base64,ZmFrZQ==' }] } : {}) };
+    const raw = JSON.stringify(image);
+    const response = await fetch(proxy + '/v1/images/' + route, { method: 'POST', headers: {
+      authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-codex-image-turn-id': 'fixture-turn',
+    }, body: raw });
+    assert.equal(response.status, 200); assert.equal((await response.json()).data[0].b64_json, 'account-image');
+    assert.equal(response.headers.get('x-switch-alias'), 'account');
+    assert.equal(response.headers.get('x-switch-image-route'), 'chatgpt-account');
+    const last = calls.at(-1);
+    assert.equal(last.url, 'https://chatgpt.com/backend-api/wham/images/' + route);
+    assert.equal(Buffer.from(last.options.body).toString(), raw);
+    assert.equal(last.options.headers.authorization, 'Bearer saved-oauth');
+    assert.equal(last.options.headers['ChatGPT-Account-ID'], 'saved-account');
+    assert.equal(last.options.headers['x-codex-image-turn-id'], 'fixture-turn');
+    assert.equal(last.options.headers.cookie, undefined); assert.equal(last.options.headers['x-easy-switch-token'], undefined);
+  }
+  await (await send(proxy, token)).text();
+  assert.equal(calls.at(-1).url, 'https://text.example/v1/responses');
+  assert.equal(calls.at(-1).options.headers.authorization, 'Bearer text-key');
+  assert.equal(calls.length, 5); assert.equal(web, 0);
+  assert.equal(readState(root).active, 'api'); assert.equal(readState(root).lastFailover, undefined);
+});
+
+test('account image adapter does not resubmit quota, safety, authentication, validation or uncertain failures', async t => {
+  for (const [status, body] of [
+    [429, { error: { code: 'rate_limit_exceeded' } }], [402, { error: { code: 'insufficient_quota' } }],
+    [403, { error: { code: 'image_generation_limit_reached', message: 'quota exhausted' } }],
+    [403, { error: { code: 'image_generation_limit_reached' } }],
+    [403, { error: { code: 'content_policy_violation' } }], [403, { error: { code: 'unsupported_country' } }],
+    [401, { error: { code: 'authentication_error' } }], [400, { error: { message: 'Invalid image size' } }], [502, {}],
+  ]) {
+    const { root, token } = fixture(t), calls = [];
+    const accountHome = path.join(root, 'account');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-oauth', account_id: 'account' } });
+    addProvider('account', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, reauth: { prompt: async () => 'Sign in again', close() {} }, fetchImpl: async url => {
+      calls.push(url); return Response.json(body, { status });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.ok, false); await response.text();
+    assert.deepEqual(calls, ['https://chatgpt.com/backend-api/codex/images/generations']);
+  }
+});
+
+test('a rejected desktop image endpoint continues to the next account before any optional webpage', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('text', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text' }, root);
+  for (const alias of ['first', 'second']) {
+    const accountHome = path.join(root, alias);
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, imageHandler: async () => { throw Error('No webpage needed'); }, fetchImpl: async (url, options) => {
+    calls.push([url, options.headers.authorization]);
+    return options.headers.authorization === 'Bearer first' ? Response.json({ detail: 'Forbidden' }, { status: 403 }) : Response.json({ data: [{ b64_json: 'second-image' }] });
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  assert.equal(response.status, 200); assert.equal((await response.json()).data[0].b64_json, 'second-image');
+  assert.deepEqual(calls, [
+    ['https://chatgpt.com/backend-api/codex/images/generations', 'Bearer first'],
+    ['https://chatgpt.com/backend-api/wham/images/generations', 'Bearer first'],
+    ['https://chatgpt.com/backend-api/codex/images/generations', 'Bearer second'],
+  ]);
+  assert.equal(readState(root).active, 'text');
 });

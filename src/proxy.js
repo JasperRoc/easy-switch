@@ -225,10 +225,27 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           if (abort.signal.aborted) throw failure;
           upstream = new Response('', { status: 502 });
         }
-        let stream, startup, message = '';
+        let stream, startup, message = '', imageRoute;
         try {
-          if (!upstream.ok) message = await rejectionText(upstream);
-          else if (!image || upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
+          if (!upstream.ok) {
+            message = await rejectionText(upstream);
+            // The desktop's ChatGPT image API accepts the same saved OAuth
+            // identity. Only retry explicit endpoint/entitlement rejections;
+            // quota, policy, authentication and uncertain transport failures
+            // must not trigger another image submission on this account.
+            if (image && provider.type === 'account' && /^application\/json(?:;|$)/i.test(contentType)
+                && recoverable(403, message) && (imageUnavailable(upstream.status, message) || upstream.status === 403)
+                && ![401, 402, 429].includes(rejectionStatus(message))
+                && !/\b(?:image_generation_limit|rate_limit|usage_limit|insufficient_quota|quota|credits?)(?:\b|_)/i.test(message)) {
+              const imageHeaders = { ...headers }; delete imageHeaders['OpenAI-Beta'];
+              upstream = await fetchImpl('https://chatgpt.com/backend-api/wham' + req.url.slice(3), {
+                method: 'POST', headers: imageHeaders, body: raw, signal: abort.signal, redirect: 'error',
+              });
+              imageRoute = 'chatgpt-account';
+              message = upstream.ok ? '' : await rejectionText(upstream);
+            }
+          }
+          if (upstream.ok && (!image || upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))) {
             stream = await sseBody(upstream);
             if (!stream) return error(res, 502, '上游未返回 Responses SSE 流');
             startup = await inspectStartup(stream); stream = startup.stream;
@@ -326,6 +343,7 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           await upstream.body?.cancel(); return error(res, 502, '上游未返回图片 JSON 响应');
         }
         if (image && upstream.headers.has('x-codex-imagegen-request-id')) res.setHeader('x-codex-imagegen-request-id', upstream.headers.get('x-codex-imagegen-request-id'));
+        if (imageRoute) res.setHeader('x-switch-image-route', imageRoute);
         res.writeHead(200, { 'content-type': stream ? 'text/event-stream' : 'application/json', 'cache-control': 'no-cache', 'x-switch-alias': alias });
         res.flushHeaders();
         // Accepted output and tool events are never replayed.
