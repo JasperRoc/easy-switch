@@ -252,11 +252,19 @@ const notices = [
   ['此别名已用于 API 服务商。', 'That alias belongs to an API provider.'],
   ['请刷新模型目录并选择支持的推理强度。', 'Reload the model catalog and choose a supported effort.'],
   ['请先添加服务商。', 'Add a provider first.'],
+  ['WebDAV 请求过于频繁，请稍后再试。', 'WebDAV request rate limit reached. Wait before trying again.'],
+  ['WebDAV 存储空间或传输流量额度已用尽。', 'WebDAV storage or transfer quota is exhausted.'],
+  ['请检查 WebDAV 应用密码、目录权限和服务访问限制。', 'Check the WebDAV app password, folder permissions and service access limits.'],
+  ['WebDAV 服务拒绝了携带当前 ETag 的更新，无法确认安全同步能力。', 'The WebDAV server rejected an update with its current ETag; safe synchronization could not be verified.'],
+  ['WebDAV 服务忽略条件写入，自动同步可能覆盖其他设备的修改，无法启用。', 'This WebDAV server ignores conditional writes; automatic sync would lose edits.'],
+  ['同步服务未返回 ETag，无法安全识别远端版本。', 'The sync server did not return an ETag.'],
 ];
 export function localizeMessage(value, language) {
   const text = String(value || '');
   const match = notices.find(pair => pair.includes(text));
   if (match) return match[normalizeLanguage(language) === 'zh-CN' ? 0 : 1];
+  const sync = /^Sync server returned HTTP (\d{3})(?: \(([^)]+)\))?\.(?: (.+))?$/.exec(text);
+  if (sync && normalizeLanguage(language) === 'zh-CN') return `同步服务返回 HTTP ${sync[1]}${sync[2] ? `（${sync[2]}）` : ''}。${sync[3] ? localizeMessage(sync[3], language) : ''}`;
   if (normalizeLanguage(language) === 'zh-CN' && text.startsWith('Account authentication required. Open ')) return '请打开官方认证页面并输入下方验证码，登录同一账号后重试请求。';
   return text;
 }

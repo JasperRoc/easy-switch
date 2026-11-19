@@ -56,6 +56,58 @@ test('WebDAV uses the configured folder and Basic authentication and rejects uns
   assert.equal((await client.get('refs/selected.bin')).data.toString(), 'encrypted fixture');
   ignoresConditions = true; await assert.rejects(client.initialize(), /ignores conditional writes/);
 });
+test('WebDAV checks existing collections before MKCOL and reads ETags omitted from PUT responses', async t => {
+  const root = '/dav/easy-switch/', collections = new Set([root]), objects = new Map(), calls = [];
+  const server = http.createServer(async (req, res) => {
+    const reply = (status, data = '', headers = {}) => { res.writeHead(status, headers); res.end(data); };
+    calls.push([req.method, req.url]);
+    assert.match(req.headers['user-agent'], /^easy-switch\//);
+    if (req.method === 'PROPFIND') return collections.has(req.url) ? reply(207, '<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>') : reply(404);
+    if (req.method === 'MKCOL') {
+      if (collections.has(req.url)) return reply(403, '<d:error xmlns:d="DAV:"><d:collection-already-exists/></d:error>');
+      collections.add(req.url); return reply(201);
+    }
+    if (req.method === 'DELETE') { objects.delete(req.url); return reply(204); }
+    const current = objects.get(req.url);
+    if (req.method === 'GET') return current ? reply(200, current.data, { etag: current.etag }) : reply(404);
+    if (req.method === 'PUT') {
+      if (req.headers['if-none-match'] === '*' ? !!current : current?.etag !== req.headers['if-match']) return reply(412);
+      const chunks = []; for await (const chunk of req) chunks.push(chunk); const data = Buffer.concat(chunks);
+      objects.set(req.url, { data, etag: '"' + digest(data) + '"' }); return reply(201);
+    }
+    reply(405);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  const client = new SyncStorage({ kind: 'webdav', url: `http://127.0.0.1:${server.address().port}${root}`, username: 'user', secret: 'app-password' });
+  await client.initialize(); await client.initialize();
+  assert.deepEqual(calls.filter(([method]) => method === 'MKCOL').map(([, name]) => name), [root + 'refs/', root + 'objects/']);
+  assert.equal(objects.size, 0, 'verification files are removed');
+});
+test('a 403 identifies the failing WebDAV operation without exposing the response or credentials', async () => {
+  const base = { kind: 'webdav', url: 'https://dav.example.test/easy-switch/', username: 'private-user', secret: 'private-password' };
+  for (const [body, expected] of [['<error>private-password private-user</error>', /app password, folder permissions/],
+    ['<error>too_many_requests</error>', /rate limit/], ['<error>insufficient_storage</error>', /quota/]]) {
+    const client = new SyncStorage(base, async () => new Response(body, { status: 403 }));
+    await assert.rejects(client.initialize(), error => {
+      assert.equal(error.status, 403); assert.equal(error.method, 'PROPFIND');
+      assert.match(error.message, /403 \(PROPFIND \/\)/); assert.match(error.message, expected);
+      assert.doesNotMatch(error.message, /private-password|private-user|<error>/); return true;
+    });
+  }
+  const client = new SyncStorage(base, async (_url, options) => options.method === 'PROPFIND' ? new Response('', { status: 404 }) : new Response('', { status: 403 }));
+  await assert.rejects(client.initialize(), error => error.method === 'MKCOL' && error.status === 403, 'a failed directory create is not silently ignored');
+});
+test('unchanged WebDAV references use listing ETags without one GET per task', async t => {
+  const root = fixture(t), key = syncKey('fixture shared passphrase'), id = 'selected-task'; let reads = 0;
+  const ref = { version: 1, id, title: 'Remote task', projectKey: 'a'.repeat(64), revision: 'b'.repeat(64), object: 'c'.repeat(64) };
+  const sync = new TaskSync({ root, tasks: { list: async () => [] }, fetchImpl: async (_url, options) => {
+    if (options.method === 'PROPFIND') return new Response('<d:multistatus xmlns:d="DAV:"><d:response><d:href>/refs/selected-task.bin</d:href><d:propstat><d:prop><d:getetag>&quot;stable&quot;</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>', { status: 207 });
+    reads++; return new Response(seal(ref, key), { headers: { etag: '"stable"' } });
+  } });
+  t.after(() => sync.close()); sync.config = { ...sync.config, kind: 'webdav', url: 'https://dav.example.test/library/', username: 'user', secret: 'password', passphrase: 'fixture shared passphrase', enabled: true }; sync.save();
+  await sync.run(); await sync.run();
+  assert.equal(reads, 1); assert.equal(sync.snapshot().tasks[0].status, 'needsProject');
+});
 test('unconfigured task sync performs no background enumeration or network requests', async t => {
   const root = fixture(t); let calls = 0;
   const sync = new TaskSync({ root, interval: 5, tasks: { list: async () => { calls++; return []; } }, fetchImpl: async () => { calls++; throw Error('Unexpected request'); } });

@@ -47,6 +47,17 @@ These are **address formats, not provisioned endpoints**:
 
 Nextcloud shows the actual WebDAV URL in **Files settings → WebDAV** and provides app passwords for third-party clients; see its [official WebDAV guide](https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html). For other services, use their documented endpoint. A browser file-manager URL or share link is not a WebDAV endpoint.
 
+### Nutstore / Jianguoyun example
+
+1. In Nutstore's web account, open account information → security → third-party applications and generate a separate app password for `easy-switch`. Do not use your website or Zotero password.
+2. Create `easy-switch` at the root of your Nutstore files, alongside `zotero`.
+3. Choose **WebDAV**, enter `https://dav.jianguoyun.com/dav/easy-switch/`, your actual Nutstore login account and the new app password. Set a separate encryption passphrase and keep it identical on every computer.
+4. If a 403 remains, inspect the operation in the updated error: `PROPFIND` is directory reading, `MKCOL` is collection creation, and `PUT` is writing. A 403 alone does not prove a wrong password.
+
+Earlier versions sent `MKCOL` without first checking existing directories. The client now checks them before creation, reads back ETags when a successful PUT omits one, and verifies conditional updates to protect concurrent work. Error messages do not echo remote pages or credentials.
+
+Nutstore documents WebDAV limits of 600 requests per 30 minutes for free accounts and 1,500 for paid accounts. Zotero and other clients also generate traffic; wait rather than repeatedly verifying when rate limited. easy-switch reuses directory-listing ETags to avoid one GET per unchanged task. See [Nutstore's app-password/access-limit documentation](https://help.jianguoyun.com/?p=2064) and [its official Zotero setup example](https://help.jianguoyun.com/?p=3168). End-to-end access with real Nutstore credentials has not been verified here; **Verify & save** checks the service's actual conditional-write behavior.
+
 ### Configure the first computer
 
 Open easy-switch → **Settings → Task sync → Storage**:

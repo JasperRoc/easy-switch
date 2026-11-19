@@ -157,9 +157,9 @@ export class TaskSync {
     this.phase = 'syncing'; this.error = ''; this.changed();
     const storage = new SyncStorage(this.config, this.fetch), key = syncKey(this.config.passphrase);
     const remote = new Map();
-    for (const id of await storage.list(signal)) {
+    for (const { id, etag } of await storage.references(signal)) {
       const cached = this.remoteCache.get(id);
-      const item = await storage.get(`refs/${id}.bin`, signal, cached?.etag); if (!item) continue;
+      const item = cached && etag && cached.etag === etag ? { unchanged: true, etag } : await storage.get(`refs/${id}.bin`, signal, cached?.etag); if (!item) continue;
       const ref = item.unchanged ? cached : { ...unseal(item.data, key), etag: item.etag };
       if (ref.version !== 1 || ref.id !== id || !/^[a-f0-9]{64}$/.test(ref.object || '') || !/^[a-f0-9]{64}$/.test(ref.projectKey || '')) throw new Error('Unsupported remote task sync format.');
       remote.set(id, { ...ref, etag: item.etag });

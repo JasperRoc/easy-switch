@@ -4,7 +4,7 @@ export function taskSyncUI({ call, language }) {
   const $ = id => document.getElementById(id), t = (key, values) => translate(language(), key, values);
   const visible = () => !$('sync-page').hidden && !$('settings-page').hidden;
   let data, timer, busy = false, signature = '';
-  const error = value => { $('sync-error').textContent = localizeMessage(value.message || String(value), language()); $('sync-error').hidden = false; };
+  const error = value => { $('sync-error').textContent = localizeMessage(String(value.message || value).replace(/^Error invoking remote method '[^']+': Error: /, ''), language()); $('sync-error').hidden = false; };
   const icon = name => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'), use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
     svg.setAttribute('aria-hidden', 'true'); use.setAttribute('href', 'assets/ui.svg#' + name); svg.append(use); return svg;

@@ -96,6 +96,16 @@ test('task sync settings verify encrypted storage, show selectable Codex tasks a
   await page.click('#close-sync');
   await page.click('[data-client="claude"]'); await page.click('#settings'); await page.click('#open-task-sync');
   assert.match(await page.locator('#sync-library .help').first().textContent(), /Codex/, 'task sync stays labeled Codex while Claude is selected');
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('easy-switch:call'); ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', (event, action, payload) => {
+      if (action === 'sync-configure') throw new Error('Sync server returned HTTP 403 (PROPFIND /). Check the WebDAV app password, folder permissions and service access limits.');
+      return original(event, action, payload);
+    });
+  });
+  await page.click('#sync-storage-tab'); await page.click('#sync-save');
+  await page.locator('#sync-error').filter({ hasText: '同步服务返回 HTTP 403（PROPFIND /）' }).waitFor();
+  assert.doesNotMatch(await page.locator('#sync-error').textContent(), /Error invoking remote method|easy-switch:call/);
   await page.click('#close-sync');
 });
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {

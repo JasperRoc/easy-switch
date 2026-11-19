@@ -39,7 +39,7 @@ export class SyncStorage {
     const authentication = this.config.kind === 'server' ? `Bearer ${this.config.secret}` : `Basic ${Buffer.from(`${this.config.username || ''}:${this.config.secret || ''}`).toString('base64')}`;
     let response;
     try {
-      response = await this.fetch(this.url + name, { method, body, headers: { authorization: authentication, ...headers },
+      response = await this.fetch(this.url + name, { method, body, headers: { authorization: authentication, 'user-agent': 'easy-switch/1 WebDAV', ...headers },
         redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000) });
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -47,37 +47,87 @@ export class SyncStorage {
     }
     if (response.status === 412) { await response.body?.cancel(); const error = new Error('The remote task changed during sync. Both versions have been preserved.'); error.code = 'SYNC_CONFLICT'; throw error; }
     if (response.status === 404) { await response.body?.cancel(); return null; }
-    if (!response.ok && ![304, 405].includes(response.status)) { await response.body?.cancel(); throw new Error(`Sync server returned HTTP ${response.status}.`); }
+    if (!response.ok && !(response.status === 304 && method === 'GET') && !(response.status === 405 && method === 'MKCOL')) {
+      const detail = response.status === 403 ? await this.errorReason(response) : '';
+      if (response.status !== 403) await response.body?.cancel();
+      throw Object.assign(new Error(`Sync server returned HTTP ${response.status} (${method} ${name || '/'}).${detail ? ' ' + detail : ''}`), { code: 'SYNC_HTTP', status: response.status, method, target: name || '/' });
+    }
     return response;
+  }
+  async errorReason(response) {
+    // Inspect only known error categories. Never echo remote HTML, paths or credentials.
+    const reader = response.body?.getReader(); if (!reader) return 'Check the WebDAV app password, folder permissions and service access limits.';
+    let text = '', size = 0;
+    try {
+      while (size < 8192) {
+        const { value, done } = await reader.read(); if (done) break;
+        text += Buffer.from(value.subarray(0, 8192 - size)).toString(); size += value.length;
+      }
+    } catch { /* A malformed error body must not hide the HTTP status and failed operation. */
+    } finally { await reader.cancel().catch(() => {}); }
+    if (/too_many_requests|rate.?limit|request.*(?:frequency|too frequent)|访问频率|请求过于频繁/i.test(text)) return 'WebDAV request rate limit reached. Wait before trying again.';
+    if (/quota|insufficient.?storage|storage.?limit|空间不足|流量.*(?:不足|超|用尽)/i.test(text)) return 'WebDAV storage or transfer quota is exhausted.';
+    return 'Check the WebDAV app password, folder permissions and service access limits.';
+  }
+  async collectionExists(name, signal) {
+    const response = await this.request('PROPFIND', name, '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>', { depth: '0', 'content-type': 'application/xml; charset=utf-8' }, signal);
+    if (!response) return false;
+    const xml = (await this.read(response)).toString();
+    return /<(?:[\w-]+:)?collection\b[^>]*\/?\s*>/i.test(xml) && /HTTP\/\d(?:\.\d)?\s+200\b/i.test(xml);
   }
   async initialize(signal) {
     for (const name of ['', 'refs/', 'objects/']) {
-      const response = await this.request('MKCOL', name, undefined, {}, signal);
+      if (this.config.kind === 'webdav' && await this.collectionExists(name, signal)) continue;
+      let response;
+      try { response = await this.request('MKCOL', name, undefined, {}, signal); }
+      catch (error) {
+        // Providers vary in their response to an existing collection or a concurrent create.
+        if (this.config.kind === 'webdav' && [403, 409, 423].includes(error.status)) {
+          try { if (await this.collectionExists(name, signal)) continue; } catch { signal?.throwIfAborted(); }
+        }
+        throw error;
+      }
       if (!response || !response.ok && response.status !== 405) throw new Error('The sync collection is unavailable. Create the WebDAV parent directory first.');
       await response.body?.cancel();
     }
     // Conditional writes are required to avoid losing concurrent edits.
     const name = 'refs/probe_' + randomBytes(12).toString('hex') + '.bin';
-    const first = await this.request('PUT', name, Buffer.from('probe'), { 'if-none-match': '*' }, signal);
-    if (!first?.headers.get('etag')) throw new Error('The sync server must support ETags and conditional writes.');
-    await first.body?.cancel();
-    let conditional = false;
-    try { await (await this.request('PUT', name, Buffer.from('probe'), { 'if-none-match': '*' }, signal))?.body?.cancel(); }
-    catch (error) { if (error.code !== 'SYNC_CONFLICT') throw error; conditional = true; }
-    await (await this.request('DELETE', name, undefined, {}, signal))?.body?.cancel();
-    if (!conditional) throw new Error('This WebDAV server ignores conditional writes; automatic sync would lose edits.');
+    let failure;
+    try {
+      const etag = await this.put(name, Buffer.from('probe'), null, signal);
+      for (const condition of [null, '"easy-switch-nonmatching-etag"']) {
+        let conditional = false;
+        try { await this.put(name, Buffer.from('changed probe'), condition, signal); }
+        catch (error) { if (error.code !== 'SYNC_CONFLICT') throw error; conditional = true; }
+        if (!conditional) throw new Error('This WebDAV server ignores conditional writes; automatic sync would lose edits.');
+      }
+      try { await this.put(name, Buffer.from('verified probe'), etag, signal); }
+      catch (error) {
+        if (error.code === 'SYNC_CONFLICT') throw new Error('The WebDAV server rejected an update with its current ETag; safe synchronization could not be verified.');
+        throw error;
+      }
+      const verified = await this.get(name, signal);
+      if (!verified?.data.equals(Buffer.from('verified probe'))) throw new Error('The sync server did not preserve the verification file.');
+    } catch (error) { failure = error; throw error; } finally {
+      try { await (await this.request('DELETE', name, undefined, {}, signal))?.body?.cancel(); }
+      catch (error) { if (!failure) throw error; }
+    }
   }
-  async list(signal) {
+  async references(signal) {
     const response = await this.request('PROPFIND', 'refs/', '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>', { depth: '1', 'content-type': 'application/xml' }, signal);
     if (!response) return [];
-    const xml = (await this.read(response)).toString(), names = [];
-    for (const match of xml.matchAll(/<(?:[\w-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?href>/gi)) {
-      let name; try { name = decodeURIComponent(match[1].replaceAll('&amp;', '&').replace(/^<!\[CDATA\[|\]\]>$/g, '').trim()).split('/').at(-1); } catch { continue; }
+    const xml = (await this.read(response)).toString(), names = new Map();
+    const decode = value => value.replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&').replace(/^<!\[CDATA\[|\]\]>$/g, '').trim();
+    for (const block of xml.matchAll(/<(?:[\w-]+:)?response\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?response>/gi)) {
+      const href = /<(?:[\w-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?href>/i.exec(block[1]); if (!href) continue;
+      let name; try { name = decodeURIComponent(decode(href[1])).split('/').at(-1); } catch { continue; }
       const id = name?.replace(/\.bin$/, '');
-      if (name?.endsWith('.bin') && syncID(id) && !id.startsWith('probe_')) names.push(id);
+      const property = /<(?:[\w-]+:)?getetag\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?getetag>/i.exec(block[1]);
+      if (name?.endsWith('.bin') && syncID(id) && !id.startsWith('probe_')) names.set(id, { id, etag: property ? decode(property[1]) : null });
     }
-    return [...new Set(names)];
+    return [...names.values()];
   }
+  async list(signal) { return (await this.references(signal)).map(item => item.id); }
   async read(response) {
     if (Number(response.headers.get('content-length')) > maxPackage) { await response.body?.cancel(); throw new Error('Sync data exceeds 256 MiB.'); }
     const chunks = []; let size = 0;
@@ -97,7 +147,10 @@ export class SyncStorage {
     const response = await this.request('PUT', name, data, { 'content-type': 'application/octet-stream', ...(etag ? { 'if-match': etag } : { 'if-none-match': '*' }) }, signal);
     if (!response) throw new Error('The sync collection does not exist.');
     const result = response.headers.get('etag'); await response.body?.cancel();
-    if (!result) throw new Error('The sync server did not return an ETag.');
-    return result;
+    if (result) return result;
+    // ETag is optional on a successful PUT; read it back without weakening conditional writes.
+    const saved = await this.get(name, signal);
+    if (!saved || digest(saved.data) !== digest(data)) throw Object.assign(new Error('The remote task changed during sync. Both versions have been preserved.'), { code: 'SYNC_CONFLICT' });
+    return saved.etag;
   }
 }
