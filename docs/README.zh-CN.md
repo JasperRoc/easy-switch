@@ -36,6 +36,8 @@ Codex 订阅条目根据账号信息显示 Free、Go、Plus、Pro 100、Pro 200 
 
 仅安装不会修改客户端配置。关闭窗口后软件继续留在托盘运行；选择 **Quit easy-switch** 会恢复所有客户端的原连接设置。**Start at login** 默认关闭，可自行开启。路由启停后，已打开的客户端可能需要重启或重载；用于会话的客户端需另外安装。认证和协议细节见 [Claude 指南](claude-code.md)。
 
+如果 Windows 下载更新后仍是旧版本（包括 0.5.5），请从托盘完全退出 easy-switch，再手动运行最新 `.exe` 覆盖原安装目录。**无需先卸载**，服务商与设置会保留。0.5.37+ 会确认更新助手就绪、指定当前安装目录、检查安装退出码，并确认新版启动。详见[Windows 更新恢复](desktop.md#windows-update-recovery)。
+
 Claude CLI 与 Desktop 分别写入各自配置，共用同一条路由。已初始化的 Claude Desktop 会自动接入第三方推理配置，路由启停后需完全退出并重新打开 Desktop 一次；持续运行时，切换服务商对后续模型请求生效，无需重写该配置。外网连接在启动时自动采用环境变量或系统 HTTP/HTTPS 代理；已有的手动配置会保留。
 
 Windows 安装包尚无发布者签名；macOS 已使用临时签名并验证应用完整性，但尚无 Developer ID 及 Apple 公证，首次打开仍可能需要系统手动允许。详见[macOS 预览版安装说明](desktop.md#macos-preview-and-the-damaged-app-alert)。Apple 芯片 macOS 已完成打包程序测试；Windows 与 Intel macOS 已构建安装包，仍需在对应系统验证实际运行。生命周期、恢复机制、网络设置及更新方式见[桌面版指南](desktop.md)。

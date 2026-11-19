@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { selectRelease, compareVersions, downloadVerified, downloadPackage, validateArchiveEntries, DesktopUpdater } from '../desktop/updater.js';
+import { EventEmitter } from 'node:events';
+import { selectRelease, compareVersions, downloadVerified, downloadPackage, validateArchiveEntries, DesktopUpdater, startWindowsUpdate } from '../desktop/updater.js';
 import helper from '../desktop/update-helper.cjs';
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const release = (version, suffix='mac-arm64.zip') => ({tag_name:`v${version}`,body:'Release notes',assets:[{name:`easy-switch-${version}-${suffix}`,browser_download_url:`https://github.com/JasperRoc/easy-switch/releases/download/v${version}/easy-switch-${version}-${suffix}`,size:3,digest:`sha256:${digest('abc')}`}]});
@@ -26,6 +27,54 @@ test('a corrupt, truncated or oversized download never becomes an installable pa
 test('checking updates exposes release notes and performs no download or installation',async t=>{
  const urls=[],updater=new DesktopUpdater({root:temporary(t),current:'0.4.0',platform:'darwin',arch:'arm64',fetchImpl:async url=>{urls.push(url);return Response.json([release('0.5.0')]);}});
  await updater.check();assert.equal(updater.snapshot().phase,'available');assert.equal(updater.snapshot().notes,'Release notes');assert.equal(urls.length,1);assert.equal(updater.staged,null);
+});
+test('Windows waits for a verified helper handshake outside the installation directory and quotes paths safely', async t => {
+ const directory=path.join(temporary(t), "用户's updates");fs.mkdirSync(directory);
+ const receipt=path.join(directory,'pending.json'),job={current:'C:\\Program Files\\easy-switch\\easy-switch.exe',staged:path.join(directory,'update.exe'),receipt,version:'1.0.0',token:'fixture-token',parent:42,sha256:digest('abc'),size:3};
+ let child;
+ await startWindowsUpdate(job,(file,args,options)=>{
+  assert.match(file,/WindowsPowerShell\\v1\.0\\powershell\.exe$/);assert.equal(options.cwd,directory);assert.equal(options.windowsHide,true);
+  assert.equal(options.detached,true);assert.equal(options.stdio,'ignore');
+  const command=Buffer.from(args.at(-1),'base64').toString('utf16le');assert.match(command,/用户''s updates/);assert.match(command,/ -JobFile /);
+  const descriptor=JSON.parse(fs.readFileSync(path.join(directory,'install.json')));assert.equal(descriptor.current,job.current);
+  assert.equal(descriptor.sha256,job.sha256);assert.equal(fs.existsSync(path.join(directory,'windows-update.ps1')),true);
+  child=new EventEmitter();child.unref=()=>{child.unreferenced=true;};child.kill=()=>{child.killed=true;};
+  setTimeout(()=>fs.writeFileSync(descriptor.handshake,JSON.stringify({token:job.token,ready:true})),20);
+  return child;
+ });
+ assert.equal(child.unreferenced,true);assert.equal(child.killed,undefined);
+});
+test('Windows rejects a helper that exits or fails verification instead of treating spawn as installation success', async t => {
+ const directory=temporary(t),job={current:'C:\\easy-switch\\easy-switch.exe',staged:'fixture.exe',receipt:path.join(directory,'pending.json'),version:'1.0.0',token:'fixture-token'};
+ for(const kind of ['exit','error','verification']) {
+  let child;
+  await assert.rejects(startWindowsUpdate(job,()=>{
+   child=new EventEmitter();child.unref=()=>{};child.kill=()=>{child.killed=true;};
+   setTimeout(()=>kind==='verification'?fs.writeFileSync(path.join(directory,'helper-ready.json'),JSON.stringify({token:job.token,error:'Update package SHA-256 verification failed.'})):child.emit(kind,kind==='exit'?1:Error('blocked')),10);
+   return child;
+  }),kind==='verification'?/SHA-256/:/helper could not start/);
+  assert.equal(child.killed,true);
+ }
+});
+test('startup confirms only the requested version and executable, retaining the receipt token', t => {
+ const updater=new DesktopUpdater({root:temporary(t),current:'1.0.0'});
+ const pending={version:'1.0.0',token:'fixture-token',ready:false,executable:process.execPath};
+ for(const change of [{version:'0.9.0'},{executable:process.execPath+'.old'},{}]) {
+  fs.writeFileSync(updater.receipt,JSON.stringify({...pending,...change}));updater.confirmLaunch();
+  const value=JSON.parse(fs.readFileSync(updater.receipt));assert.equal(value.ready,Object.keys(change).length===0);assert.equal(value.token,pending.token);
+ }
+ updater.platform='win32';fs.writeFileSync(updater.receipt,JSON.stringify({...pending,executable:process.execPath.toUpperCase()}));updater.confirmLaunch();
+ assert.equal(JSON.parse(fs.readFileSync(updater.receipt)).ready,true,'Windows executable paths ignore case');
+});
+test('a Windows installer failure remains visible on first check without losing the recovery installer', async t => {
+ const root=temporary(t),directory=path.join(root,'updates');fs.mkdirSync(directory);
+ const installer=path.join(directory,'update.exe');fs.writeFileSync(installer,'verified fixture');
+ fs.writeFileSync(path.join(directory,'last-error.txt'),'The Windows installer failed (exit code 2). Run the downloaded installer manually.');
+ let requests=0;
+ const updater=new DesktopUpdater({root,current:'0.5.5',platform:'win32',arch:'x64',fetchImpl:async()=>{requests++;return Response.json([]);}});
+ assert.equal(updater.snapshot().phase,'error');assert.match(updater.snapshot().error,/exit code 2/);assert.equal(fs.existsSync(installer),true);
+ assert.equal((await updater.check()).phase,'error');assert.equal(requests,0);
+ assert.equal((await updater.check()).phase,'current');assert.equal(requests,1);
 });
 test('replacement verifies before changing the app and rolls back on failed startup',async t=>{
  const folder=temporary(t),current=path.join(folder,'easy-switch.app'),staged=path.join(folder,'stage.app');

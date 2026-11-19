@@ -266,6 +266,12 @@ const notices = [
   ['Git 历史超过 128 MiB 同步上限。', 'This Git history exceeds the 128 MiB sync limit.'],
   ['普通文件夹快照未通过完整性校验，未应用该版本。', 'The incoming folder snapshot failed its integrity check.'],
   ['请选择空目录或原有的非 Git 项目目录。', 'Choose an empty folder or the original non-Git project folder.'],
+  ['Windows 更新助手未能启动，请手动运行已下载的安装包。', 'The Windows update helper could not start. Run the downloaded installer manually.'],
+  ['Windows 更新文件不可用，请重新下载更新。', 'The Windows update files are unavailable. Download the update again.'],
+  ['更新包 SHA-256 校验失败，请重新下载。', 'Update package SHA-256 verification failed.'],
+  ['旧版软件没有退出，请完全退出 easy-switch 后重试更新。', 'The previous application did not exit. Close easy-switch before retrying the update.'],
+  ['安装器未替换当前这份 easy-switch，请手动运行下载的安装包并选择原安装目录。', 'The Windows installer did not replace this copy of easy-switch. Run the downloaded installer manually in the existing installation folder.'],
+  ['Windows 新版未确认启动成功，请重新打开 easy-switch 查看更新错误。', 'The updated Windows application did not confirm startup. Reopen easy-switch to see the update error.'],
 ];
 export function localizeMessage(value, language) {
   const text = String(value || '');
@@ -273,6 +279,8 @@ export function localizeMessage(value, language) {
   if (match) return match[normalizeLanguage(language) === 'zh-CN' ? 0 : 1];
   const sync = /^Sync server returned HTTP (\d{3})(?: \(([^)]+)\))?\.(?: (.+))?$/.exec(text);
   if (sync && normalizeLanguage(language) === 'zh-CN') return `同步服务返回 HTTP ${sync[1]}${sync[2] ? `（${sync[2]}）` : ''}。${sync[3] ? localizeMessage(sync[3], language) : ''}`;
+  const installer = /^The Windows installer failed \(exit code (\d+)\)\. Run the downloaded installer manually\.$/.exec(text);
+  if (installer && normalizeLanguage(language) === 'zh-CN') return `Windows 安装器失败（退出码 ${installer[1]}），请手动运行已下载的安装包。`;
   if (normalizeLanguage(language) === 'zh-CN' && text.startsWith('Account authentication required. Open ')) return '请打开官方认证页面并输入下方验证码，登录同一账号后重试请求。';
   return text;
 }

@@ -138,6 +138,31 @@ export async function verifyMacApplication(application, version) {
   if (fs.lstatSync(application).isSymbolicLink() || await read('CFBundleIdentifier') !== 'io.github.jasperroc.easy-switch' || await read('CFBundleShortVersionString') !== version) throw new Error('The staged application identity or version does not match the release.');
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', application]);
 }
+export async function startWindowsUpdate(job, run = spawn) {
+  const directory = path.dirname(job.receipt), descriptor = path.join(directory, 'install.json'), script = path.join(directory, 'windows-update.ps1');
+  fs.copyFileSync(fileURLToPath(new URL('./windows-update.ps1', import.meta.url)), script);
+  const handshake = path.join(directory, 'helper-ready.json'); fs.rmSync(handshake, { force: true });
+  atomic(descriptor, { ...job, handshake });
+  const literal = value => `'${value.replaceAll("'", "''")}'`;
+  const command = `& ${literal(script)} -JobFile ${literal(descriptor)}`;
+  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')],
+    { cwd: directory, detached: true, windowsHide: true, stdio: 'ignore' });
+  try {
+    await new Promise((resolve, reject) => {
+      let poll;
+      const finish = error => { clearInterval(poll); clearTimeout(timer); child.removeListener('error', failed); child.removeListener('exit', failed); error ? reject(error) : resolve(); };
+      const failed = () => finish(new Error('The Windows update helper could not start. Run the downloaded installer manually.'));
+      const timer = setTimeout(failed, 15000);
+      child.once('error', failed); child.once('exit', failed);
+      poll = setInterval(() => {
+        let ready; try { ready = JSON.parse(fs.readFileSync(handshake, 'utf8')); } catch { return; }
+        if (ready.token === job.token) { if (ready.error) finish(new Error(ready.error)); else if (ready.ready) finish(); }
+      }, 100);
+    });
+    child.unref();
+  } catch (error) { child.kill(); throw error; }
+}
 export class DesktopUpdater {
   constructor({ root, current, platform = process.platform, arch = process.arch, changed = () => {}, fetchImpl, systemFetch, useSystemNetwork = () => true }) {
     Object.assign(this, { root, current, platform, arch, changed, fetchImpl, systemFetch, useSystemNetwork });
@@ -145,7 +170,7 @@ export class DesktopUpdater {
     this.directory = path.join(root, 'updates'); fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     this.receipt = path.join(this.directory, 'pending.json');
     const error = path.join(this.directory, 'last-error.txt');
-    if (fs.existsSync(error)) { this.state = { ...this.state, phase: 'error', error: fs.readFileSync(error, 'utf8') }; fs.rmSync(error); }
+    if (fs.existsSync(error)) { this.state = { ...this.state, phase: 'error', failedAction: 'install', error: fs.readFileSync(error, 'utf8') }; this.installErrorPending = true; fs.rmSync(error); }
   }
   snapshot() { return { ...this.state, retryDownload: this.state.phase === 'error' && this.state.failedAction === 'download' && !!this.release,
     notes: this.release?.notes || '', date: this.release?.date || '', size: this.release?.asset.size || 0 }; }
@@ -157,6 +182,7 @@ export class DesktopUpdater {
   }
   async check() {
     if (this.pending || ['ready', 'installing'].includes(this.state.phase)) return this.snapshot();
+    if (this.installErrorPending) { this.installErrorPending = false; return this.snapshot(); }
     this.emit({ phase: 'checking', error: '' });
     this.pending = this.connection(async fetch => {
       const response = await fetch(api, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'easy-switch-desktop' }, signal: AbortSignal.timeout(15000) });
@@ -191,7 +217,8 @@ export class DesktopUpdater {
   confirmLaunch() {
     if (!fs.existsSync(this.receipt)) return;
     const pending = JSON.parse(fs.readFileSync(this.receipt, 'utf8'));
-    if (pending.version === this.current) atomic(this.receipt, { ...pending, ready: true });
+    const normalize = value => this.platform === 'win32' ? path.win32.resolve(value).toLowerCase() : path.resolve(value);
+    if (pending.version === this.current && (!pending.executable || normalize(pending.executable) === normalize(process.execPath))) atomic(this.receipt, { ...pending, ready: true });
   }
   async install({ executable = process.execPath, codexHome }) {
     if (this.state.phase !== 'ready' || !this.staged) throw new Error('Download and verify the update first.');
@@ -214,10 +241,11 @@ export class DesktopUpdater {
       });
       child.send({ install: true }); child.disconnect(); child.unref();
     } else {
-      const literal = value => `'${value.replaceAll("'", "''")}'`;
-      const command = `$ErrorActionPreference='Stop'; while (Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }; Start-Process -FilePath ${literal(this.staged)} -ArgumentList '/S','--updated','--force-run' -Wait`;
-      const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { detached: true, windowsHide: true, stdio: 'ignore' });
-      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); child.unref();
+      const token = crypto.randomUUID(); atomic(this.receipt, { version, token, executable, ready: false });
+      try {
+        await startWindowsUpdate({ parent: process.pid, current: executable, staged: this.staged, receipt: this.receipt, version, token,
+          sha256: this.release.asset.sha256, size: this.release.asset.size, environment: { SWITCH_HOME: this.root, CODEX_HOME: codexHome } });
+      } catch (error) { fs.rmSync(this.receipt, { force: true }); throw error; }
     }
     this.emit({ phase: 'installing' });
   }

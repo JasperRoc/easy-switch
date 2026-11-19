@@ -123,6 +123,18 @@ test('task sync settings verify encrypted storage, show selectable Codex tasks a
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sync-error-details-zh.png') });
   await page.click('#close-sync');
 });
+test('a saved installer failure is visible on the first update review in both languages', { skip: !enabled, timeout: 30000 }, async t => {
+  const { page } = await launch(t, {}, undefined, root => {
+    fs.mkdirSync(path.join(root, 'updates')); fs.writeFileSync(path.join(root, 'updates', 'last-error.txt'), 'The Windows installer failed (exit code 2). Run the downloaded installer manually.');
+  });
+  await page.click('#updates');
+  await page.locator('#update-error').filter({ hasText: 'exit code 2' }).waitFor();
+  assert.equal(await page.locator('#update-dialog').getAttribute('data-phase'), 'error');
+  assert.equal(await page.locator('#update-action').isVisible(), false);
+  await page.click('#close-update'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.evaluate(() => document.getElementById('update-dialog').showModal());
+  await page.locator('#update-error').filter({ hasText: 'Windows 安装器失败（退出码 2）' }).waitFor();
+});
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const { app, page, root } = await launch(t, {}, undefined, directory => {
     init(directory); addProvider('saved', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture-private' }, directory);

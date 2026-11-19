@@ -200,7 +200,7 @@ async function boot() {
     try { refreshDesktop(visible); } catch { /* A transient metadata read is retried on the next pass. */ }
   } });
   if (app.isPackaged && !process.env.SWITCH_TEST_DESKTOP) {
-    const check = () => { if (!activity.paused()) updater.check().catch(() => {}); };
+    const check = () => { const update = updater.snapshot(); if (!activity.paused() && !(update.phase === 'error' && update.failedAction === 'install')) updater.check().catch(() => {}); };
     initialUpdate = setTimeout(check, 3000); initialUpdate.unref(); updateTimer = setInterval(check, 6 * 60 * 60 * 1000); updateTimer.unref();
   }
   const nativeMenu = () => { if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'easy-switch', submenu: [{ role: 'about' }, { label: t('updates'), click: () => showWindow('updates') }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' }, { label: t('quit'), accelerator: 'Command+Q', click: () => app.quit() }] }, { role: 'editMenu' }, { role: 'windowMenu' }])); };

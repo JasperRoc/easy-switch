@@ -24,6 +24,21 @@ The current packages have no publisher certificate; macOS uses ad hoc code signi
 
 Apple silicon macOS packaged-app tests cover adding an API, model discovery, catalog editing, family mapping, routing start/stop, window hiding, normal exit and forced-process-exit recovery. Intel macOS and Windows packages are built, but have not been run on those systems. This release is experimental.
 
+## Windows update recovery
+
+Versions before 0.5.37, including 0.5.5, start a hidden PowerShell command and only confirm that the shell started. They do not verify the installer exit code, the installation directory or the restarted version, so installation failures can leave the old copy without an explanation.
+
+To recover an affected installation:
+
+1. Finish active requests. Right-click the tray icon and choose **Quit easy-switch**; closing its window only hides it.
+2. Run the latest `easy-switch-<version>-win-x64.exe` from [Releases](https://github.com/JasperRoc/easy-switch/releases), or run the already downloaded installer in `%USERPROFILE%\.codex-switch\updates` if it is current. A custom `SWITCH_HOME` changes that cache location.
+3. Install into the existing easy-switch folder and open it. **Do not uninstall first**: a complete uninstall removes saved providers and preferences. Normal installation over the previous version retains them.
+4. Check the version shown in the app. An existing old shortcut may point to a second installation; open the executable from the selected installation folder if necessary.
+
+From 0.5.37, a PowerShell worker runs outside the application directory, verifies the downloaded hash before confirming readiness, waits for the old process, and passes the existing directory to NSIS. It checks the installer exit code and executable version, launches that exact copy and waits for its startup receipt. Failed installers remain in the cache for manual recovery; the error is saved as `updates/last-error.txt` and shown on the next launch. Automatic background checks do not erase that error. System policy or installation permission failures still require resolution on the Windows computer. PowerShell control flow is tested with simulated processes; a real Windows installer upgrade has not been executed in the macOS test environment.
+
+0.5.37 之前（包括 0.5.5）的更新只确认隐藏的 PowerShell 已启动，没有检查安装退出码、安装目录和重启后的版本，因此失败可能没有提示。处理方式：结束任务，从托盘选择 **Quit easy-switch** 完全退出，然后手动运行最新 Windows 安装包，覆盖原目录并重新打开检查版本；默认下载缓存位于 `%USERPROFILE%\.codex-switch\updates`。**不要先卸载**，完整卸载会清理服务商与设置，正常覆盖安装会保留。若有多个安装副本，确认快捷方式指向正确目录。新版会检查助手、安装结果和启动回执，失败原因保留在 `updates/last-error.txt` 并在下次启动显示。PowerShell 流程已用模拟进程验证，尚未在当前 macOS 环境完成真实 Windows 升级实测。
+
 ## Subscription plan refresh / 订阅套餐刷新
 
 Codex reads the official quota endpoint while its provider page is visible, with a one-minute cache; an upgrade or downgrade does not require a new token to be detected. Claude reads the official OAuth profile on the same schedule when its saved login includes `user:profile`; otherwise it keeps the plan reported at sign-in. Current account subscription flags take precedence over legacy organization types. Both paid-subscription flags explicitly false mean Free for a personal account; missing flags do not. An unverified paid label paired with the generic `default_claude_ai` tier remains unknown until verified. Successful profile checks update only normalized plan metadata in the saved login, preserving credentials so the correction survives a restart. Missing or unfamiliar values never imply Free. Failed reads retain the last successful result with retry backoff, up to 15 minutes. Hiding/minimizing the window, locking the screen or sleeping pauses these queries; returning to the window resumes reads whose cache has expired. Server-side propagation delays and missing profile permission can delay detection; signing in again refreshes saved metadata. Updating a plan label does not grant inference access or change the selected provider.
