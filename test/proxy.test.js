@@ -239,12 +239,11 @@ test('validation errors never switch', async t => {
     assert.equal(readState(root).active, 'a');
   }
 });
-test('transient HTTP and connection failures recover on the selected Codex provider without switching', async t => {
+test('transient HTTP and connection failures reach Codex without proxy retries or provider changes', async t => {
   for (const status of [500, 502, 503, 504, 529, 0]) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
-    const waits = [];
-    const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });
       if (calls.length <= 5) {
         if (!status) throw new TypeError('fetch failed');
@@ -252,12 +251,17 @@ test('transient HTTP and connection failures recover on the selected Codex provi
       }
       return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
     } }));
-    const response = await send(proxy, token);
-    assert.equal(response.status, 200, `status ${status}`);
-    assert.match(await response.text(), /continued/);
-    assert.equal(response.headers.get('x-switch-alias'), 'aos');
+    // Each retry is a new client request; one local request makes one upstream attempt.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const response = await send(proxy, token); await response.text();
+      assert.equal(response.status, status || 502);
+      assert.equal(calls.length, attempt + 1);
+      assert.equal(readState(root).active, 'aos');
+    }
+    const recovered = await send(proxy, token);
+    assert.equal(recovered.status, 200); assert.match(await recovered.text(), /continued/);
+    assert.equal(recovered.headers.get('x-switch-alias'), 'aos');
     assert.equal(calls.length, 6);
-    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
     assert.ok(calls.every(call => call.url === calls[0].url));
     assert.ok(calls.every(call => call.body.model === payload.model));
     assert.deepEqual(calls[5].body.input, payload.input);
@@ -267,18 +271,21 @@ test('transient HTTP and connection failures recover on the selected Codex provi
   }
 });
 
-test('each Codex provider gets five transient retries before ordered failover and exhausted queues stay bounded', async t => {
-  const { root, token } = fixture(t), calls = [], waits = [];
+test('persistent Codex server failures do not multiply client retries by walking the backup queue', async t => {
+  const { root, token } = fixture(t), calls = [];
   for (const alias of ['aos', 'elias', 'last']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
   const data = { ...payload, reasoning: { effort: 'high' }, input: [...payload.input, { type: 'function_call_output', call_id: 'tool-1', output: 'already done' }] };
-  const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
     calls.push({ alias: new URL(url).hostname.split('.')[0], payload: JSON.parse(options.body) });
     return new Response('Service Unavailable', { status: 503 });
   } }));
-  const response = await send(proxy, token, data);
-  assert.equal(response.status, 503); await response.text();
-  assert.deepEqual(calls.map(call => call.alias), ['aos', 'elias', 'last'].flatMap(alias => Array(6).fill(alias)));
-  assert.deepEqual(waits, Array(3).fill([1000, 2000, 4000, 8000, 16000]).flat());
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const response = await send(proxy, token, data);
+    assert.equal(response.status, 503); await response.text();
+    assert.equal(calls.length, attempt + 1);
+  }
+  assert.deepEqual(calls.map(call => call.alias), Array(5).fill('aos'));
+  assert.equal(readState(root).active, 'aos'); assert.equal(readState(root).lastFailover, undefined);
   for (const call of calls) {
     assert.equal(call.payload.model, data.model); assert.deepEqual(call.payload.reasoning, data.reasoning); assert.deepEqual(call.payload.input, data.input);
   }
@@ -292,7 +299,7 @@ test('explicit quota, authentication, model and policy errors do not wait for tr
   ]) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
-    const proxy = await listen(t, createProxy({ root, wait: async () => assert.fail('must not back off for a nontransient rejection'), fetchImpl: async url => {
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
       calls.push(new URL(url).hostname.split('.')[0]);
       return calls.length === 1 ? Response.json({ error: detail }, { status }) : new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
     } }));
@@ -301,7 +308,7 @@ test('explicit quota, authentication, model and policy errors do not wait for tr
   }
 });
 
-test('a manual switch during an HTTP 503 wins over the original fallback order', async t => {
+test('a manual switch during an HTTP 503 applies to the next client request without proxy replay', async t => {
   const { root, token } = fixture(t), calls = [];
   for (const alias of ['aos', 'second', 'elias']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
   const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
@@ -310,25 +317,29 @@ test('a manual switch during an HTTP 503 wins over the original fallback order',
     return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } }));
   const response = await send(proxy, token); await response.text();
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 503); assert.deepEqual(calls, ['aos']);
+  const next = await send(proxy, token); assert.equal(next.status, 200); await next.text();
   assert.deepEqual(calls, ['aos', 'elias']);
   assert.equal(readState(root).active, 'elias');
   assert.equal(readState(root).reason, 'manual');
 });
 
-test('startup stream disconnections and explicit server-error events retry before any accepted output', async t => {
+test('startup disconnections and server-error events leave retries to Codex', async t => {
   for (const failure of ['disconnect', 'server-error', 'status']) {
     const { root, token } = fixture(t); let calls = 0;
     for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
-    const proxy = await listen(t, createProxy({ root, wait: async () => {}, fetchImpl: async () => {
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
       if (++calls > 1) return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
       const created = 'data: {"type":"response.created"}\n\n';
       const stream = failure === 'disconnect' ? new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(created)); }, pull(controller) { controller.error(new TypeError('connection closed')); } })
         : created + 'data: ' + JSON.stringify({ type: 'error', error: failure === 'status' ? { status_code: 503 } : { type: 'server_error' } }) + '\n\n';
       return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
     } }));
-    const response = await send(proxy, token); assert.equal(response.status, 200); assert.match(await response.text(), /continued/);
-    assert.equal(calls, 2); assert.equal(response.headers.get('x-switch-alias'), 'a');
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, failure === 'server-error' ? 500 : failure === 'status' ? 503 : 502); assert.equal(calls, 1);
+    assert.equal(readState(root).active, 'a');
+    const next = await send(proxy, token); assert.equal(next.status, 200); assert.match(await next.text(), /continued/);
+    assert.equal(calls, 2); assert.equal(next.headers.get('x-switch-alias'), 'a');
   }
 });
 
@@ -342,14 +353,14 @@ test('Codex discovers the real provider union and routes exact model IDs only to
   const metadata = { slug: 'common-model', display_name: 'Common model', base_instructions: 'Native coding instructions', context_window: 120000,
     supported_reasoning_levels: [{ effort: 'high', description: 'High' }], visibility: 'list' };
   let reject = false;
-  const proxy = await listen(t, createProxy({ root, wait: async () => {}, fetchImpl: async (url, options) => {
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
     if (!options.method) {
       discoveries.push({ url, headers: options.headers });
       if (url.startsWith('https://chatgpt.com')) return Response.json({ models: [metadata, { ...metadata, slug: 'subscription-only' }] });
       return Response.json({ data: [{ id: 'common-model' }, ...(url.includes('aos') ? [{ id: 'api-only' }] : [])] });
     }
     requests.push({ url, payload: JSON.parse(options.body), headers: options.headers });
-    if (reject && url.includes('aos')) return new Response('Service Unavailable', { status: 503 });
+    if (reject && url.includes('aos')) return new Response('Quota exhausted', { status: 429 });
     return new Response('data: complete\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } }));
   const getModels = () => fetch(proxy + '/v1/models?client_version=0.165.0', { headers: { authorization: `Bearer ${token}` } });
@@ -786,45 +797,25 @@ test('model failures exhaust the queue without substitution or replay, and a man
 
 const capacityEvent = 'data: {"type":"response.failed","response":{"error":{"code":"server_overloaded","message":"Selected model is at capacity. Please try a different model."}}}\n\n';
 const createdEvent = 'event: response.created\ndata: {"type":"response.created","response":{"id":"failed-response","output":[]}}\n\n';
-test('capacity before any output retries five times before fallback for HTTP and split startup SSE errors', async t => {
+test('HTTP and split startup SSE capacity errors preserve the selected provider for client retry handling', async t => {
   for (const style of ['http', 'sse']) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
     const history = [...payload.input, { type: 'function_call_output', call_id: 'completed-tool', output: 'already done' }];
-    const waits = [];
-    const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
-      calls.push(JSON.parse(options.body));
-      if (url.startsWith('https://a.')) {
-        if (style === 'http') return new Response('Selected model is at capacity. Please try a different model.', { status: 503 });
-        const chunks = [createdEvent, 'data: {"type":"response.failed",', '"response":{"error":{"code":"server_overloaded"}}}\n\n'];
-        return new Response(new ReadableStream({ pull(controller) { if (chunks.length) controller.enqueue(new TextEncoder().encode(chunks.shift())); else controller.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
-      }
-      return new Response('data: {"type":"response.completed","response":{"id":"success"}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      calls.push({ url, payload: JSON.parse(options.body) });
+      if (style === 'http') return new Response('Selected model is at capacity.', { status: 503, headers: { 'retry-after': '3' } });
+      const chunks = [createdEvent, 'data: {"type":"response.failed",', '"response":{"error":{"code":"server_overloaded"}}}\n\n'];
+      return new Response(new ReadableStream({ pull(controller) { if (chunks.length) controller.enqueue(new TextEncoder().encode(chunks.shift())); else controller.close(); } }), { headers: { 'content-type': 'text/event-stream', 'retry-after': '3' } });
     } }));
     const response = await send(proxy, token, { ...payload, input: history });
     const text = await response.text();
-    assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'b');
-    assert.match(text, /success/); assert.doesNotMatch(text, /failed-response|server_overloaded|response.failed/);
-    assert.equal(calls.length, 7); assert.ok(calls.every(call => JSON.stringify(call) === JSON.stringify(calls[0]))); assert.deepEqual(calls[6].input, history);
-    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
-    assert.equal(readState(root).active, 'b');
+    assert.equal(response.status, style === 'http' ? 503 : 200);
+    assert.equal(response.headers.get('retry-after'), '3');
+    if (style === 'sse') { assert.match(text, /server_overloaded/); assert.match(text, /failed-response/); }
+    assert.equal(calls.length, 1); assert.deepEqual(calls[0].payload.input, history);
+    assert.equal(readState(root).active, 'a'); assert.equal(readState(root).lastFailover, undefined);
   }
-});
-
-test('capacity retries are bounded, honor Retry-After, and retain the selected model', async t => {
-  const { root, token } = fixture(t), waits = [], requests = []; let recover = true;
-  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
-  const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (_url, options) => {
-    requests.push(JSON.parse(options.body));
-    if (recover && requests.length === 2) return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
-    return new Response(capacityEvent, { headers: { 'content-type': 'text/event-stream', 'retry-after': '3' } });
-  } }));
-  assert.equal((await send(proxy, token)).status, 200);
-  assert.deepEqual(waits, [3000]); assert.equal(requests.length, 2);
-  assert.deepEqual(requests[0], requests[1]); assert.equal(requests[1].model, payload.model);
-  recover = false; requests.length = 0; waits.length = 0;
-  const exhausted = await send(proxy, token); assert.match(await exhausted.text(), /server_overloaded/);
-  assert.equal(requests.length, 6); assert.deepEqual(waits, [3000, 3000, 4000, 8000, 16000]);
 });
 
 test('capacity after output or tool events is forwarded without replaying accepted work', async t => {
@@ -841,36 +832,13 @@ test('capacity after output or tool events is forwarded without replaying accept
   }
 });
 
-test('a manual provider switch during capacity backoff is respected and cancellation stops retries', async t => {
-  const { root, token } = fixture(t), aliases = [];
-  addProvider('a', { type: 'api', baseUrl: 'https://a.example/v1', apiKey: 'a' }, root);
-  const proxy = await listen(t, createProxy({ root, wait: async () => {
-    addProvider('b', { type: 'api', baseUrl: 'https://b.example/v1', apiKey: 'b' }, root); activate('b', root);
-  }, fetchImpl: async url => {
-    aliases.push(new URL(url).hostname[0]);
-    return aliases.length === 1 ? new Response('Selected model is at capacity.', { status: 503 })
-      : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
-  } }));
-  await (await send(proxy, token)).text(); assert.deepEqual(aliases, ['a', 'b']); assert.equal(readState(root).reason, 'manual');
-  let started; const waiting = new Promise(resolve => { started = resolve; }); let cancelledCalls = 0;
-  const cancelled = await listen(t, createProxy({ root, wait: async (_ms, signal) => { started(); await once(signal, 'abort'); }, fetchImpl: async () => {
-    cancelledCalls++; return new Response(capacityEvent, { headers: { 'content-type': 'text/event-stream' } });
-  } }));
-  // Cool alternatives so this exercises an abort during a same-provider retry.
-  const stateFile = path.join(root, 'state.json'), state = readState(root); delete state.providers.a; state.order = ['b']; atomic(stateFile, state);
-  const abort = new AbortController();
-  const pending = fetch(cancelled + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: abort.signal });
-  const rejected = assert.rejects(pending, /abort/i); await waiting; abort.abort(); await rejected;
-  await new Promise(resolve => setImmediate(resolve)); assert.equal(cancelledCalls, 1);
-});
-
-test('long Retry-After is not shortened and an exhausted capacity error is redacted', async t => {
+test('Retry-After is passed to Codex unchanged and capacity errors are redacted', async t => {
   const { root, token } = fixture(t); let calls = 0;
   addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'SECRET' }, root);
-  const proxy = await listen(t, createProxy({ root, wait: async () => assert.fail('must not retry before a long Retry-After'), fetchImpl: async () => {
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
     calls++; return new Response('Selected model is at capacity. SECRET', { status: 503, headers: { 'retry-after': '120' } });
   } }));
-  const response = await send(proxy, token); assert.equal(response.status, 503); assert.doesNotMatch(await response.text(), /SECRET/); assert.equal(calls, 1);
+  const response = await send(proxy, token); assert.equal(response.status, 503); assert.doesNotMatch(await response.text(), /SECRET/); assert.equal(calls, 1); assert.equal(response.headers.get('retry-after'), '120');
 });
 
 test('startup SSE inspection handles event names, CRLF, multiline data and bounded preambles', async t => {
@@ -880,8 +848,8 @@ test('startup SSE inspection handles event names, CRLF, multiline data and bound
   ]) {
     const { root, token } = fixture(t); let calls = 0;
     addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
-    const proxy = await listen(t, createProxy({ root, wait: async () => {}, fetchImpl: async () => new Response(++calls === 1 ? body : 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }) }));
-    assert.equal(await (await send(proxy, token)).text(), 'data: [DONE]\n\n'); assert.equal(calls, 2);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; return new Response(body, { headers: { 'content-type': 'text/event-stream' } }); } }));
+    assert.equal(await (await send(proxy, token)).text(), body); assert.equal(calls, 1);
   }
   const { root, token } = fixture(t); let calls = 0;
   addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);

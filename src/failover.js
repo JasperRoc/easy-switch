@@ -46,10 +46,6 @@ export function atCapacity(message = '') {
   } catch {}
   return /\b(?:overloaded_error|server_overloaded|model_overloaded|model_at_capacity)\b|\b(?:selected |requested )?model is at capacity\b|\b(?:server|model) (?:is )?(?:currently )?overloaded\b|\bflex capacity unavailable\b/i.test(message);
 }
-export function capacityDelay(header, retry, time = Date.now()) {
-  const seconds = header && /^\d+(?:\.\d+)?$/.test(header.trim()) ? Number(header) * 1000 : Date.parse(header || '') - time;
-  return Math.max(1000 * 2 ** retry, Number.isFinite(seconds) ? seconds : 0);
-}
 export async function rejectionText(response) {
   if (!response.body) return '';
   const reader = response.body.getReader();

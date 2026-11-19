@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverable, rejectionText, rejectionStatus, atCapacity, capacityDelay, modelUnavailable } from '../src/failover.js';
+import { recoverable, rejectionText, rejectionStatus, atCapacity, modelUnavailable } from '../src/failover.js';
 test('model access classification requires explicit model errors and never treats safety, parameters or capacity as access failures', () => {
   for (const message of [
     '{"error":{"code":"model_not_found","message":"The requested model does not exist or you do not have access to it."}}',
@@ -16,12 +16,9 @@ test('model access classification requires explicit model errors and never treat
   ]) assert.equal(modelUnavailable(400, message), false, message);
   assert.equal(modelUnavailable(503, 'model not found'), false);
 });
-test('capacity classification is explicit and Retry-After respects backoff and HTTP dates', () => {
+test('capacity classification is explicit', () => {
   for (const text of ['Selected model is at capacity. Please try a different model.', '{"error":{"code":"server_overloaded"}}', '{"response":{"error":{"code":"model_at_capacity"}}}']) assert.equal(atCapacity(text), true);
   for (const text of ['invalid image', 'context window exceeded', 'internal server error', '{"error":{"code":"invalid_request","message":"denied"},"input":"Selected model is at capacity"}']) assert.equal(atCapacity(text), false);
-  assert.equal(capacityDelay(null, 0), 1000); assert.equal(capacityDelay('0', 1), 2000);
-  assert.equal(capacityDelay('10', 0), 10000);
-  assert.equal(capacityDelay('Thu, 01 Jan 1970 00:00:15 GMT', 1, 0), 15000);
 });
 test('server policy retries provider-level access failures but preserves explicit safety and region restrictions', () => {
   for (const status of [401,402,429]) assert.equal(recoverable(status), true);

@@ -97,7 +97,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   });
   addProvider('a', { type: 'api', baseUrl: await serve(upstream('A')), apiKey: 'a' }, root);
   addProvider('b', { type: 'api', baseUrl: await serve(upstream('B')), apiKey: 'b' }, root);
-  const proxy = await serve(createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, wait: async () => {}, imageHandler: nativeAuth === 'web' ? async ({raw}) => {
+  const proxy = await serve(createProxy({ root, binary: process.env.SWITCH_TEST_CODEX, imageHandler: nativeAuth === 'web' ? async ({raw}) => {
     webCalls++; imageCalls++; assert.equal(JSON.parse(raw).model, 'gpt-image-2');
     return Response.json(webStatus === 200 ? { created: 1, data: [{ b64_json: fs.readFileSync(new URL('../desktop/assets/icon.png', import.meta.url)).toString('base64') }] }
       : { error: { message: 'ChatGPT account image quota exhausted' } }, { status: webStatus });
@@ -234,16 +234,29 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_continuation');
   assert.match(output.output, /switch-tool-ok/);
   assert.equal(child.exitCode, null);
-  capacityNext = 5;
+  capacityNext = 1;
   const capacityProvider = readState(root).active, beforeCapacity = requests.length;
   const capacityCompleted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Continue through a capacity rejection', text_elements: [] }] });
   assert.equal((await capacityCompleted).status, 'completed', 'the same turn continues without another turn/start');
-  assert.equal(readState(root).active, capacityProvider, 'five temporary failures must not change the selected provider');
-  assert.equal(requests.length - beforeCapacity, 6);
+  assert.equal(readState(root).active, capacityProvider, 'native retries must not change the selected provider');
+  assert.equal(requests.length - beforeCapacity, 2);
   const capacityRequests = requests.slice(beforeCapacity);
   assert.ok(capacityRequests.every(request => request.label === capacityRequests[0].label));
-  assert.ok(capacityRequests.every(request => JSON.stringify(request.body) === JSON.stringify(capacityRequests[0].body)));
+  for (const request of capacityRequests) assert.deepEqual(request.body, capacityRequests[0].body);
+  if (!nativeAuth) {
+    capacityNext = Infinity;
+    const beforeFailure = requests.length;
+    const failed = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
+    await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Stop after native retries are exhausted', text_elements: [] }] });
+    assert.equal((await failed).status, 'failed');
+    const nativeAttempts = requests.slice(beforeFailure);
+    assert.ok(nativeAttempts.length > 1);
+    assert.ok(nativeAttempts.every(request => request.label === capacityRequests[0].label));
+    assert.equal(readState(root).active, capacityProvider);
+    t.diagnostic(`Installed Codex ended the turn after ${nativeAttempts.length} native capacity attempts; easy-switch added no retries or failover.`);
+    capacityNext = 0;
+  }
   if (nativeAuth) {
     const accountHome = path.join(root, 'accounts', 'image-subscription');
     const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
