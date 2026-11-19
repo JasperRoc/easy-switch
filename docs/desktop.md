@@ -137,3 +137,9 @@ Use **Check for updates** to query the official GitHub release API. In automatic
 - 更新：自动模式使用操作系统网络栈及代理/PAC 设置，手动保存或环境变量中的设置仍优先。下载失败可直接重试；无法下载的旧版可能需要先手动下载安装包升级一次。更新详情随界面语言选择中英文说明；尚无对应翻译的旧版会明确提示。最新版界面不再重复状态或显示无关安装提示。点击 **Check for updates**，先查看版本说明；确认后下载并校验，再点击 **Install & restart**。macOS 启动失败会自动回滚，账号与设置保留。`switch update` 是 Linux CLI 的更新方式。完整卸载请使用设置中的“彻底卸载 easy-switch”，会恢复连接、关闭自启动，并清理独立账号、密钥、偏好、更新下载和缓存；Windows 系统卸载同样执行清理，正常更新保留数据。macOS 仅拖入废纸篓不会执行卸载钩子，请先使用软件内入口。原 Codex/Claude 会话与登录保留。
 - 语言外观：右下角使用地球与外观图标切换中英文及跟随系统/浅色/深色，在服务商页和设置页均可使用，立即生效并自动保存；托盘菜单及退出提示同步切换语言。点击右下角 ⭐️ 可打开 GitHub 仓库。界面采用系统强调色与磨砂玻璃质感，并尊重系统减少动态效果设置。
 - 发布状态：macOS 已采用临时签名验证完整性，但尚无 Developer ID/公证；Windows 尚无发布者签名，首次运行可能需要系统允许；不支持绕过企业设备策略。Apple 芯片 macOS 已完成打包程序测试，Windows 和 Intel macOS 目前仅完成构建，仍需对应系统实际验证。
+
+## Selected task sync / 指定任务同步
+
+Settings → Task sync configures WebDAV or an encrypted SQLite-backed self-hosted service and lists saved Codex tasks with checkboxes. Select tasks on the first computer; each destination uses the same storage/passphrase and asks once for its project directory. Completed turns, task IDs, local attachments and Git state then transfer automatically while the application runs, including in the tray. Incoming changes wait while Codex holds a task writer lock; running processes and cached open views are not migrated. Divergent edits remain separate until the user chooses a version. See the [task sync guide](task-sync.md) for setup, server deployment and tested limits.
+
+“设置 → 任务同步”可配置 WebDAV／SQLite 自建服务并勾选 Codex 会话。每台电脑首次选择本地项目位置，随后后台自动同步已完成的会话轮次、附件、Git 提交及未提交改动。正在执行的进程保留在原电脑，目标会话被 Codex 占用时等待释放；不会强制关闭用户的客户端。两端同时修改会提示冲突，由用户选择采用哪份版本。

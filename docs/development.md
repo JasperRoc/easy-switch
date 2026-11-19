@@ -17,7 +17,7 @@ Default tests use mock upstreams and temporary directories. They cover request-b
 With Codex installed:
 
 ```bash
-SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.js
+SWITCH_TEST_CODEX="$(command -v codex)" node --test test/codex.integration.test.js test/task-sync.integration.test.js
 ```
 
 This starts a real app-server with a temporary `CODEX_HOME` and completes turns in the same thread/process through local mock upstreams. It verifies manual switching, quota and model-access fallback with the original model/history, parallel tasks, a real shell-tool continuation, capacity recovery, cancellation and native image routing. Legacy easy-switch model overrides are tested separately to confirm they no longer alter client requests. The default command skips real-client integration tests.
@@ -109,3 +109,9 @@ SWITCH_TEST_DESKTOP=1 node --test test/account-images.integration.test.js
 ```
 
 These tests use a real Chromium session, genuine bridge logic and simulated page generation/quota responses. They cover legacy and current composer forms, reference files, empty profiles and cleanup. Default tests never contact real account services. Live generation/edit checks used an existing paid account and local simulated text inference; the new page route has not yet been verified with a currently Free account. See [verification](image-endpoints.md). Credentials, conversations and generated image files are not committed.
+
+## Selective Codex task sync
+
+`src/task-sync.js` runs the selected-task synchronization loop and owns per-device selection, project mapping, revision checks, process locking and conflict choices. `src/sync-storage.js` provides encrypted packages and conditional WebDAV requests; `src/sync-server.js` is the optional SQLite storage server (Node.js 22.13+). `src/sync-codex.js` reads complete saved rollouts, relocates project/attachment paths, converts local compaction checkpoints and asks the official app-server to maintain its indexes and writer locks. `src/sync-project.js` creates Git bundles plus staged/unstaged/untracked changes, validates restores in disposable checkouts and protects divergent local work. `desktop/task-sync.js` supplies the bilingual settings dialog; the Linux daemon shares the same engine.
+
+Default sync tests cover encryption, HTTP authorization, ETags, concurrent writes, attachment/checkpoint portability, Git changes, path rejection, selection and conflicts. SQLite server tests require Node.js 22.13+ and skip on older supported clients. The opt-in real Codex test uses two isolated homes and projects, completes turns on both computers, verifies the same task ID/history, and checks that an open writer is never overwritten. No personal Codex history or paid inference is used. See [task-sync.md](task-sync.md) for configuration and explicit live-process limits.

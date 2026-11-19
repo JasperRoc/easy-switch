@@ -105,6 +105,8 @@ async function boot() {
   window.on('hide', () => { if (process.platform === 'darwin') { app.dock.hide(); app.setActivationPolicy('accessory'); } });
   window.on('session-end', () => { try { controller.runtime.restore(); } catch {} });
   powerMonitor.on('shutdown', () => { try { controller.runtime.restore(); } catch {} });
+  powerMonitor.on('suspend', () => controller.taskSync.setPaused(true));
+  powerMonitor.on('resume', () => controller.taskSync.setPaused(false));
   ipcMain.handle('easy-switch:call', async (event, action, payload) => {
     if (event.senderFrame?.url !== page) throw new Error('Untrusted application frame.');
     try {
@@ -124,6 +126,16 @@ async function boot() {
         case 'models': return await controller.models(payload);
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
+        case 'sync-state': return controller.taskSync.snapshot();
+        case 'sync-tasks': return await controller.taskSync.list();
+        case 'sync-configure': return await controller.taskSync.configure(payload);
+        case 'sync-select': return await controller.taskSync.select(payload);
+        case 'sync-resolve': return await controller.taskSync.resolve(payload);
+        case 'sync-now': return await controller.taskSync.run();
+        case 'sync-project': {
+          const chosen = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
+          return chosen.canceled ? controller.taskSync.snapshot() : controller.taskSync.mapProject({ key: payload, directory: chosen.filePaths[0] });
+        }
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
         case 'stop': await controller.stop(); accountImages.close(); result = snapshot(); break;
         case 'routing': await controller.setRouting(payload); if (payload.client === 'codex' && !payload.enabled) { accountImages.close(); } startupError = ''; result = snapshot(); break;

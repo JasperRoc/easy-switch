@@ -219,3 +219,7 @@ CC Switch’s desktop repository points terminal users to the separately maintai
 The community CLI defaults to Claude, while unprefixed easy-switch commands keep Codex as their default. The interactive menu makes the client choice explicit. These are command comparisons, not a claim that the projects share routing or storage implementations.
 
 The complete verified command tree for CC Switch CLI 5.11.4 is available in the [command reference](cc-switch-cli.md).
+
+## Selected task sync
+
+Run `switch sync setup` to verify WebDAV or the included self-hosted server, then `switch sync list` and `switch sync add <task-id>`. On each destination, use `switch sync project <project-key> /absolute/project/root` once. The existing current-user service synchronizes completed Codex turns and Git state automatically; credentials and provider settings stay local. `switch sync remove <task-id>` disables that device’s selection without deleting the conversation. Conflicting versions require an explicit `switch sync resolve <task-id> local|remote` choice. See [task-sync.md](task-sync.md) for deployment, encryption, limits and the distinction between saved conversations and live processes.

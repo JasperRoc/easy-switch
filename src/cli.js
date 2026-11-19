@@ -15,6 +15,8 @@ import { candidates } from './completion.js';
 import { updateTool } from './update.js';
 import { service } from './install.js';
 import { codexBinary } from './codex-binary.js';
+import { TaskSync } from './task-sync.js';
+import os from 'node:os';
 
 const help = `easy-switch
   switch                      交互选择客户端、服务商或管理操作
@@ -31,6 +33,12 @@ const help = `easy-switch
   switch <codex|claude> list | current     查看对应客户端（不显示密钥）
   switch current              分别显示 Codex 和 Claude 当前服务商
   switch update               更新至官方仓库最新版本
+  switch sync setup           配置 WebDAV 或自建任务同步服务
+  switch sync list            列出可勾选的 Codex 任务
+  switch sync add|remove <id>  开启或关闭指定任务的自动同步
+  switch sync project <key> <path>  首次指定本机项目位置
+  switch sync now             立即同步；后台服务会自动持续同步
+  switch sync resolve <id> local|remote  选择发生冲突时保留的版本
   switch uninstall            恢复客户端设置并彻底卸载（含已保存的账号/API）
   switch service status|restart|uninstall
 兼容：省略 codex 前缀的 add/edit/remove/list/order/<alias> 仍管理 Codex
@@ -107,6 +115,35 @@ async function main() {
   const [command, type, name] = args;
   if (!command || ['help', '--help', '-h'].includes(command)) return console.log(help);
   if (command === '__complete') return console.log(candidates(args.slice(1), root).join('\n'));
+  if (command === 'sync') {
+    if (isClaude) throw new Error('Task sync currently supports Codex sessions.');
+    const sync = new TaskSync({ root: appRoot, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), binary: codexBinary() });
+    try {
+      if (type === 'setup') {
+        const kind = await choose('同步存储', [{ value: 'webdav', label: 'WebDAV' }, { value: 'server', label: '自建服务器 / SQLite' }]);
+        if (!kind) return;
+        await sync.configure({ kind, url: await ask('服务器地址：'), username: kind === 'webdav' ? await ask('用户名：') : '',
+          secret: await ask('密码 / 访问令牌（隐藏输入）：', true), passphrase: await ask('共享加密口令（至少 12 字符，隐藏输入）：', true), enabled: true });
+        console.log('已保存同步配置；后台服务每 30 秒自动同步已选择任务。');
+        try { service('restart', appRoot); } catch { console.log('请运行 switch service restart 使后台服务读取新配置。'); }
+      } else if (type === 'list') {
+        await sync.list();
+        if (sync.config.url) await sync.run();
+        const result = sync.snapshot(); if (result.error) console.error(result.error);
+        for (const task of result.tasks) console.log(`${task.enabled ? '*' : ' '} ${task.id}  ${task.title}  ${task.status || ''}${task.projectKey ? '  project=' + task.projectKey : ''}${task.message ? '  ' + task.message : ''}`);
+      } else if (['add', 'remove'].includes(type) && args.length === 3) {
+        await sync.list(); if (sync.config.url) await sync.run();
+        await sync.select({ id: name, enabled: type === 'add' }); await sync.run();
+        console.log(type === 'add' ? '已开启任务自动同步' : '已停止同步该任务；保留两端历史');
+      } else if (type === 'project' && args.length === 4) {
+        await sync.mapProject({ key: name, directory: path.resolve(args[3]) }); await sync.run(); console.log('已保存本机项目位置');
+      } else if (type === 'resolve' && args.length === 4) {
+        const result = await sync.resolve({ id: name, choice: args[3] }); if (result.error) throw new Error(result.error); console.log('已保存版本选择；请通过 switch sync list 查看同步状态。');
+      } else if (type === 'now') { const result = await sync.run(); if (result.error) throw new Error(result.error); console.log('同步完成；冲突和待指定位置请运行 switch sync list 查看。'); }
+      else throw new Error('用法：switch sync setup|list|add <id>|remove <id>|project <key> <path>|resolve <id> local|remote|now');
+    } finally { await sync.close(); }
+    return;
+  }
   if (command === 'update') {
     if (args.length !== 1) throw new Error('用法：switch update');
     return updateTool(appRoot);

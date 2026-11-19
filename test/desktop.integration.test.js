@@ -8,10 +8,12 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'smol-toml';
 import { addProvider, init } from '../src/store.js';
+import { createSyncServer } from '../src/sync-server.js';
 
 const enabled = process.env.SWITCH_TEST_DESKTOP === '1';
 const project = fileURLToPath(new URL('..', import.meta.url));
 const executable = process.env.SWITCH_TEST_DESKTOP_EXE;
+const sqlite = await import('node:sqlite').then(() => true, () => false);
 async function providersPage(page) { const client = await page.evaluate(async () => (await window.easySwitch.call('state')).client || 'codex'); await page.click(`[data-client="${client}"]`); }
 async function launch(t, extraEnv = {}, initialConfig, prepare) {
   const { _electron } = await import('playwright-core');
@@ -40,6 +42,28 @@ async function launch(t, extraEnv = {}, initialConfig, prepare) {
   assert.equal(parse(fs.readFileSync(file,'utf8')).features.api_key_model_discovery, true);
   return { app, page, file, original, root, home, options };
 }
+test('task sync settings verify encrypted storage, show selectable Codex tasks and clear saved secrets', { skip: !enabled || !sqlite, timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-switch-sync-ui-'));
+  const server = await createSyncServer({ database: path.join(directory, 'sync.sqlite'), token: 'fixture-sync-token-at-least-24' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const { page, root } = await launch(t);
+  page.on('pageerror', error => t.diagnostic(error.message));
+  await page.click('#settings'); await page.click('#open-task-sync');
+  await page.locator('#sync-title').filter({ hasText: 'Task sync' }).waitFor();
+  await page.selectOption('#sync-kind', 'server'); await page.fill('#sync-url', `http://127.0.0.1:${server.address().port}/`);
+  await page.fill('#sync-secret', 'fixture-sync-token-at-least-24'); await page.fill('#sync-passphrase', 'fixture shared passphrase');
+  await page.click('#sync-save');
+  await page.waitForFunction(() => document.querySelector('#sync-status')?.textContent.includes('Automatic sync is configured') || !document.querySelector('#sync-error')?.hidden);
+  assert.equal(await page.locator('#sync-error').isVisible(), false, await page.locator('#sync-error').textContent());
+  assert.equal(await page.locator('#sync-secret').inputValue(), ''); assert.equal(await page.locator('#sync-passphrase').inputValue(), '');
+  const snapshot = await page.evaluate(() => window.easySwitch.call('sync-state'));
+  assert.ok(snapshot.configured); assert.doesNotMatch(JSON.stringify(snapshot), /fixture-sync-token|fixture shared passphrase/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'sync.json'))).kind, 'server');
+  await page.click('#close-sync'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#open-task-sync'); await page.locator('#sync-title').filter({ hasText: '任务同步' }).waitFor();
+  await page.click('#close-sync');
+});
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const { app, page, root } = await launch(t, {}, undefined, directory => {
     init(directory); addProvider('saved', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture-private' }, directory);
@@ -696,8 +720,9 @@ test('sidebar switches each client independently, remembers routing choices and 
   assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
   await page.click('#settings'); await page.locator('#settings-page').waitFor();
   assert.equal(await page.locator('#providers-page').isVisible(), false);
-  assert.equal(await page.locator('#settings-page .settings-card').count(), 2);
-  assert.equal(await page.locator('#settings-page .setting-row').count(), 2);
+  assert.equal(await page.locator('#settings-page .settings-card').count(), 3);
+  assert.equal(await page.locator('#settings-page .setting-row').count(), 3);
+  assert.equal(await page.locator('#open-task-sync').count(), 1);
   assert.equal(await page.locator('#uninstall').count(), 1);
   assert.equal(await page.locator('.workspace-footer .icon-control').count(), 2);
   // Exercise startup UI through a local IPC fixture; never change OS login items.

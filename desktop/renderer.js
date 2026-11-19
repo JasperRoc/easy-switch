@@ -2,6 +2,7 @@ import { translate, normalizeLanguage, localizeMessage } from './i18n.js';
 import { releaseNotes } from './release-notes.js';
 import { claudeFamilies } from '../src/claude-models.js';
 import { planLabel } from '../src/plans.js';
+import { taskSyncUI } from './task-sync.js';
 const $ = id => document.getElementById(id);
 const mappingFields = { ...Object.fromEntries(claudeFamilies.map(role => [role, `claude-${role}-model`])), default: 'claude-main-model', subagent: 'claude-agent-model' };
 function showMapping(mapping = {}) {
@@ -41,6 +42,7 @@ function appearance() {
   providerType(); renderResetCards();
 }
 const call = (action, payload) => window.easySwitch.call(action, payload);
+const syncUI = taskSyncUI({ call, language: () => language });
 function showError(error, target = 'error') {
   const text = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, '');
   $(target).dataset.error = text; $(target).textContent = localizeMessage(text, language);
@@ -254,7 +256,7 @@ function refresh(nextState) {
     $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
     $('native-images').hidden = !state.imageToolsBlocked;
     if (state.error) showError(state.error);
-    renderProviders();
+    renderProviders(); syncUI.render();
     renderLogin();
     if (catalogProvider && (catalogProvider.client !== state.client || !state.providers.some(provider => provider.alias === catalogProvider.alias))) {
       $('models-dialog').close(); catalogProvider = null; catalogRequest++;

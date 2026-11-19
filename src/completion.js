@@ -10,9 +10,11 @@ export function candidates(words, root, scoped = false) {
   const prefix = words.at(-1) || '';
   const before = words.slice(0, -1);
   let options = [];
-  if (!before.length) options = ['add', 'edit', 'remove', 'list', 'current', 'order', ...(!scoped ? ['codex', 'claude', 'update', 'uninstall', 'service'] : []), 'help', ...aliases];
+  if (!before.length) options = ['add', 'edit', 'remove', 'list', 'current', 'order', ...(!scoped ? ['codex', 'claude', 'update', 'uninstall', 'service', 'sync'] : []), 'help', ...aliases];
   else if (before.length === 1 && before[0] === 'add') options = ['api', 'account'];
   else if (before.length === 1 && before[0] === 'service') options = ['status', 'restart', 'uninstall'];
+  else if (before.length === 1 && before[0] === 'sync') options = ['setup', 'list', 'add', 'remove', 'project', 'now', 'resolve'];
+  else if (before.length === 3 && before[0] === 'sync' && before[1] === 'resolve') options = ['local', 'remote'];
   else if (before.length === 1 && ['edit', 'remove'].includes(before[0])) options = aliases;
   else if (before[0] === 'order') options = aliases.filter(alias => !before.slice(1).includes(alias));
   return options.filter(option => option.startsWith(prefix));

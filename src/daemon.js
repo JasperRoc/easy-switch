@@ -6,6 +6,8 @@ import path from 'node:path';
 import { activateClaude, restoreClaude } from './claude-config.js';
 import { claudeHome } from './claude-auth.js';
 import { claudeModelEnvironment } from './claude-models.js';
+import os from 'node:os';
+import { TaskSync } from './task-sync.js';
 
 try {
   const root = home();
@@ -14,6 +16,8 @@ try {
   init(root);
   restoreClaude(path.join(root, 'claude-session.json'));
   Object.assign(process.env, networkEnvironment(root));
+  const taskSync = new TaskSync({ root, codexHome: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')), binary: process.env.SWITCH_CODEX_BIN || 'codex' });
+  taskSync.start();
   const server = createProxy({ root });
   server.on('error', () => { console.error('Proxy failed to start; check whether the port is in use.'); process.exitCode = 1; });
   server.listen(port, '127.0.0.1');
@@ -24,6 +28,7 @@ try {
     } catch { console.error('Unable to configure Claude Code routing. Check its user settings.'); server.close(); process.exitCode = 1; }
   });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+    taskSync.close().catch(() => {});
     restoreClaude(path.join(root, 'claude-session.json'));
     server.close();
     server.closeAllConnections();

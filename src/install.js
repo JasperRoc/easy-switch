@@ -130,7 +130,7 @@ function quote(value, exec = false) {
   return '"' + (exec ? escaped.replaceAll('$', '$$') : escaped) + '"';
 }
 export function unitText(root, port, node, daemon, codex = 'codex', searchPath = process.env.PATH || '/usr/bin:/bin') {
-  return `[Unit]\nDescription=easy-switch switching proxy\n\n[Service]\nType=simple\nExecStart=${quote(node, true)} ${quote(daemon, true)}\nEnvironment=${quote('SWITCH_HOME=' + root)}\nEnvironment="SWITCH_PORT=${port}"\nEnvironment=${quote('SWITCH_CODEX_BIN=' + codex)}\nEnvironment=${quote('PATH=' + searchPath)}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=easy-switch switching proxy\n\n[Service]\nType=simple\nExecStart=${quote(node, true)} ${quote(daemon, true)}\nEnvironment=${quote('SWITCH_HOME=' + root)}\nEnvironment="SWITCH_PORT=${port}"\nEnvironment=${quote('SWITCH_CODEX_BIN=' + codex)}\nEnvironment=${quote('CODEX_HOME=' + path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')))}\nEnvironment=${quote('PATH=' + searchPath)}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
 }
 function command(binary, args) {
   const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 15000 });

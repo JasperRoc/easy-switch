@@ -18,6 +18,9 @@ test('completion exposes commands and aliases, excludes used order aliases and s
   assert.deepEqual(candidates(['model', 're'], root), []);
   assert.deepEqual(candidates(['add', 'a'], root), ['api', 'account']);
   assert.deepEqual(candidates(['service', 're'], root), ['restart']);
+  assert.deepEqual(candidates(['sy'], root), ['sync']);
+  assert.deepEqual(candidates(['sync', 're'], root), ['remove', 'resolve']);
+  assert.deepEqual(candidates(['sync', 'resolve', 'task', ''], root), ['local', 'remote']);
   assert.deepEqual(candidates(['order', 'personal', ''], root), ['relay']);
   assert.deepEqual(candidates(['add', 'api', ''], root), []);
   addProvider('claude-only', { type: 'api', baseUrl: 'https://example.com', apiKey: 'SECRET' }, path.join(root, 'claude'));

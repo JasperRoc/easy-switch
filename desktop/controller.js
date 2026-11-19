@@ -15,6 +15,7 @@ import { SubscriptionUsage } from './usage.js';
 import { planLabel, claudeSavedPlan } from '../src/plans.js';
 import { syncNativeCredentials } from './config.js';
 import { codexResetCredits } from './reset-credits.js';
+import { TaskSync } from '../src/task-sync.js';
 
 export class DesktopController {
   constructor({ root, codexHome, claudeHome = defaultClaudeHome(), claudeDesktop, binary, port = 18345, guardExec, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits, repairPreferences = repairPreferencesAccess }) {
@@ -33,6 +34,7 @@ export class DesktopController {
     this.preferencesFile = path.join(root, 'desktop.json');
     this.repairPreferences = repairPreferences;
     this.resetRequest = resetRequest; this.resetPending = new Map();
+    this.taskSync = new TaskSync({ root, codexHome, binary });
   }
   get client() { return this.preferences().client || 'codex'; }
   get providerRoot() { return this.client === 'claude' ? path.join(this.root, 'claude') : this.root; }
@@ -74,6 +76,7 @@ export class DesktopController {
     this.claudeUsage.closed = false;
     Object.assign(this.runtime.routes, { codex: true, claude: true }, this.preferences().routing);
     await this.runtime.start();
+    this.taskSync.setPaused(false); this.taskSync.start();
   }
   resetCards(alias) {
     if (this.client !== 'codex') throw new Error('Reset cards are available for Codex subscriptions only.');
@@ -111,7 +114,7 @@ export class DesktopController {
     usage.closed = !enabled; usage.setPaused(!enabled);
     return this.snapshot();
   }
-  async stop() { await this.runtime.stop(); this.usage.close(); this.claudeUsage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
+  async stop() { this.taskSync.setPaused(true); await this.taskSync.pending; await this.runtime.stop(); this.usage.close(); this.claudeUsage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
   snapshot({ usage: includeUsage = true } = {}) {
     const preferences = this.preferences();
     const client = this.client;

@@ -28,6 +28,7 @@
     </section>
   </main>
   <section id="settings-page" hidden>
+    <div class="settings-card glass"><div class="setting-row"><span data-i18n="taskSync">Task sync</span><button id="open-task-sync" class="secondary" data-i18n="manageSync">Configure & select tasks</button></div></div>
     <div class="settings-card glass"><div class="setting-row"><span id="autostart-label" data-i18n="autoStart">Start at login</span><div class="setting-control"><button id="autostart" class="route-switch" type="button" role="switch" aria-checked="false" aria-labelledby="autostart-label"><span class="route-switch-thumb" aria-hidden="true"></span></button></div></div></div>
     <div class="settings-card glass"><div class="setting-row"><span data-i18n="uninstall">Uninstall easy-switch</span><button id="uninstall" class="icon-button" data-i18n-aria="uninstall"><svg aria-hidden="true"><use href="assets/ui.svg#trash"/></svg></button></div></div>
   </section>
@@ -67,6 +68,18 @@
     <p id="reset-result" class="notice" role="status" hidden></p>
     <p id="reset-error" class="notice error" role="alert" hidden></p>
     <div class="actions"><button id="reset-reload" class="secondary" data-i18n="resetReload">Refresh cards</button><button id="reset-confirm" data-i18n="resetConfirm" disabled>Use selected reset card</button></div>
+  </dialog>
+  <dialog id="sync-dialog" aria-labelledby="sync-title">
+    <div class="section-heading"><h2 id="sync-title" data-i18n="taskSync">Task sync</h2><button id="close-sync" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <p class="help" data-i18n="syncHelp">Select Codex tasks to sync automatically with their Git state and uncommitted changes. Choose a project folder once on each computer.</p>
+    <form id="sync-form">
+      <div class="sync-fields"><label><span data-i18n="syncBackend">Storage</span><select id="sync-kind"><option value="webdav">WebDAV</option><option value="server" data-i18n="syncServer">Self-hosted server / SQLite</option></select></label><label><span data-i18n="syncAddress">Server URL</span><input id="sync-url" type="url" required placeholder="https://example.com/easy-switch/"></label><label id="sync-user-field"><span data-i18n="syncUsername">Username</span><input id="sync-username" autocomplete="username"></label><label><span id="sync-secret-label" data-i18n="syncPassword">Password / access token</span><input id="sync-secret" type="password" autocomplete="new-password"></label><label class="sync-full"><span data-i18n="syncPassphrase">Shared encryption passphrase</span><input id="sync-passphrase" type="password" minlength="12" autocomplete="new-password"><small class="help" data-i18n="syncPassphraseHelp">Use the same passphrase on each computer. Leave saved secrets blank to keep them.</small></label></div>
+      <div class="sync-controls"><label class="sync-check"><input id="sync-enabled" type="checkbox" checked><span data-i18n="syncAutomatic">Automatic sync</span></label><button id="sync-save" type="submit" data-i18n="syncVerify">Verify & save</button></div>
+    </form>
+    <div class="sync-toolbar"><input id="sync-search" type="search" data-i18n-placeholder="syncSearch"><button id="sync-refresh" class="secondary" data-i18n="syncRefresh">Refresh tasks</button><button id="sync-now" class="secondary" data-i18n="syncNow">Sync now</button></div>
+    <p id="sync-status" class="help" role="status" aria-live="polite"></p><p id="sync-error" class="notice error" hidden></p>
+    <div id="sync-tasks"></div><p id="sync-empty" class="empty" data-i18n="syncEmpty" hidden>No saved Codex tasks.</p>
+    <p class="help" data-i18n="syncLimits">Changes sync after a turn ends. Running processes stay on their computer. Concurrent edits are kept as conflicts; ignored Git files and credentials are not copied.</p>
   </dialog>
   <script type="module" src="renderer.js"></script>
 </body>

@@ -13,6 +13,9 @@ claude-desktop-session.json
 desktop-session.json
 state.json
 network.json
+sync.json
+sync.lock
+sync-cache/
 
 .desktop-cache/
 dist/
