@@ -12,6 +12,7 @@ import { SyncStorage, syncKey, seal, unseal, digest } from '../src/sync-storage.
 import { projectSnapshot, restoreProject } from '../src/sync-project.js';
 import { CodexTasks } from '../src/sync-codex.js';
 import { checkpoint, expandContext } from '../src/compaction.js';
+import { SyncJournal } from '../src/sync-journal.js';
 
 const sqlite = await import('node:sqlite').then(() => true, () => false);
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -31,7 +32,25 @@ async function storage(t, root) {
   const config = { kind: 'server', url: `http://127.0.0.1:${server.address().port}/`, secret: 'fixture-token-at-least-24-characters', passphrase: 'shared fixture encryption password', enabled: true };
   return { config, server };
 }
-test('WebDAV uses the configured folder and Basic authentication and rejects unsafe conditional writes', async t => {
+async function unconditionalWebDAV(t) {
+  const objects = new Map(), writes = [], reads = [];
+  const server = http.createServer(async (req, res) => {
+    const reply = (status, data = '') => { res.writeHead(status); res.end(data); };
+    if (req.method === 'PROPFIND') return reply(207, '<d:multistatus xmlns:d="DAV:"><d:response><d:href>' + req.url + '</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>' +
+      (req.headers.depth === '1' ? [...objects.keys()].filter(name => name.startsWith(req.url)).map(name => `<d:response><d:href>${name}</d:href></d:response>`).join('') : '') + '</d:multistatus>');
+    if (req.method === 'PUT') {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      objects.set(req.url, Buffer.concat(chunks)); writes.push(req.url); return reply(201);
+    }
+    if (req.method === 'GET') { reads.push(req.url); return objects.has(req.url) ? reply(200, objects.get(req.url)) : reply(404); }
+    if (req.method === 'DELETE') { objects.delete(req.url); return reply(204); }
+    reply(405);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  const config = { kind: 'webdav', url: `http://127.0.0.1:${server.address().port}/`, username: 'user', secret: 'app-password', passphrase: 'fixture shared passphrase', enabled: true };
+  return { objects, writes, reads, config };
+}
+test('WebDAV uses the configured folder and Basic authentication without requiring conditional writes', async t => {
   const objects = new Map(); let ignoresConditions = false;
   const server = http.createServer(async (req, res) => {
     const reply = (status, data = '', headers = {}) => { res.writeHead(status, headers); res.end(data); };
@@ -54,7 +73,7 @@ test('WebDAV uses the configured folder and Basic authentication and rejects uns
   const client = new SyncStorage({ kind: 'webdav', url: `http://127.0.0.1:${server.address().port}/library/easy-switch/`, username: 'user', secret: 'app-password' });
   await client.initialize(); await client.put('refs/selected.bin', Buffer.from('encrypted fixture')); assert.deepEqual(await client.list(), ['selected']);
   assert.equal((await client.get('refs/selected.bin')).data.toString(), 'encrypted fixture');
-  ignoresConditions = true; await assert.rejects(client.initialize(), /ignores conditional writes/);
+  ignoresConditions = true; await client.initialize();
 });
 test('WebDAV checks existing collections before MKCOL and reads ETags omitted from PUT responses', async t => {
   const root = '/dav/easy-switch/', collections = new Set([root]), objects = new Map(), calls = [];
@@ -107,6 +126,46 @@ test('unchanged WebDAV references use listing ETags without one GET per task', a
   t.after(() => sync.close()); sync.config = { ...sync.config, kind: 'webdav', url: 'https://dav.example.test/library/', username: 'user', secret: 'password', passphrase: 'fixture shared passphrase', enabled: true }; sync.save();
   await sync.run(); await sync.run();
   assert.equal(reads, 1); assert.equal(sync.snapshot().tasks[0].status, 'needsProject');
+});
+test('immutable revision journals retain concurrent versions when WebDAV ignores preconditions and omits ETags', async t => {
+  const { config, objects, writes, reads } = await unconditionalWebDAV(t), storage = new SyncStorage(config);
+  const key = syncKey('journal fixture passphrase'), a = new SyncJournal(storage, key), b = new SyncJournal(storage, key);
+  const ref = { id: 'shared-task', title: 'Fixture', projectKey: 'a'.repeat(64), revision: 'b'.repeat(64), object: 'c'.repeat(64), updatedAt: 1, device: 'a' };
+  const base = await a.publish(ref);
+  assert.equal((await b.read()).get(ref.id).revision, ref.revision);
+  await Promise.all([a.publish({ ...ref, revision: 'd'.repeat(64), updatedAt: 2 }, base.heads), b.publish({ ...ref, revision: 'e'.repeat(64), device: 'b', updatedAt: 3 }, base.heads)]);
+  const conflict = (await a.read()).get(ref.id);
+  assert.equal(conflict.conflict, true); assert.equal(conflict.heads.length, 2);
+  assert.equal(objects.size, 3); assert.equal(new Set(writes).size, writes.length, 'no shared pointer was overwritten');
+  await b.publish(conflict, conflict.heads);
+  const resolved = (await a.read()).get(ref.id);
+  assert.equal(resolved.conflict, false); assert.equal(resolved.heads.length, 1); assert.equal(resolved.revision, 'e'.repeat(64));
+  assert.equal(objects.size, 4, 'resolving preserves all prior revisions');
+  const count = reads.length; await a.read(); assert.equal(reads.length, count, 'immutable metadata is cached even without ETags');
+  await assert.rejects(new SyncJournal(storage, syncKey('incorrect fixture passphrase')).read(), /decrypt/);
+  const name = '/refs/' + resolved.node + '.bin'; objects.set(name, Buffer.from('corrupted data'));
+  await assert.rejects(new SyncJournal(storage, key).read(), /encrypted sync data/);
+});
+test('immutable uploads reject content mismatches and Nutstore refuses truncated revision listings', async () => {
+  const bytes = Buffer.from('expected content'), config = { kind: 'webdav', url: 'https://dav.example.test/', username: 'user', secret: 'password' };
+  const client = new SyncStorage(config, async (_url, options) => options.method === 'PUT' ? new Response('', { status: 201 }) : new Response('different content'));
+  await assert.rejects(client.putImmutable('refs/' + digest(bytes) + '.bin', bytes), /integrity check/);
+  await assert.rejects(client.putImmutable('refs/' + 'a'.repeat(64) + '.bin', bytes), /filename does not match/);
+  const xml = '<d:multistatus xmlns:d="DAV:">' + Array.from({ length: 750 }, (_, i) => `<d:response><d:href>/refs/${i}.bin</d:href></d:response>`).join('') + '</d:multistatus>';
+  const nutstore = new SyncStorage({ ...config, url: 'https://dav.jianguoyun.com/dav/easy-switch/' }, async () => new Response(xml, { status: 207 }));
+  await assert.rejects(nutstore.references(), /directory listing limit/);
+  const missing = new SyncStorage(config, async (_url, options) => options.method === 'PROPFIND' ? new Response('<d:multistatus xmlns:d="DAV:"><d:response><d:href>/refs/task.bin</d:href></d:response></d:multistatus>', { status: 207 }) : new Response('', { status: 404 }));
+  await assert.rejects(new SyncJournal(missing, syncKey('missing fixture passphrase')).read(), /journal is incomplete/);
+});
+test('a missing journal parent blocks loading and legacy revision pointers stay readable', { skip: !sqlite }, async t => {
+  const root = fixture(t), { config } = await storage(t, root), client = new SyncStorage(config), key = syncKey(config.passphrase);
+  const ref = { version: 1, id: 'legacy-task', title: 'Legacy', revision: 'a'.repeat(64), projectKey: 'b'.repeat(64), object: 'c'.repeat(64) };
+  await client.put('refs/legacy-task.bin', seal(ref, key));
+  const journal = new SyncJournal(client, key), legacy = (await journal.read()).get(ref.id);
+  const next = await journal.publish({ ...ref, revision: 'd'.repeat(64) }, legacy.heads);
+  assert.equal((await journal.read()).get(ref.id).revision, next.revision);
+  await journal.publish({ ...ref, revision: 'e'.repeat(64) }, ['f'.repeat(64)]);
+  await assert.rejects(journal.read(), /journal is incomplete/);
 });
 test('unconfigured task sync performs no background enumeration or network requests', async t => {
   const root = fixture(t); let calls = 0;
@@ -198,8 +257,8 @@ test('invalid incoming paths are rejected before changing the destination projec
     assert.equal(git(target, 'rev-parse', 'HEAD'), current.head);
   }
 });
-test('two computers automatically exchange only selected tasks, continue Git changes and preserve simultaneous edits', { skip: !sqlite }, async t => {
-  const root = fixture(t), { config } = await storage(t, root), source = repository(path.join(root, 'project-a'));
+for (const kind of ['server', 'webdav']) test(`two computers exchange selected tasks, Git changes and conflict choices over ${kind}`, { skip: kind === 'server' && !sqlite }, async t => {
+  const root = fixture(t), { config } = kind === 'server' ? await storage(t, root) : await unconditionalWebDAV(t), source = repository(path.join(root, 'project-a'));
   const local = new Map([['task-1', { id: 'task-1', title: 'Selected task', cwd: source, path: 'fixture' }], ['task-2', { id: 'task-2', title: 'Private task', cwd: source, path: 'fixture' }]]);
   let history = { records: [{ text: 'first message' }], hash: 'history-a', timestamp: new Date().toISOString() };
   const remoteLocal = new Map(); let imported;
@@ -222,6 +281,37 @@ test('two computers automatically exchange only selected tasks, continue Git cha
   await b.resolve({ id: 'task-1', choice: 'remote' });
   assert.equal(imported.hash, 'concurrent-a'); assert.equal(b.snapshot().tasks[0].status, 'synced');
   assert.ok(fs.existsSync(path.join(b.cache, 'conflict-task-1.bin')));
+  await a.run(); history = { ...history, hash: 'keep-a' }; imported = { ...imported, hash: 'keep-b' };
+  await a.run(); await b.run(); assert.equal(b.snapshot().tasks[0].status, 'conflict');
+  await b.resolve({ id: 'task-1', choice: 'local' }); await a.run();
+  assert.equal(history.hash, 'keep-b'); assert.equal(imported.hash, 'keep-b'); assert.equal(b.snapshot().tasks[0].status, 'synced');
+});
+test('simultaneous task publishers preserve both heads on WebDAV without conditional writes', async t => {
+  const root = fixture(t), { config } = await unconditionalWebDAV(t), source = repository(path.join(root, 'source'));
+  let simultaneous = false, arrived = 0, release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const fetchImpl = async (url, options) => {
+    if (simultaneous && options.method === 'PUT' && /\/refs\/[a-f0-9]{64}\.bin$/.test(url)) {
+      if (++arrived === 2) release(); await barrier;
+    }
+    return fetch(url, options);
+  };
+  const left = new Map([['shared', { id: 'shared', title: 'Shared', cwd: source }]]), right = new Map();
+  let historyA = { records: [], hash: 'base', timestamp: new Date().toISOString() }, historyB;
+  const a = new TaskSync({ root: path.join(root, 'a'), fetchImpl, tasks: { list: async () => [...left.values()], read: () => historyA,
+    install: async (_task, value) => { historyA = value; return 'fixture'; } } });
+  const b = new TaskSync({ root: path.join(root, 'b'), fetchImpl, tasks: { list: async () => [...right.values()], read: () => historyB,
+    install: async (task, value, cwd) => { historyB = value; right.set(task.id, { ...task, cwd }); return 'fixture'; } } });
+  t.after(async () => { release(); await a.close(); await b.close(); });
+  await a.configure(config); await b.configure(config); await a.list(); await a.select({ id: 'shared', enabled: true }); await a.run();
+  const incoming = await b.run(); await b.mapProject({ key: incoming.tasks[0].projectKey, directory: path.join(root, 'target') }); await b.run();
+  historyA = { ...historyA, hash: 'left branch' }; historyB = { ...historyB, hash: 'right branch' }; simultaneous = true;
+  await Promise.all([a.run(), b.run()]);
+  const journal = new SyncJournal(new SyncStorage(config), syncKey(config.passphrase)), ref = (await journal.read()).get('shared');
+  assert.equal(arrived, 2); assert.equal(ref.conflict, true); assert.equal(ref.heads.length, 2);
+  await a.run(); await b.run();
+  assert.equal(a.snapshot().tasks[0].status, 'conflict'); assert.equal(b.snapshot().tasks[0].status, 'conflict');
+  assert.equal(historyA.hash, 'left branch'); assert.equal(historyB.hash, 'right branch');
 });
 test('two selected tasks sharing a project accept the same incoming Git update without a false conflict', { skip: !sqlite }, async t => {
   const root = fixture(t), { config } = await storage(t, root), source = repository(path.join(root, 'shared-a'));

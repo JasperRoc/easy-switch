@@ -255,9 +255,9 @@ const notices = [
   ['WebDAV 请求过于频繁，请稍后再试。', 'WebDAV request rate limit reached. Wait before trying again.'],
   ['WebDAV 存储空间或传输流量额度已用尽。', 'WebDAV storage or transfer quota is exhausted.'],
   ['请检查 WebDAV 应用密码、目录权限和服务访问限制。', 'Check the WebDAV app password, folder permissions and service access limits.'],
-  ['WebDAV 服务拒绝了携带当前 ETag 的更新，无法确认安全同步能力。', 'The WebDAV server rejected an update with its current ETag; safe synchronization could not be verified.'],
-  ['WebDAV 服务忽略条件写入，自动同步可能覆盖其他设备的修改，无法启用。', 'This WebDAV server ignores conditional writes; automatic sync would lose edits.'],
-  ['同步服务未返回 ETag，无法安全识别远端版本。', 'The sync server did not return an ETag.'],
+  ['坚果云返回的目录项已达到 WebDAV 列表上限。同步已暂停，保留全部修订记录。', 'Nutstore reached its WebDAV directory listing limit. Synchronization is paused to preserve all revisions.'],
+  ['任务修订记录尚不完整，请等待存储完成同步后重试。', 'The task revision journal is incomplete. Retry when storage has finished syncing.'],
+  ['同步文件完整性校验失败，未应用该版本。', 'The synchronized file failed its integrity check.'],
 ];
 export function localizeMessage(value, language) {
   const text = String(value || '');

@@ -54,9 +54,9 @@ Nextcloud shows the actual WebDAV URL in **Files settings → WebDAV** and provi
 3. Choose **WebDAV**, enter `https://dav.jianguoyun.com/dav/easy-switch/`, your actual Nutstore login account and the new app password. Set a separate encryption passphrase and keep it identical on every computer.
 4. If a 403 remains, inspect the operation in the updated error: `PROPFIND` is directory reading, `MKCOL` is collection creation, and `PUT` is writing. A 403 alone does not prove a wrong password.
 
-Earlier versions sent `MKCOL` without first checking existing directories. The client now checks them before creation, reads back ETags when a successful PUT omits one, and verifies conditional updates to protect concurrent work. Error messages do not echo remote pages or credentials.
+Earlier versions required conditional updates to a shared task pointer, which some WebDAV services do not enforce. Version 0.5.35+ writes every revision to a separate content-addressed file and preserves divergent branches. Verification now checks directory access, upload/read-back integrity and cleanup, without requiring ETags or atomic conditional writes. Error messages do not echo remote pages or credentials.
 
-Nutstore documents WebDAV limits of 600 requests per 30 minutes for free accounts and 1,500 for paid accounts. Zotero and other clients also generate traffic; wait rather than repeatedly verifying when rate limited. easy-switch reuses directory-listing ETags to avoid one GET per unchanged task. See [Nutstore's app-password/access-limit documentation](https://help.jianguoyun.com/?p=2064) and [its official Zotero setup example](https://help.jianguoyun.com/?p=3168). End-to-end access with real Nutstore credentials has not been verified here; **Verify & save** checks the service's actual conditional-write behavior.
+Nutstore documents WebDAV limits of 600 requests per 30 minutes for free accounts and 1,500 for paid accounts. Zotero and other clients also generate traffic; wait rather than repeatedly verifying when rate limited. easy-switch reuses directory-listing ETags to avoid one GET per unchanged task. See [Nutstore's app-password/access-limit documentation](https://help.jianguoyun.com/?p=2064) and [its official Zotero setup example](https://help.jianguoyun.com/?p=3168). End-to-end access with real Nutstore credentials has not been verified here; **Verify & save** checks the actual service connection. If a Nutstore directory listing reaches its documented 750-entry limit, synchronization stops instead of treating an incomplete listing as the entire history; pagination/automatic compaction is not yet implemented.
 
 ### Configure the first computer
 
@@ -73,7 +73,7 @@ Open easy-switch → **Settings → Task sync → Storage**:
 
 Click **Verify & save**. The page moves to **Tasks**; select the conversations you want to upload and wait for **Synced**. Unselected local tasks are not uploaded.
 
-Verification checks reading/writing, ETags and conditional writes. **A successful Zotero verification does not prove easy-switch compatibility:** easy-switch additionally requires `If-Match` / `If-None-Match` to prevent concurrent overwrites. An incompatible server is rejected; there is no unsafe bypass.
+Verification checks directory access, uploading, reading back identical bytes, and cleanup. ETags speed up queries where supplied, but are optional. Each encrypted package/revision has its own content-hash filename; two computers never overwrite a shared revision pointer. Concurrent branches remain on the server and appear as a conflict. Missing referenced ancestors or failed integrity checks stop application of the incoming state. Upgrade **every computer to 0.5.35+** before using the new journal; older clients do not understand its revision filenames. Existing legacy pointers remain readable by the new version.
 
 ## 3. Use your own server
 
@@ -270,7 +270,8 @@ switch sync resolve <task-id> local   # Or remote, to resolve a conflict
 | --- | --- |
 | HTTP 401 / 403 | WebDAV app password or server token, directory permissions, and Authorization forwarding. The server token is not your SSH password |
 | HTTP 404 / 405 or unavailable collection | Complete protocol URL, existing parent directory, no share link, and reverse-proxy WebDAV method support |
-| Missing ETag / unsupported conditional writes | Use a compatible WebDAV server or this project's storage service |
+| Old conditional-write error | Update every device to 0.5.35+ and verify again; immutable revision files no longer need atomic conditional overwrites |
+| Incomplete revision journal / Nutstore listing limit | Retry after storage consistency recovers; do not delete ancestor revision files. At 750 listed entries, Nutstore sync pauses pending complete listing support |
 | Decryption failed | All computers must use the original shared encryption passphrase; changing a storage password does not change the encryption passphrase |
 | Connection failed | SSH tunnel, DNS/certificate/firewall, and any outbound proxy used by easy-switch |
 | HTTP 413 / size limit | Reverse-proxy request-body limit or package size; encrypted packages are capped at 256 MiB |
@@ -279,6 +280,8 @@ switch sync resolve <task-id> local   # Or remote, to resolve a conflict
 | Task missing from Codex sidebar | Same local user/`CODEX_HOME`, correct mapped project, refreshed task list; cloud-only tasks are outside this feature |
 
 Current requirements/limits: a committed Git repository without submodules; 128 MiB Git bundle, 128 MiB history, 32 MiB per attachment/untracked file, 256 MiB encrypted package. Ignored files, dependencies, account configuration, complete execution environments, Git LFS objects, automatically running goals and subagent task trees are not fully migrated. Secrets committed to Git remain part of the synchronized history.
+
+Revision and object files accumulate to preserve branches; this version does not automatically garbage-collect remote history. Do not delete individual ancestor revisions. Existing clients may need to download all journal metadata once, then reuse it from memory.
 
 Packages use AES-256-GCM with a key derived from the passphrase by scrypt before upload. The server still observes task identifiers, sizes and access timing. Local passphrases and credentials remain in easy-switch's private directory. Replaced histories remain in `CODEX_HOME/sync-backups`; project/conflict recovery copies remain in the sync cache. Complete uninstall deletes cache recovery copies; keep independent backups of important work.
 

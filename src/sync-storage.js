@@ -90,24 +90,11 @@ export class SyncStorage {
       if (!response || !response.ok && response.status !== 405) throw new Error('The sync collection is unavailable. Create the WebDAV parent directory first.');
       await response.body?.cancel();
     }
-    // Conditional writes are required to avoid losing concurrent edits.
+    // Revision files use unique content hashes, so verification needs no overwrite operation.
     const name = 'refs/probe_' + randomBytes(12).toString('hex') + '.bin';
     let failure;
     try {
-      const etag = await this.put(name, Buffer.from('probe'), null, signal);
-      for (const condition of [null, '"easy-switch-nonmatching-etag"']) {
-        let conditional = false;
-        try { await this.put(name, Buffer.from('changed probe'), condition, signal); }
-        catch (error) { if (error.code !== 'SYNC_CONFLICT') throw error; conditional = true; }
-        if (!conditional) throw new Error('This WebDAV server ignores conditional writes; automatic sync would lose edits.');
-      }
-      try { await this.put(name, Buffer.from('verified probe'), etag, signal); }
-      catch (error) {
-        if (error.code === 'SYNC_CONFLICT') throw new Error('The WebDAV server rejected an update with its current ETag; safe synchronization could not be verified.');
-        throw error;
-      }
-      const verified = await this.get(name, signal);
-      if (!verified?.data.equals(Buffer.from('verified probe'))) throw new Error('The sync server did not preserve the verification file.');
+      await this.putImmutable(name, Buffer.from('easy-switch revision journal verification'), signal);
     } catch (error) { failure = error; throw error; } finally {
       try { await (await this.request('DELETE', name, undefined, {}, signal))?.body?.cancel(); }
       catch (error) { if (!failure) throw error; }
@@ -117,14 +104,17 @@ export class SyncStorage {
     const response = await this.request('PROPFIND', 'refs/', '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>', { depth: '1', 'content-type': 'application/xml' }, signal);
     if (!response) return [];
     const xml = (await this.read(response)).toString(), names = new Map();
+    let entries = 0;
     const decode = value => value.replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&').replace(/^<!\[CDATA\[|\]\]>$/g, '').trim();
     for (const block of xml.matchAll(/<(?:[\w-]+:)?response\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?response>/gi)) {
+      entries++;
       const href = /<(?:[\w-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?href>/i.exec(block[1]); if (!href) continue;
       let name; try { name = decodeURIComponent(decode(href[1])).split('/').at(-1); } catch { continue; }
       const id = name?.replace(/\.bin$/, '');
       const property = /<(?:[\w-]+:)?getetag\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?getetag>/i.exec(block[1]);
       if (name?.endsWith('.bin') && syncID(id) && !id.startsWith('probe_')) names.set(id, { id, etag: property ? decode(property[1]) : null });
     }
+    if (new URL(this.url).hostname === 'dav.jianguoyun.com' && entries >= 750) throw new Error('Nutstore reached its WebDAV directory listing limit. Synchronization is paused to preserve all revisions.');
     return [...names.values()];
   }
   async list(signal) { return (await this.references(signal)).map(item => item.id); }
@@ -139,8 +129,20 @@ export class SyncStorage {
     if (!response) return null;
     if (response.status === 304) { await response.body?.cancel(); return { unchanged: true, etag }; }
     const revision = response.headers.get('etag');
-    if (!revision) { await response.body?.cancel(); throw new Error('The sync server did not return an ETag.'); }
     return { data: await this.read(response), etag: revision };
+  }
+  async putImmutable(name, data, signal) {
+    if (data.length > maxPackage) throw new Error('Sync data exceeds 256 MiB.');
+    const probe = /^refs\/probe_[a-f0-9]+\.bin$/.test(name);
+    if (!probe && !/^(?:refs|objects)\/[a-f0-9]{64}\.bin$/.test(name)) throw new Error('Immutable sync files require a content hash.');
+    if (!probe && name.split('/')[1] !== digest(data) + '.bin') throw new Error('The sync filename does not match its content.');
+    let response;
+    try { response = await this.request('PUT', name, data, { 'content-type': 'application/octet-stream', 'if-none-match': '*' }, signal); }
+    catch (error) { if (error.code !== 'SYNC_CONFLICT') throw error; }
+    if (response === null) throw new Error('The sync collection does not exist.');
+    await response?.body?.cancel();
+    const saved = await this.get(name, signal);
+    if (!saved || digest(saved.data) !== digest(data)) throw new Error('The synchronized file failed its integrity check.');
   }
   async put(name, data, etag, signal) {
     if (data.length > maxPackage) throw new Error('Sync data exceeds 256 MiB.');

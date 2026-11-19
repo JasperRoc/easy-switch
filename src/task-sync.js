@@ -6,6 +6,7 @@ import { createUpstreamFetch } from './network.js';
 import { SyncStorage, syncKey, syncURL, syncID, seal, unseal, digest } from './sync-storage.js';
 import { CodexTasks } from './sync-codex.js';
 import { projectSnapshot, restoreProject } from './sync-project.js';
+import { SyncJournal } from './sync-journal.js';
 
 export class TaskSync {
   constructor({ root, codexHome, binary, fetchImpl, tasks, changed = () => {}, interval = 30000 }) {
@@ -68,8 +69,7 @@ export class TaskSync {
       syncKey(next.passphrase);
       const storage = new SyncStorage(next, this.fetch); await storage.initialize();
       // Check an existing library before saving a possibly incorrect passphrase.
-      const ids = await storage.list();
-      if (ids.length) { const ref = await storage.get(`refs/${ids[0]}.bin`); if (ref) unseal(ref.data, syncKey(next.passphrase)); }
+      await new SyncJournal(storage, syncKey(next.passphrase)).read();
       if (next.url !== this.config.url || next.kind !== this.config.kind) { next.selected = {}; this.entries = this.entries.filter(task => task.local).map(task => ({ ...task, remote: false, enabled: false, status: 'off', message: '' })); }
       this.remoteCache.clear();
       await this.outbound?.close(); this.outbound = null;
@@ -107,17 +107,21 @@ export class TaskSync {
     if (this.pending) await this.pending;
     await this.exclusive(async () => {
       if (!syncID(id) || !['local', 'remote'].includes(choice) || !this.config.selected[id]?.enabled) throw new Error('Choose a version of this synchronized task.');
-      const storage = new SyncStorage(this.config, this.fetch), item = await storage.get(`refs/${id}.bin`);
-      if (!item) throw new Error('The remote task is no longer available.');
-      const ref = unseal(item.data, syncKey(this.config.passphrase));
+      const storage = new SyncStorage(this.config, this.fetch), key = syncKey(this.config.passphrase), journal = new SyncJournal(storage, key);
+      const refs = await journal.read(), ref = refs.get(id);
+      if (!ref) throw new Error('The remote task is no longer available.');
       const task = (await this.tasks.list()).find(task => task.id === id);
-      if (!task) throw new Error('The local task is no longer available.');
+      if (!task) {
+        if (choice !== 'remote') throw new Error('The local task is no longer available.');
+        await journal.publish(ref, ref.heads); this.config.selected[id] = { enabled: true }; this.save(); return;
+      }
       const project = await projectSnapshot(task.cwd, this.cache, false), history = this.tasks.read(task, project.root);
       if (!history) throw new Error('Wait until this turn finishes before choosing a version.');
       fs.mkdirSync(this.cache, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(path.join(this.cache, 'conflict-' + id + '.bin'), item.data, { mode: 0o600 });
+      fs.writeFileSync(path.join(this.cache, 'conflict-' + id + '.bin'), seal(ref, key), { mode: 0o600 });
+      if (choice === 'remote') await journal.publish(ref, ref.heads);
       this.config.selected[id] = { ...this.config.selected[id], revision: choice === 'local' ? ref.revision : digest(history.hash + project.fingerprint),
-        historyHash: choice === 'remote' ? history.hash : undefined, projectHash: project.fingerprint };
+        historyHash: choice === 'remote' ? history.hash : undefined, projectHash: project.fingerprint, resolution: choice === 'local' ? ref.heads : undefined };
       this.save();
     });
     return this.run();
@@ -156,14 +160,8 @@ export class TaskSync {
   async cycle(signal) {
     this.phase = 'syncing'; this.error = ''; this.changed();
     const storage = new SyncStorage(this.config, this.fetch), key = syncKey(this.config.passphrase);
-    const remote = new Map();
-    for (const { id, etag } of await storage.references(signal)) {
-      const cached = this.remoteCache.get(id);
-      const item = cached && etag && cached.etag === etag ? { unchanged: true, etag } : await storage.get(`refs/${id}.bin`, signal, cached?.etag); if (!item) continue;
-      const ref = item.unchanged ? cached : { ...unseal(item.data, key), etag: item.etag };
-      if (ref.version !== 1 || ref.id !== id || !/^[a-f0-9]{64}$/.test(ref.object || '') || !/^[a-f0-9]{64}$/.test(ref.projectKey || '')) throw new Error('Unsupported remote task sync format.');
-      remote.set(id, { ...ref, etag: item.etag });
-      this.remoteCache.set(id, { ...ref, etag: item.etag });
+    const journal = new SyncJournal(storage, key, this.remoteCache), remote = await journal.read(signal);
+    for (const [id, ref] of remote) {
       let entry = this.entries.find(task => task.id === id);
       if (!entry) { entry = { id, local: false }; this.entries.push(entry); }
       Object.assign(entry, { title: ref.title, projectKey: ref.projectKey, remote: true, updatedAt: ref.updatedAt });
@@ -191,6 +189,7 @@ export class TaskSync {
       if (!entry) { entry = { ...task, id, enabled: true }; this.entries.push(entry); }
       entry.message = '';
       try {
+        if (ref?.conflict && !selected.resolution) { entry.status = 'conflict'; continue; }
         let history, project, revision;
         if (task) {
           project = projectStates.get(id) || await projectSnapshot(task.cwd, this.cache, false);
@@ -204,11 +203,11 @@ export class TaskSync {
           revision = digest(history.hash + project.fingerprint);
           Object.assign(entry, task, { local: true });
         }
-        if (ref && revision === ref.revision) { Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint }); entry.status = 'synced'; continue; }
+        if (ref && revision === ref.revision && !selected.resolution) { Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint }); entry.status = 'synced'; continue; }
         const localChanged = !!task && (selected.historyHash ? history.hash !== selected.historyHash || project.fingerprint !== selected.projectHash : revision !== selected.revision);
         const remoteChanged = !!ref && ref.revision !== selected.revision;
-        if (localChanged && remoteChanged) { entry.status = 'conflict'; entry.message = 'Both computers changed this task. Local and remote versions are preserved.'; continue; }
-        if (ref && (!task || remoteChanged)) {
+        if (localChanged && remoteChanged && !selected.resolution) { entry.status = 'conflict'; entry.message = 'Both computers changed this task. Local and remote versions are preserved.'; continue; }
+        if (ref && (!task || remoteChanged) && !selected.resolution) {
           const directory = this.config.projects[ref.projectKey];
           entry.projectKey = ref.projectKey;
           if (!directory) { entry.status = 'needsProject'; continue; }
@@ -236,16 +235,19 @@ export class TaskSync {
             this.config.selected[other.id].projectHash = pack.project.fingerprint;
           Object.assign(selected, { revision: ref.revision, historyHash: pack.history.hash, projectHash: pack.project.fingerprint });
           Object.assign(entry, { local: true, path: installed, cwd, status: 'synced', message: '' });
-        } else if (task && localChanged) {
+        } else if (task && (localChanged || selected.resolution)) {
           if (!history.records) history = this.tasks.read(task, project.root);
           if (!history) { entry.status = 'running'; continue; }
           project.bundle = fs.readFileSync(path.join(this.cache, project.head + '.bundle')).toString('base64');
           const pack = { version: 1, id, title: task.title, history, project };
           const bytes = seal(pack, key), object = digest(bytes);
-          await storage.put(`objects/${object}.bin`, bytes, null, signal);
-          const next = { version: 1, id, title: task.title, projectKey: entry.projectKey, revision, object, parent: selected.revision || null, updatedAt: Date.now(), device: this.config.device };
-          await storage.put(`refs/${id}.bin`, seal(next, key), ref?.etag, signal);
-          Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint });
+          await storage.putImmutable(`objects/${object}.bin`, bytes, signal);
+          const next = { id, title: task.title, projectKey: entry.projectKey, revision, object, updatedAt: Date.now(), device: this.config.device };
+          const latest = (await journal.read(signal)).get(id);
+          const heads = selected.resolution || ref?.heads || [];
+          if (JSON.stringify(latest?.heads || []) !== JSON.stringify(heads)) throw Object.assign(new Error('Another computer published a revision. Both versions are preserved.'), { code: 'SYNC_CONFLICT' });
+          await journal.publish(next, heads, signal);
+          Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint, resolution: undefined });
           entry.status = 'synced'; entry.remote = true; entry.message = '';
         } else entry.status = 'synced';
       } catch (error) { entry.status = error.code === 'SYNC_CONFLICT' ? 'conflict' : error.code === 'SYNC_BUSY' ? 'opened' : 'error'; entry.message = error.message; }
