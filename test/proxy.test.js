@@ -239,13 +239,14 @@ test('validation errors never switch', async t => {
     assert.equal(readState(root).active, 'a');
   }
 });
-test('transient HTTP and connection failures retry the same Codex model and history on the backup', async t => {
+test('transient HTTP and connection failures recover on the selected Codex provider without switching', async t => {
   for (const status of [500, 502, 503, 504, 529, 0]) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
-    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    const waits = [];
+    const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });
-      if (calls.length === 1) {
+      if (calls.length <= 5) {
         if (!status) throw new TypeError('fetch failed');
         return new Response('Service Unavailable', { status });
       }
@@ -254,10 +255,49 @@ test('transient HTTP and connection failures retry the same Codex model and hist
     const response = await send(proxy, token);
     assert.equal(response.status, 200, `status ${status}`);
     assert.match(await response.text(), /continued/);
-    assert.equal(response.headers.get('x-switch-alias'), 'backup');
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].body.model, payload.model);
-    assert.deepEqual(calls[1].body.input, payload.input);
+    assert.equal(response.headers.get('x-switch-alias'), 'aos');
+    assert.equal(calls.length, 6);
+    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
+    assert.ok(calls.every(call => call.url === calls[0].url));
+    assert.ok(calls.every(call => call.body.model === payload.model));
+    assert.deepEqual(calls[5].body.input, payload.input);
+    assert.equal(readState(root).active, 'aos');
+    await (await send(proxy, token)).text();
+    assert.equal(calls.at(-1).url, calls[0].url);
+  }
+});
+
+test('each Codex provider gets five transient retries before ordered failover and exhausted queues stay bounded', async t => {
+  const { root, token } = fixture(t), calls = [], waits = [];
+  for (const alias of ['aos', 'elias', 'last']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const data = { ...payload, reasoning: { effort: 'high' }, input: [...payload.input, { type: 'function_call_output', call_id: 'tool-1', output: 'already done' }] };
+  const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
+    calls.push({ alias: new URL(url).hostname.split('.')[0], payload: JSON.parse(options.body) });
+    return new Response('Service Unavailable', { status: 503 });
+  } }));
+  const response = await send(proxy, token, data);
+  assert.equal(response.status, 503); await response.text();
+  assert.deepEqual(calls.map(call => call.alias), ['aos', 'elias', 'last'].flatMap(alias => Array(6).fill(alias)));
+  assert.deepEqual(waits, Array(3).fill([1000, 2000, 4000, 8000, 16000]).flat());
+  for (const call of calls) {
+    assert.equal(call.payload.model, data.model); assert.deepEqual(call.payload.reasoning, data.reasoning); assert.deepEqual(call.payload.input, data.input);
+  }
+});
+
+test('explicit quota, authentication, model and policy errors do not wait for transient retries', async t => {
+  for (const [status, detail, expected] of [
+    [401, { code: 'invalid_api_key' }, 'backup'], [429, { code: 'insufficient_quota' }, 'backup'],
+    [503, { code: 'insufficient_quota' }, 'backup'], [403, { message: 'Forbidden' }, 'backup'],
+    [400, { code: 'model_not_found' }, 'backup'], [503, { code: 'content_policy_violation' }, null],
+  ]) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const proxy = await listen(t, createProxy({ root, wait: async () => assert.fail('must not back off for a nontransient rejection'), fetchImpl: async url => {
+      calls.push(new URL(url).hostname.split('.')[0]);
+      return calls.length === 1 ? Response.json({ error: detail }, { status }) : new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, expected ? 200 : status); assert.deepEqual(calls, expected ? ['aos', 'backup'] : ['aos']);
   }
 });
 
@@ -280,7 +320,7 @@ test('startup stream disconnections and explicit server-error events retry befor
   for (const failure of ['disconnect', 'server-error', 'status']) {
     const { root, token } = fixture(t); let calls = 0;
     for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
-    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    const proxy = await listen(t, createProxy({ root, wait: async () => {}, fetchImpl: async () => {
       if (++calls > 1) return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
       const created = 'data: {"type":"response.created"}\n\n';
       const stream = failure === 'disconnect' ? new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(created)); }, pull(controller) { controller.error(new TypeError('connection closed')); } })
@@ -288,7 +328,7 @@ test('startup stream disconnections and explicit server-error events retry befor
       return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
     } }));
     const response = await send(proxy, token); assert.equal(response.status, 200); assert.match(await response.text(), /continued/);
-    assert.equal(calls, 2); assert.equal(response.headers.get('x-switch-alias'), 'b');
+    assert.equal(calls, 2); assert.equal(response.headers.get('x-switch-alias'), 'a');
   }
 });
 
@@ -302,7 +342,7 @@ test('Codex discovers the real provider union and routes exact model IDs only to
   const metadata = { slug: 'common-model', display_name: 'Common model', base_instructions: 'Native coding instructions', context_window: 120000,
     supported_reasoning_levels: [{ effort: 'high', description: 'High' }], visibility: 'list' };
   let reject = false;
-  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+  const proxy = await listen(t, createProxy({ root, wait: async () => {}, fetchImpl: async (url, options) => {
     if (!options.method) {
       discoveries.push({ url, headers: options.headers });
       if (url.startsWith('https://chatgpt.com')) return Response.json({ models: [metadata, { ...metadata, slug: 'subscription-only' }] });
@@ -746,12 +786,13 @@ test('model failures exhaust the queue without substitution or replay, and a man
 
 const capacityEvent = 'data: {"type":"response.failed","response":{"error":{"code":"server_overloaded","message":"Selected model is at capacity. Please try a different model."}}}\n\n';
 const createdEvent = 'event: response.created\ndata: {"type":"response.created","response":{"id":"failed-response","output":[]}}\n\n';
-test('capacity before any output falls back transparently for HTTP and split startup SSE errors', async t => {
+test('capacity before any output retries five times before fallback for HTTP and split startup SSE errors', async t => {
   for (const style of ['http', 'sse']) {
     const { root, token } = fixture(t), calls = [];
     for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
     const history = [...payload.input, { type: 'function_call_output', call_id: 'completed-tool', output: 'already done' }];
-    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    const waits = [];
+    const proxy = await listen(t, createProxy({ root, wait: async ms => waits.push(ms), fetchImpl: async (url, options) => {
       calls.push(JSON.parse(options.body));
       if (url.startsWith('https://a.')) {
         if (style === 'http') return new Response('Selected model is at capacity. Please try a different model.', { status: 503 });
@@ -764,7 +805,8 @@ test('capacity before any output falls back transparently for HTTP and split sta
     const text = await response.text();
     assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'b');
     assert.match(text, /success/); assert.doesNotMatch(text, /failed-response|server_overloaded|response.failed/);
-    assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]); assert.deepEqual(calls[1].input, history);
+    assert.equal(calls.length, 7); assert.ok(calls.every(call => JSON.stringify(call) === JSON.stringify(calls[0]))); assert.deepEqual(calls[6].input, history);
+    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
     assert.equal(readState(root).active, 'b');
   }
 });
@@ -782,7 +824,7 @@ test('capacity retries are bounded, honor Retry-After, and retain the selected m
   assert.deepEqual(requests[0], requests[1]); assert.equal(requests[1].model, payload.model);
   recover = false; requests.length = 0; waits.length = 0;
   const exhausted = await send(proxy, token); assert.match(await exhausted.text(), /server_overloaded/);
-  assert.equal(requests.length, 3); assert.deepEqual(waits, [3000, 3000]);
+  assert.equal(requests.length, 6); assert.deepEqual(waits, [3000, 3000, 4000, 8000, 16000]);
 });
 
 test('capacity after output or tool events is forwarded without replaying accepted work', async t => {

@@ -11,7 +11,7 @@ import http from 'node:http';
 async function setup(t, fetchImpl, extra = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-claude-gateway-'));
   const { token } = init(root);
-  const server = http.createServer(createClaudeHandler({ root, fetchImpl, ...extra }));
+  const server = http.createServer(createClaudeHandler({ root, fetchImpl, wait: async () => {}, ...extra }));
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -181,8 +181,96 @@ test('unavailable models fail over on HTTP, startup SSE and connection failures 
     const selected = (await gateway.catalog()).data[0];
     const response = await gateway.send(selected.id);
     assert.equal(response.status, 200, style); await response.text();
-    assert.deepEqual(calls.map(call => call.model), ['deepseek-v4-flash', 'deepseek-v4-flash'], style);
+    assert.deepEqual(calls.map(call => call.model), Array(['network', 'server'].includes(style) ? 7 : 2).fill('deepseek-v4-flash'), style);
     assert.equal(readState(gateway.root).active, 'b');
+  }
+});
+
+test('Claude CLI and Desktop recover transient HTTP, connection and startup SSE failures on the selected provider', async t => {
+  for (const prefix of ['/claude', '/claude-desktop']) for (const style of [500, 502, 503, 504, 529, 'network', 'sse', 'disconnect']) {
+    const calls = [], waits = [];
+    const gateway = await setup(t, async (url, options) => {
+      if (!options.body) return Response.json({ data: [{ id: 'deepseek-v4-flash' }] });
+      calls.push({ alias: new URL(url).hostname.split('.')[0], payload: JSON.parse(options.body) });
+      if (calls.length > 5) return message(calls.at(-1).payload.model);
+      if (style === 'network') throw new TypeError('fetch failed');
+      const preamble = 'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n';
+      if (style === 'disconnect') return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(preamble)); }, pull(controller) { controller.error(new TypeError('connection closed')); } }), { headers: { 'content-type': 'text/event-stream' } });
+      if (style === 'sse') return new Response(preamble + 'event: error\ndata: {"type":"error","error":{"type":"overloaded_error"}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      return new Response('Service Unavailable', { status: style });
+    }, { wait: async ms => { waits.push(ms); assert.equal(readState(gateway.root).active, 'aos'); } });
+    for (const alias of ['aos', 'elias']) addProvider(alias, provider(alias), gateway.root);
+    const response = await gateway.send('deepseek-v4-flash', prefix);
+    assert.equal(response.status, 200, `${prefix} ${style}`); await response.text();
+    assert.equal(response.headers.get('x-switch-alias'), 'aos');
+    assert.deepEqual(calls.map(call => call.alias), Array(6).fill('aos'));
+    assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
+    for (const call of calls) {
+      assert.equal(call.payload.model, 'deepseek-v4-flash'); assert.deepEqual(call.payload.messages, gateway.messages); assert.deepEqual(call.payload.tools, gateway.tools);
+    }
+    assert.equal(readState(gateway.root).active, 'aos');
+    await (await gateway.send('deepseek-v4-flash', prefix)).text();
+    assert.equal(calls.at(-1).alias, 'aos');
+  }
+});
+
+test('Claude gives every backup its own five-retry budget and retains bounded, redacted failure details', async t => {
+  const calls = [], waits = [];
+  const gateway = await setup(t, async (url, options) => {
+    if (!options.body) return Response.json({ data: [{ id: 'deepseek-v4-flash' }] });
+    const alias = new URL(url).hostname.split('.')[0]; calls.push(alias);
+    return Response.json({ error: { message: `Service unavailable ${alias}-secret` } }, { status: 503, headers: { 'retry-after': '3' } });
+  }, { wait: async ms => waits.push(ms) });
+  for (const alias of ['aos', 'elias']) addProvider(alias, provider(alias), gateway.root);
+  const response = await gateway.send('deepseek-v4-flash');
+  assert.equal(response.status, 503); const result = await response.json();
+  assert.deepEqual(calls, ['aos', 'elias'].flatMap(alias => Array(6).fill(alias)));
+  assert.deepEqual(waits, Array(2).fill([3000, 3000, 4000, 8000, 16000]).flat());
+  assert.deepEqual(result.error.attempts.map(attempt => attempt.provider), ['aos', 'elias']);
+  assert.doesNotMatch(JSON.stringify(result), /aos-secret|elias-secret/);
+  assert.equal(readState(gateway.root).active, 'aos', 'failed backups cannot become selected');
+});
+
+test('Claude honors manual changes before and during transient backoff, and cancels disconnected clients', async t => {
+  for (const duringWait of [false, true]) {
+    const calls = [], waits = [];
+    const gateway = await setup(t, async (url, options) => {
+      if (!options.body) return Response.json({ data: [{ id: 'deepseek-v4-flash' }] });
+      const alias = new URL(url).hostname.split('.')[0]; calls.push(alias);
+      if (alias === 'aos') { if (!duringWait) activate('elias', gateway.root); return new Response('', { status: 503 }); }
+      return message('deepseek-v4-flash');
+    }, { wait: async ms => { waits.push(ms); activate('elias', gateway.root); } });
+    for (const alias of ['aos', 'second', 'elias']) addProvider(alias, provider(alias), gateway.root);
+    const response = await gateway.send('deepseek-v4-flash'); assert.equal(response.status, 200); await response.text();
+    assert.deepEqual(calls, ['aos', 'elias']); assert.deepEqual(waits, duringWait ? [1000] : []);
+    assert.equal(readState(gateway.root).reason, 'manual');
+  }
+  let started, cancelled; const waiting = new Promise(resolve => { started = resolve; }), stopped = new Promise(resolve => { cancelled = resolve; }); let calls = 0;
+  const gateway = await setup(t, async () => { calls++; return new Response('', { status: 503 }); }, {
+    wait: async (_ms, signal) => { started(); await once(signal, 'abort'); cancelled(); },
+  });
+  addProvider('aos', provider('aos'), gateway.root);
+  const abort = new AbortController();
+  const pending = fetch(gateway.base + '/claude/v1/messages', { method: 'POST', headers: gateway.headers, body: JSON.stringify({ model: 'deepseek-v4-flash', messages: gateway.messages }), signal: abort.signal });
+  const rejected = assert.rejects(pending, /abort/i); await waiting; abort.abort(); await rejected; await stopped;
+  assert.equal(calls, 1);
+});
+
+test('Claude never shortens long Retry-After values or retries explicit quota, authentication and policy rejections', async t => {
+  for (const [status, detail, retryAfter, succeeds] of [
+    [503, { type: 'server_error' }, '120', true], [503, { code: 'insufficient_quota' }, null, true],
+    [401, { type: 'authentication_error' }, null, true], [429, { type: 'rate_limit_error' }, null, true],
+    [503, { message: 'content_policy_violation' }, null, false],
+  ]) {
+    const calls = [];
+    const gateway = await setup(t, async (url, options) => {
+      if (!options.body) return Response.json({ data: [{ id: 'deepseek-v4-flash' }] });
+      const alias = new URL(url).hostname.split('.')[0]; calls.push(alias);
+      return alias === 'aos' ? Response.json({ error: detail }, { status, headers: retryAfter ? { 'retry-after': retryAfter } : {} }) : message('deepseek-v4-flash');
+    }, { wait: async () => assert.fail('must not delay or shorten Retry-After') });
+    for (const alias of ['aos', 'elias']) addProvider(alias, provider(alias), gateway.root);
+    const response = await gateway.send('deepseek-v4-flash'); await response.text();
+    assert.equal(response.status, succeeds ? 200 : status); assert.deepEqual(calls, succeeds ? ['aos', 'elias'] : ['aos']);
   }
 });
 

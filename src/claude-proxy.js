@@ -1,9 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { init, readState, providerOrder, activateFallback } from './store.js';
 import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
-import { rejectionText, rejectionStatus, recoverable, atCapacity, modelUnavailable } from './failover.js';
+import { rejectionText, rejectionStatus, recoverable, atCapacity, capacityDelay, modelUnavailable } from './failover.js';
 import { inspectStartup } from './sse.js';
 import { claudeModelFamily, mappedClaudeModel } from './claude-models.js';
 import { claudeDesktopModels, claudeDesktopRoutes, mappedDesktopModel } from './claude-desktop.js';
@@ -18,7 +19,7 @@ function upstreamMessage(message, secrets) {
   for (const secret of secrets.filter(Boolean)) text = text.replaceAll(secret, '[redacted]');
   return text.replace(/Bearer\s+[^\s"',]+|\bsk-[\w-]+/gi, '[redacted]').replace(/[\x00-\x1f]/g, ' ').slice(0, 500);
 }
-export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = () => Date.now() }) {
+export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = () => Date.now(), wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   init(root);
   const cooldown = new Map(), catalogs = new Map(); let manual;
   async function providerCatalog(alias, provider, signal) {
@@ -78,7 +79,7 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
       const exact = catalog && claudeDesktopRoutes({}, catalog.models).find(route => route.id === requested || route.model === requested);
       if (synthetic && !exact) return fail(400, 'The selected easy-switch model is no longer in any configured catalog. Refresh the model list and select an available model.', { code: 'model_not_found' });
       const explicitModel = synthetic ? exact.model : (requested && requested !== 'default' && !/^claude-/i.test(requested) && !claudeModelFamily(requested) ? requested : null);
-      const attempted = new Set(), failures = []; let alias = state.active, routedModel = explicitModel;
+      const attempted = new Set(), failures = [], retries = new Map(); let alias = state.active, routedModel = explicitModel;
       const modelFor = name => {
         const provider = state.providers[name];
         const model = routedModel || (desktop ? mappedDesktopModel(provider, requested, catalog.providers.get(name)?.models || [], req.headers) : mappedClaudeModel(provider, requested, req.headers));
@@ -121,19 +122,40 @@ export function createClaudeHandler({ root, fetchImpl, reauth = () => {}, now = 
             }
           }
         }
-        if (!upstream.ok) message = await rejectionText(upstream);
-        else if (upstream.headers.get('content-type')?.startsWith('text/event-stream')) {
-          startup = await inspectStartup(upstream.body, ['ping', 'message_start']); stream = startup.stream;
+        try {
+          if (!upstream.ok) message = await rejectionText(upstream);
+          else if (upstream.headers.get('content-type')?.startsWith('text/event-stream')) {
+            startup = await inspectStartup(upstream.body, ['ping', 'message_start']); stream = startup.stream;
+          }
+        } catch (error) {
+          if (abort.signal.aborted) throw error;
+          upstream = new Response('', { status: 502 }); stream = null;
         }
         const capacity = startup?.capacity || atCapacity(message);
         const startupError = startup?.error;
         const streamStatus = rejectionStatus(startupError) || (startupError ? (modelUnavailable(400, JSON.stringify(startupError)) || startupError.type === 'invalid_request_error' ? 400 : 502) : 0);
         if (!upstream.ok || capacity || streamStatus) {
           const status = capacity ? 503 : streamStatus || upstream.status;
-          const detail = upstreamMessage(message || JSON.stringify({ error: startup?.error }), [provider.apiKey, token, state.token]);
-          failures.push({ provider: alias, model, status, message: detail, ...(unsupported ? { skipped: true } : {}) });
           const failureText = message || JSON.stringify(startup?.error);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureText);
+          if (temporary && ![401, 402, 403, 429].includes(rejectionStatus(failureText))) {
+            const latest = readState(root);
+            if (latest.generation !== state.generation && latest.active !== alias && !attempted.has(latest.active) && latest.providers[latest.active]) {
+              await stream?.cancel(); state = latest; alias = latest.active; continue;
+            }
+            const count = retries.get(alias) || 0;
+            const retryAfter = capacityDelay(upstream.headers.get('retry-after'), count);
+            if (count < 5 && retryAfter <= 30000 && !abort.signal.aborted) {
+              await stream?.cancel();
+              await wait(retryAfter, abort.signal); abort.signal.throwIfAborted();
+              retries.set(alias, count + 1);
+              const current = readState(root);
+              if (current.generation !== state.generation && (current.active === alias || !attempted.has(current.active)) && current.providers[current.active]) { state = current; alias = current.active; }
+              continue;
+            }
+          }
+          const detail = upstreamMessage(message || JSON.stringify({ error: startup?.error }), [provider.apiKey, token, state.token]);
+          failures.push({ provider: alias, model, status, message: detail, ...(unsupported ? { skipped: true } : {}) });
           if (recoverable(status, failureText) || modelUnavailable(status, failureText) || capacity || temporary) {
             cooldown.set(JSON.stringify([alias, [401, 402].includes(status) ? null : model]), now() + 60000);
             while (cooldown.size > 256) cooldown.delete(cooldown.keys().next().value);

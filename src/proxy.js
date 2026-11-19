@@ -86,7 +86,7 @@ async function sseBody(response) {
 export function createProxy({ root, fetchImpl, reauth = createReauth(), now = () => performance.now(), claudeReauth, binary, imageHandler, clientEnabled = () => true, wait = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const outbound = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= outbound.fetch;
-  const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth });
+  const claude = createClaudeHandler({ root: path.join(root, 'claude'), fetchImpl, reauth: claudeReauth, wait });
   const catalog = createCodexCatalog({ root, fetchImpl, binary });
   const cooldown = new Map(), imageCooldown = new Map(), modelCooldown = new Map();
   let manualGeneration;
@@ -171,9 +171,8 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
         }
         alias = first;
       }
-      const attempted = new Set();
-      const maxAttempts = Object.entries(state.providers).filter(([name, provider]) => accepts(provider, name)).length + 2;
-      let capacityRetries = 0;
+      const attempted = new Set(), retries = new Map();
+      const maxAttempts = (Object.entries(state.providers).filter(([name, provider]) => accepts(provider, name)).length + 2) * (image ? 1 : 6);
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         attempted.add(alias);
         const provider = state.providers[alias];
@@ -258,6 +257,23 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
           const status = capacity ? 503 : !upstream.ok ? quotaStatus || upstream.status : streamStatus || (imageDenied ? 403 : 400);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
           if (!imageSubmitted && (capacity || temporary || recoverable(status, failureMessage) || imageDenied || modelDenied || contextDenied)) {
+            // Retry transient text failures before cooling down or switching providers.
+            if (!image && temporary && ![401, 402, 403, 429].includes(rejectionStatus(failureMessage))) {
+              const latest = readState(root);
+              if (latest.generation !== state.generation && latest.active !== alias && !attempted.has(latest.active) && accepts(latest.providers[latest.active], latest.active)) {
+                await stream?.cancel(); state = latest; alias = latest.active; continue;
+              }
+              const count = retries.get(alias) || 0;
+              const retryAfter = capacityDelay(upstream.headers.get('retry-after'), count);
+              if (count < 5 && retryAfter <= 30000 && attempt + 1 < maxAttempts && !abort.signal.aborted) {
+                await stream?.cancel();
+                await wait(retryAfter, abort.signal); abort.signal.throwIfAborted();
+                retries.set(alias, count + 1);
+                const current = readState(root);
+                if (current.generation !== state.generation && (current.active === alias || !attempted.has(current.active)) && accepts(current.providers[current.active], current.active)) { state = current; alias = current.active; }
+                continue;
+              }
+            }
             if (contextDenied) modelRouting = true;
             if (modelDenied) {
               modelRouting = true; rejectedModel ??= outgoing.model;
@@ -291,14 +307,6 @@ export function createProxy({ root, fetchImpl, reauth = createReauth(), now = ()
               await stream?.cancel();
               state = latest;
               alias = latest.active; continue;
-            }
-            const retryAfter = capacityDelay(upstream.headers.get('retry-after'), capacityRetries);
-            if (capacity && capacityRetries < 2 && retryAfter <= 30000 && attempt + 1 < maxAttempts && !abort.signal.aborted) {
-              await stream?.cancel();
-              await wait(retryAfter, abort.signal); abort.signal.throwIfAborted();
-              const current = readState(root);
-              if (current.generation !== state.generation && accepts(current.providers[current.active], current.active)) { state = current; alias = current.active; }
-              capacityRetries++; continue;
             }
           }
           // Preserve the native terminal SSE error after the bounded retries.

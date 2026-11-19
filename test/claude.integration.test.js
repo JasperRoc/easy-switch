@@ -53,10 +53,11 @@ test('official Claude Code reads user routing settings and continues the same co
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-real-claude-')), directory = path.join(root, 'config');
   const claude = path.join(root, 'claude'); init(root); const state = init(claude);
   for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.test`, apiKey: `${alias}-secret` }, claude);
-  const calls = [];
+  const calls = []; let transient = 0;
   const server = createProxy({ root, fetchImpl: async (url, options) => {
     if (url.endsWith('/models')) return Response.json({ data: [] });
     const payload = JSON.parse(options.body); calls.push({ url, payload, headers: options.headers });
+    if (transient > 0) { transient--; return new Response('Service Unavailable', { status: 503 }); }
     // A terminal assistant response, without requesting any tools or external data.
     return new Response([
       { type: 'message_start', message: { id: 'msg_fixture', type: 'message', role: 'assistant', model: payload.model, content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
@@ -66,7 +67,7 @@ test('official Claude Code reads user routing settings and continues the same co
       { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
       { type: 'message_stop' },
     ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
-  } });
+  }, wait: async () => {} });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   activateClaude(root, directory, server.address().port, state.token);
   const env = { ...process.env, CLAUDE_CONFIG_DIR: directory, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
@@ -88,6 +89,12 @@ test('official Claude Code reads user routing settings and continues the same co
   const last = calls.findLast(call => call.url.startsWith('https://second.test/v1/messages')); assert.ok(last);
   assert.equal(last.headers['x-api-key'], 'second-secret'); assert.match(JSON.stringify(last.payload.messages), /Reply locally/);
   assert.match(JSON.stringify(last.payload.messages), /Continue this same conversation/); assert.match(output, /LOCAL_OK/);
+  const before = calls.length; transient = 5;
+  send('Continue after the temporary outage.'); await waitResult(3);
+  const retried = calls.slice(before);
+  assert.equal(retried.length, 6);
+  assert.ok(retried.every(call => call.url.startsWith('https://second.test/v1/messages')));
+  assert.ok(retried.every(call => JSON.stringify(call.payload) === JSON.stringify(retried[0].payload)));
 });
 
 test('official Claude Code executes an Agent tool through separate main and subagent API mappings', { skip: !binary, timeout: 45000 }, async t => {

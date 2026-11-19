@@ -27,7 +27,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const toolReady = new Promise(resolve => { signalTool = resolve; });
   let pauseNext = false, signalPaused;
   const paused = new Promise(resolve => { signalPaused = resolve; });
-  let imageTurn = false, imageIssued = false, imageCalls = 0, directImage = false, webCalls = 0, capacityNext = false, imageSequence = 0, webStatus = 200;
+  let imageTurn = false, imageIssued = false, imageCalls = 0, directImage = false, webCalls = 0, capacityNext = 0, imageSequence = 0, webStatus = 200;
   async function serve(server) {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -57,7 +57,7 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
     const event = data => res.write(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
     event({ type: 'response.created', response: { id, status: 'in_progress', output: [] } });
     if (capacityNext) {
-      capacityNext = false;
+      capacityNext--;
       event({ type: 'response.failed', response: { id, error: { code: 'server_overloaded', message: 'Selected model is at capacity. Please try a different model.' } } });
       return res.end();
     }
@@ -234,10 +234,16 @@ for (const nativeAuth of [false, true, 'bridge', 'free', 'free-bridge', 'web']) 
   const output = requests.at(-1).body.input.find(item => item.type === 'function_call_output' && item.call_id === 'call_continuation');
   assert.match(output.output, /switch-tool-ok/);
   assert.equal(child.exitCode, null);
-  capacityNext = true;
+  capacityNext = 5;
+  const capacityProvider = readState(root).active, beforeCapacity = requests.length;
   const capacityCompleted = new Promise(resolve => { finishTurns.set(thread.id, resolve); });
   await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Continue through a capacity rejection', text_elements: [] }] });
   assert.equal((await capacityCompleted).status, 'completed', 'the same turn continues without another turn/start');
+  assert.equal(readState(root).active, capacityProvider, 'five temporary failures must not change the selected provider');
+  assert.equal(requests.length - beforeCapacity, 6);
+  const capacityRequests = requests.slice(beforeCapacity);
+  assert.ok(capacityRequests.every(request => request.label === capacityRequests[0].label));
+  assert.ok(capacityRequests.every(request => JSON.stringify(request.body) === JSON.stringify(capacityRequests[0].body)));
   if (nativeAuth) {
     const accountHome = path.join(root, 'accounts', 'image-subscription');
     const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
