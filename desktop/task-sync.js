@@ -44,8 +44,12 @@ export function taskSyncUI({ call, language }) {
       const title = document.createElement('strong'); title.textContent = task.title;
       const detail = document.createElement('small'); detail.textContent = task.cwd || t('syncOtherComputer'); detail.title = detail.textContent;
       const status = document.createElement('span'), phase = !task.enabled ? 'off' : task.status || 'pending'; status.className = 'sync-task-status'; status.dataset.status = phase;
-      status.textContent = t('syncTask_' + phase); if (task.message && task.enabled) status.title = task.message;
+      status.textContent = t('syncTask_' + phase);
       info.append(title, detail); row.append(check, info, status);
+      if (task.message && task.enabled) {
+        const message = document.createElement('small'); message.className = 'sync-task-message';
+        message.textContent = localizeMessage(task.message, language()); status.title = message.textContent; info.append(message);
+      }
       if (task.enabled && ['needsProject', 'conflict'].includes(task.status)) {
         const choices = document.createElement('div'); choices.className = 'sync-task-actions';
         for (const choice of task.status === 'needsProject' ? ['project'] : ['local', 'remote']) {

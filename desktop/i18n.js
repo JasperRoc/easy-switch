@@ -15,7 +15,7 @@ export const messages = {
     syncWorking: 'Synchronizing…', syncReady: 'Automatic sync is configured', syncSetup: 'Configure storage to enable task sync', syncSelectTask: 'Synchronize {title}',
     syncChooseProject: 'Choose project folder', syncTask_synced: 'Synced', syncTask_pending: 'Waiting to sync', syncTask_off: 'Not selected', syncTask_running: 'Syncs after this turn ends',
     syncTask_needsProject: 'Choose the local project folder once', syncTask_conflict: 'Conflicting edits preserved', syncTask_error: 'Sync failed', syncTask_opened: 'Waiting for the open Codex task to be released',
-    syncLimits: 'Completed turns and Git changes sync automatically. Open Codex tasks wait until released; running processes stay on their computer.',
+    syncLimits: 'Completed turns and project files sync automatically, with Git history when available. Open Codex tasks wait until released; running processes stay on their computer.',
     uninstall: 'Uninstall easy-switch', uninstallDetail: 'Restore client connections and remove this app, saved providers, login copies, preferences, downloads and caches. Original Codex/Claude sign-ins and conversations are kept. This cannot be undone.',
     modelCatalog: 'Model catalog', modelID: 'Model ID', modelDisplayName: 'Display name',
     fetchModels: 'Fetch available models', resetModels: 'Use automatic catalog', addModel: 'Add model', cancel: 'Cancel',
@@ -109,7 +109,7 @@ export const messages = {
     syncWorking: '正在同步…', syncReady: '已配置自动同步', syncSetup: '配置存储后启用任务同步', syncSelectTask: '同步 {title}',
     syncChooseProject: '选择项目位置', syncTask_synced: '已同步', syncTask_pending: '等待同步', syncTask_off: '未选择', syncTask_running: '本轮任务结束后同步',
     syncTask_needsProject: '首次使用，请选择本地项目位置', syncTask_conflict: '两端修改已保留，请处理冲突', syncTask_error: '同步失败', syncTask_opened: '等待 Codex 释放已打开的会话',
-    syncLimits: '自动同步已完成的会话轮次和 Git 改动。目标会话已打开时等待释放，运行中的进程保留在原电脑。',
+    syncLimits: '自动同步完整会话轮次和项目文件，Git 项目同时保留提交历史。目标会话已打开时等待释放，运行中的进程保留在原电脑。',
     uninstall: '彻底卸载 easy-switch', uninstallDetail: '恢复客户端连接，并删除软件、已保存的服务商、独立登录副本、偏好设置、下载和缓存。保留 Codex/Claude 原有登录及会话。此操作不可撤销。',
     modelCatalog: '模型目录', modelID: '模型 ID', modelDisplayName: '显示名称',
     fetchModels: '获取可用模型', resetModels: '恢复自动目录', addModel: '添加模型', cancel: '取消',
@@ -258,6 +258,14 @@ const notices = [
   ['坚果云返回的目录项已达到 WebDAV 列表上限。同步已暂停，保留全部修订记录。', 'Nutstore reached its WebDAV directory listing limit. Synchronization is paused to preserve all revisions.'],
   ['任务修订记录尚不完整，请等待存储完成同步后重试。', 'The task revision journal is incomplete. Retry when storage has finished syncing.'],
   ['同步文件完整性校验失败，未应用该版本。', 'The synchronized file failed its integrity check.'],
+  ['Git 无法准备此项目，请检查 Git 安装、仓库状态及文件访问权限。', 'Git could not prepare this project. Check Git installation, repository state and file access.'],
+  ['本地项目有与同步版本冲突的改动，两份版本均已保留。', 'Local project changes conflict with the incoming task. Both versions are preserved.'],
+  ['单个项目文件超过 32 MiB 同步上限。', 'A project file exceeds the 32 MiB sync limit.'],
+  ['项目文件或未提交改动超过同步大小上限。', 'Uncommitted project data exceeds the sync limit.'],
+  ['会话历史超过 128 MiB 同步上限。', 'This task history exceeds the 128 MiB sync limit.'],
+  ['Git 历史超过 128 MiB 同步上限。', 'This Git history exceeds the 128 MiB sync limit.'],
+  ['普通文件夹快照未通过完整性校验，未应用该版本。', 'The incoming folder snapshot failed its integrity check.'],
+  ['请选择空目录或原有的非 Git 项目目录。', 'Choose an empty folder or the original non-Git project folder.'],
 ];
 export function localizeMessage(value, language) {
   const text = String(value || '');

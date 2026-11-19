@@ -265,6 +265,7 @@ button.sync-task-toggle:hover:not(:disabled) {transform:none;}
 .sync-task-info strong,.sync-task-info small {display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sync-task-info strong {font-size:12px;font-weight:550;}
 .sync-task-info small {color:var(--muted);font-size:10px;margin-top:5px;}
+.sync-task-info .sync-task-message {color:#c27340;white-space:normal;overflow-wrap:anywhere;line-height:1.5;}
 .sync-task-status {font-size:10px;color:var(--muted);white-space:nowrap;}
 .sync-task-status[data-status="synced"] {color:color-mix(in srgb,var(--accent) 80%,var(--ink));}
 .sync-task-status[data-status="error"],.sync-task-status[data-status="conflict"] {color:#c27340;}

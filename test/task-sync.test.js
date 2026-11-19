@@ -210,6 +210,44 @@ test('Git sync preserves commit, staged and unstaged binary changes, untracked f
   await assert.rejects(restoreProject(first, target, cache, second.fingerprint), /conflict/);
   assert.equal(fs.readFileSync(path.join(target, 'file.txt'), 'utf8'), 'local divergent change\n');
 });
+test('ordinary folders sync files without creating Git metadata and preserve ignored local files', async t => {
+  const root = fixture(t), source = path.join(root, 'plain'), target = path.join(root, 'restored'), cache = path.join(root, 'cache');
+  fs.mkdirSync(path.join(source, 'nested'), { recursive: true }); fs.mkdirSync(path.join(source, 'node_modules'));
+  fs.writeFileSync(path.join(source, '.gitignore'), 'ignored\n'); fs.writeFileSync(path.join(source, 'ignored'), 'private');
+  fs.writeFileSync(path.join(source, '.env'), 'PRIVATE=source'); fs.writeFileSync(path.join(source, 'node_modules', 'dependency'), 'ignored');
+  fs.writeFileSync(path.join(source, 'nested', 'file.bin'), Buffer.from([0, 255, 1]));
+  const first = await projectSnapshot(source, cache);
+  assert.equal(first.kind, 'folder'); assert.equal(first.bundle, undefined); assert.equal(fs.existsSync(path.join(source, '.git')), false);
+  assert.deepEqual(first.files.map(file => file.name), ['.gitignore', 'nested/file.bin']);
+  await restoreProject(first, target, cache);
+  assert.equal(fs.existsSync(path.join(target, '.git')), false);
+  assert.deepEqual(fs.readFileSync(path.join(target, 'nested', 'file.bin')), Buffer.from([0, 255, 1]));
+  assert.equal((await projectSnapshot(target, cache)).fingerprint, first.fingerprint);
+  fs.writeFileSync(path.join(target, '.env'), 'PRIVATE=destination'); fs.writeFileSync(path.join(target, 'ignored'), 'local ignored');
+  fs.writeFileSync(path.join(source, 'nested', 'file.bin'), 'next'); fs.writeFileSync(path.join(source, 'new.txt'), 'new');
+  const second = await projectSnapshot(source, cache); await restoreProject(second, target, cache, first.fingerprint);
+  assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), 'PRIVATE=destination'); assert.equal(fs.readFileSync(path.join(target, 'ignored'), 'utf8'), 'local ignored');
+  assert.equal((await projectSnapshot(target, cache)).fingerprint, second.fingerprint);
+  fs.writeFileSync(path.join(target, 'new.txt'), 'local change');
+  await assert.rejects(restoreProject(first, target, cache, second.fingerprint), /conflict/);
+  assert.equal(fs.readFileSync(path.join(target, 'new.txt'), 'utf8'), 'local change');
+  await assert.rejects(restoreProject({ ...first, files: [{ name: '../escape', mode: 0o600, data: '' }] }, path.join(root, 'malicious'), cache), /Unsafe project/);
+});
+test('empty folders and Git projects without a first commit can synchronize', async t => {
+  const root = fixture(t), source = path.join(root, 'empty'), cache = path.join(root, 'cache'); fs.mkdirSync(source);
+  const empty = await projectSnapshot(source, cache); assert.equal(empty.kind, 'folder'); assert.deepEqual(empty.files, []);
+  await restoreProject(empty, path.join(root, 'empty-restored'), cache);
+  git(source, 'init', '-q'); fs.writeFileSync(path.join(source, 'uncommitted.txt'), 'not committed'); git(source, 'add', '.');
+  const before = git(source, 'status', '--porcelain');
+  const snapshot = await projectSnapshot(source, cache); assert.equal(snapshot.kind, 'folder'); assert.equal(snapshot.files[0].name, 'uncommitted.txt');
+  await restoreProject(snapshot, path.join(root, 'unborn-restored'), cache);
+  assert.equal(git(source, 'status', '--porcelain'), before, 'the original index is unchanged');
+  assert.equal(fs.existsSync(path.join(root, 'unborn-restored', '.git')), false);
+  git(source, 'config', 'user.name', 'Fixture'); git(source, 'config', 'user.email', 'fixture@example.test'); git(source, 'commit', '-qm', 'First commit');
+  const committed = await projectSnapshot(source, cache);
+  await restoreProject(committed, path.join(root, 'unborn-restored'), cache, snapshot.fingerprint);
+  assert.equal(git(path.join(root, 'unborn-restored'), 'rev-parse', 'HEAD'), committed.head);
+});
 test('portable Codex checkpoints survive machines with different local proxy tokens', () => {
   const tasks = new CodexTasks({ token: () => 'local-a' });
   const item = checkpoint('Preserve this compressed task', 'local-a');
@@ -257,8 +295,9 @@ test('invalid incoming paths are rejected before changing the destination projec
     assert.equal(git(target, 'rev-parse', 'HEAD'), current.head);
   }
 });
-for (const kind of ['server', 'webdav']) test(`two computers exchange selected tasks, Git changes and conflict choices over ${kind}`, { skip: kind === 'server' && !sqlite }, async t => {
-  const root = fixture(t), { config } = kind === 'server' ? await storage(t, root) : await unconditionalWebDAV(t), source = repository(path.join(root, 'project-a'));
+for (const kind of ['server', 'webdav', 'folder']) test(`two computers exchange selected tasks, project changes and conflict choices over ${kind}`, { skip: kind === 'server' && !sqlite }, async t => {
+  const root = fixture(t), { config } = kind === 'server' ? await storage(t, root) : await unconditionalWebDAV(t), source = path.join(root, 'project-a');
+  if (kind === 'folder') { fs.mkdirSync(source); fs.writeFileSync(path.join(source, 'file.txt'), 'base\n'); } else repository(source);
   const local = new Map([['task-1', { id: 'task-1', title: 'Selected task', cwd: source, path: 'fixture' }], ['task-2', { id: 'task-2', title: 'Private task', cwd: source, path: 'fixture' }]]);
   let history = { records: [{ text: 'first message' }], hash: 'history-a', timestamp: new Date().toISOString() };
   const remoteLocal = new Map(); let imported;

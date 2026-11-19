@@ -13,12 +13,14 @@ import { init } from '../src/store.js';
 
 const binary = process.env.SWITCH_TEST_CODEX;
 const sqlite = await import('node:sqlite').then(() => true, () => false);
-test('real Codex selected task and Git changes move between two homes and resume with the same history and task ID', { skip: !binary || !sqlite, timeout: 60000 }, async t => {
+for (const kind of ['git', 'folder']) test(`real Codex selected task and ${kind} files move between two homes and resume with the same history and task ID`, { skip: !binary || !sqlite, timeout: 60000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-switch-real-sync-'));
   const project = path.join(dir, 'project-a'); fs.mkdirSync(project);
   const git = (...args) => execFileSync('git', ['-C', project, ...args], { encoding: 'utf8' }).trim();
-  git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.test');
-  fs.writeFileSync(path.join(project, 'file.txt'), 'committed\n'); git('add', '.'); git('commit', '-qm', 'Fixture');
+  if (kind === 'git') {
+    git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.test');
+    fs.writeFileSync(path.join(project, 'file.txt'), 'committed\n'); git('add', '.'); git('commit', '-qm', 'Fixture');
+  }
   fs.writeFileSync(path.join(project, 'file.txt'), 'uncommitted on A\n');
   const requests = [];
   const upstream = http.createServer(async (req, res) => {

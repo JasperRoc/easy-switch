@@ -238,7 +238,7 @@ export class TaskSync {
         } else if (task && (localChanged || selected.resolution)) {
           if (!history.records) history = this.tasks.read(task, project.root);
           if (!history) { entry.status = 'running'; continue; }
-          project.bundle = fs.readFileSync(path.join(this.cache, project.head + '.bundle')).toString('base64');
+          if (project.kind !== 'folder') project.bundle = fs.readFileSync(path.join(this.cache, project.head + '.bundle')).toString('base64');
           const pack = { version: 1, id, title: task.title, history, project };
           const bytes = seal(pack, key), object = digest(bytes);
           await storage.putImmutable(`objects/${object}.bin`, bytes, signal);

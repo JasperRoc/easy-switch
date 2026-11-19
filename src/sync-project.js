@@ -8,8 +8,8 @@ import { digest, maxPackage } from './sync-storage.js';
 const execute = promisify(execFile);
 function stat(file) { try { return fs.lstatSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; } }
 async function git(directory, args, options = {}) {
-  try { return (await execute('git', ['-c', 'core.hooksPath=' + os.devNull, '-c', 'core.autocrlf=false', '-C', directory, ...args], { encoding: 'utf8', maxBuffer: maxPackage, timeout: 60000, windowsHide: true, ...options })).stdout; }
-  catch { throw new Error('Git could not prepare this project. Check Git installation, repository state and file access.'); }
+  try { return (await execute('git', ['-c', 'core.hooksPath=' + os.devNull, '-c', 'core.autocrlf=false', '-C', directory, ...args], { encoding: 'utf8', maxBuffer: maxPackage, timeout: 60000, windowsHide: true, env: { ...process.env, LC_ALL: 'C' }, ...options })).stdout; }
+  catch (cause) { throw new Error('Git could not prepare this project. Check Git installation, repository state and file access.', { cause }); }
 }
 async function applyState(project, directory, temp) {
   for (const [name, patch, args] of [['staged', project.staged, ['--index']], ['unstaged', project.unstaged, []]]) {
@@ -42,15 +42,8 @@ export function inside(directory, relative) {
   }
   return target;
 }
-export async function projectSnapshot(cwd, cache, withBundle = true) {
-  cwd = fs.realpathSync(cwd);
-  const root = (await git(cwd, ['rev-parse', '--show-toplevel'])).trim();
-  const head = (await git(root, ['rev-parse', 'HEAD'])).trim();
-  if (/^160000 /m.test(await git(root, ['ls-files', '--stage']))) throw new Error('Task sync currently requires a Git repository without submodules.');
-  const staged = await git(root, ['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', 'HEAD']);
-  const unstaged = await git(root, ['diff', '--binary', '--full-index', '--no-ext-diff']);
-  const names = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
-  const files = []; let size = Buffer.byteLength(staged) + Buffer.byteLength(unstaged);
+function snapshotFiles(root, names, size = 0) {
+  const files = [];
   if (size > maxPackage / 2) throw new Error('Uncommitted project data exceeds the sync limit.');
   for (const name of names) {
     const file = inside(root, name), stat = fs.lstatSync(file);
@@ -61,6 +54,33 @@ export async function projectSnapshot(cwd, cache, withBundle = true) {
     if (size > maxPackage / 2) throw new Error('Uncommitted project data exceeds the sync limit.');
     files.push({ name, mode: stat.mode & 0o777, link: stat.isSymbolicLink(), data: data.toString('base64') });
   }
+  return files;
+}
+async function folderSnapshot(root, cwd, cache) {
+  // Git's ignore matcher runs against a private empty repository, never initializing the user's folder.
+  const index = path.join(cache, 'folder-index.git');
+  fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(index)) await git(root, ['init', '--bare', index]);
+  const names = (await git(root, ['--git-dir=' + index, '--work-tree=' + root, 'ls-files', '--others', '--exclude-standard',
+    '--exclude=.git', '--exclude=node_modules', '--exclude=.env', '--exclude=.env.*', '--exclude=.DS_Store', '-z'])).split('\0').filter(Boolean);
+  const files = snapshotFiles(root, names), fingerprint = digest(JSON.stringify({ kind: 'folder', files: files.map(({ mode, ...file }) => file) }));
+  return { kind: 'folder', root, relative: path.relative(root, cwd).split(path.sep).join('/'), files, fingerprint };
+}
+export async function projectSnapshot(cwd, cache, withBundle = true) {
+  cwd = fs.realpathSync(cwd);
+  let root, head;
+  try { root = (await git(cwd, ['rev-parse', '--show-toplevel'])).trim(); }
+  catch (error) {
+    if (error.cause?.code === 128 && /not a git repository/i.test(error.cause.stderr || '')) return folderSnapshot(cwd, cwd, cache);
+    throw error;
+  }
+  try { head = (await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])).trim(); }
+  catch (error) { if (error.cause?.code === 1) return folderSnapshot(root, cwd, cache); throw error; }
+  if (/^160000 /m.test(await git(root, ['ls-files', '--stage']))) throw new Error('Task sync currently requires a Git repository without submodules.');
+  const staged = await git(root, ['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', 'HEAD']);
+  const unstaged = await git(root, ['diff', '--binary', '--full-index', '--no-ext-diff']);
+  const names = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+  const files = snapshotFiles(root, names, Buffer.byteLength(staged) + Buffer.byteLength(unstaged));
   let branch = ''; try { branch = (await git(root, ['symbolic-ref', '--short', 'HEAD'])).trim(); } catch {}
   let origin = ''; try {
     origin = (await git(root, ['remote', 'get-url', 'origin'])).trim();
@@ -79,12 +99,50 @@ export async function projectSnapshot(cwd, cache, withBundle = true) {
   if (fs.statSync(bundle).size > maxPackage / 2) throw new Error('This Git history exceeds the 128 MiB sync limit.');
   return { ...project, fingerprint, ...(withBundle ? { bundle: fs.readFileSync(bundle).toString('base64') } : {}) };
 }
+async function restoreFolder(project, directory, cache, priorFingerprint) {
+  if (!Array.isArray(project.files)) throw new Error('Invalid synced folder.');
+  const exists = fs.existsSync(directory) && fs.readdirSync(directory).length > 0;
+  const current = exists ? await projectSnapshot(directory, cache, false) : null;
+  if (current && (current.kind !== 'folder' || fs.realpathSync(current.root) !== fs.realpathSync(directory))) throw new Error('Choose an empty folder or the original non-Git project folder.');
+  if (current?.fingerprint === project.fingerprint) return directory;
+  if (current && current.fingerprint !== priorFingerprint) throw new Error('Local project changes conflict with the incoming task. Both versions are preserved.');
+  const temp = fs.mkdtempSync(path.join(cache, 'restore-folder-'));
+  let changing = false;
+  try {
+    const staging = path.join(temp, 'validate'); fs.mkdirSync(staging);
+    await applyState({ ...project, staged: '', unstaged: '' }, staging, temp);
+    if ((await folderSnapshot(staging, staging, cache)).fingerprint !== project.fingerprint) throw new Error('The incoming folder snapshot failed its integrity check.');
+    const managed = new Set(current?.files.map(file => file.name));
+    for (const entry of project.files) {
+      const file = inside(directory, entry.name);
+      if (stat(file) && !managed.has(entry.name)) throw new Error('Incoming project files would replace ignored local files. Choose an empty project folder.');
+      let parent = path.dirname(file);
+      while (parent !== directory) {
+        const value = stat(parent);
+        if (value && !value.isDirectory()) throw new Error('An incoming folder path is blocked by a local file.');
+        parent = path.dirname(parent);
+      }
+    }
+    if (current) {
+      if ((await projectSnapshot(directory, cache, false)).fingerprint !== current.fingerprint) throw new Error('The local project changed during sync. Retry after this turn finishes.');
+      fs.writeFileSync(path.join(cache, 'recovery-' + digest(directory) + '.json'), JSON.stringify(current), { mode: 0o600 });
+    }
+    fs.mkdirSync(directory, { recursive: true }); changing = true;
+    for (const entry of current?.files || []) fs.rmSync(inside(directory, entry.name));
+    await applyState({ ...project, staged: '', unstaged: '' }, directory, temp);
+    return directory;
+  } catch (error) {
+    if (changing && current) throw new Error(error.message + ' Previous project data is retained in the private sync recovery cache.');
+    throw error;
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+}
 export async function restoreProject(project, directory, cache, priorFingerprint) {
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
   directory = path.resolve(directory);
-  if (!/^[a-f0-9]{40,64}$/.test(project.head || '') || !Array.isArray(project.files) || typeof project.bundle !== 'string') throw new Error('Invalid synced Git project.');
   if (typeof project.relative !== 'string' || path.posix.isAbsolute(project.relative) || project.relative.split('/').includes('..') || project.relative.includes('\\')) throw new Error('Invalid synchronized project directory.');
   if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) throw new Error('Choose a project folder without a symbolic link.');
+  if (project.kind === 'folder') return restoreFolder(project, directory, cache, priorFingerprint);
+  if (!/^[a-f0-9]{40,64}$/.test(project.head || '') || !Array.isArray(project.files) || typeof project.bundle !== 'string') throw new Error('Invalid synced Git project.');
   const exists = fs.existsSync(directory) && fs.readdirSync(directory).length > 0;
   let current;
   if (exists) {
@@ -109,17 +167,22 @@ export async function restoreProject(project, directory, cache, priorFingerprint
     if (exists) {
       const latest = await projectSnapshot(directory, cache, false);
       if (latest.fingerprint !== current.fingerprint) throw new Error('The local project changed during sync. Retry after this turn finishes.');
-      const ignored = (await git(directory, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
       const incoming = [...(await git(staging, ['ls-files', '-z'])).split('\0').filter(Boolean), ...project.files.map(file => file.name)];
-      if (ignored.some(local => incoming.some(name => name === local || name.startsWith(local + '/') || local.startsWith(name + '/'))))
-        throw new Error('Incoming project files would replace ignored local files. Choose an empty project folder.');
+      if (current.kind === 'folder') {
+        const managed = new Set(current.files.map(file => file.name));
+        if (incoming.some(name => stat(inside(directory, name)) && !managed.has(name))) throw new Error('Incoming project files would replace ignored local files. Choose an empty project folder.');
+      } else {
+        const ignored = (await git(directory, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+        if (ignored.some(local => incoming.some(name => name === local || name.startsWith(local + '/') || local.startsWith(name + '/'))))
+          throw new Error('Incoming project files would replace ignored local files. Choose an empty project folder.');
+      }
     }
     // Keep a recoverable copy of the previous Git state before replacing managed changes.
     if (current) {
-      current.bundle = fs.readFileSync(path.join(cache, current.head + '.bundle')).toString('base64');
+      if (current.kind !== 'folder') current.bundle = fs.readFileSync(path.join(cache, current.head + '.bundle')).toString('base64');
       fs.writeFileSync(path.join(cache, 'recovery-' + digest(directory) + '.json'), JSON.stringify(current), { mode: 0o600 });
     }
-    if (!exists) await git(directory, ['init']);
+    if (!exists || current?.kind === 'folder') await git(directory, ['init']);
     if (!exists && typeof project.origin === 'string' && /^(?:https:\/\/[^\s]+|ssh:\/\/[^\s]+|[\w.-]+@[\w.-]+:[^\s]+)$/.test(project.origin)) await git(directory, ['remote', 'add', 'origin', project.origin]);
     await git(directory, ['bundle', 'verify', bundle]);
     await git(directory, ['fetch', '--no-tags', bundle, 'HEAD']);

@@ -106,6 +106,21 @@ test('task sync settings verify encrypted storage, show selectable Codex tasks a
   await page.click('#sync-storage-tab'); await page.click('#sync-save');
   await page.locator('#sync-error').filter({ hasText: '同步服务返回 HTTP 403（PROPFIND /）' }).waitFor();
   assert.doesNotMatch(await page.locator('#sync-error').textContent(), /Error invoking remote method|easy-switch:call/);
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('easy-switch:call'); ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', async (event, action, payload) => {
+      const value = await original(event, action, payload);
+      if (['sync-state', 'sync-tasks'].includes(action)) return { ...value, tasks: [{ id: 'failed-folder', title: 'Folder task', cwd: '/project', enabled: true, local: true, status: 'error',
+        message: 'Git could not prepare this project. Check Git installation, repository state and file access.' }] };
+      return value;
+    });
+  });
+  await page.click('#sync-tasks-tab'); await page.click('#sync-refresh');
+  const message = page.locator('.sync-task-message');
+  await message.waitFor();
+  assert.equal(await message.isVisible(), true); assert.match(await message.textContent(), /Git 无法准备此项目/);
+  assert.equal(await message.evaluate(element => getComputedStyle(element).whiteSpace), 'normal');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sync-error-details-zh.png') });
   await page.click('#close-sync');
 });
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {

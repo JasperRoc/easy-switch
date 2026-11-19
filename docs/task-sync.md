@@ -2,7 +2,7 @@
 
 [简体中文教程](task-sync.zh-CN.md) · [README](../README.md)
 
-Task sync transfers **selected Codex conversations and their Git project state** between computers. It preserves the conversation ID, saved history, local attachments, commits, staged/unstaged changes and untracked files. Each computer chooses its local project directory once. Codex sign-ins and provider settings remain local.
+Task sync transfers **selected Codex conversations and their project files** between computers. It preserves the conversation ID, saved history and local attachments. Git projects also retain commits, staged/unstaged changes and untracked files. Ordinary folders, empty folders and repositories without a first commit are supported from 0.5.36; no Git repository is created in those folders. Each computer chooses its local project directory once. Codex sign-ins and provider settings remain local.
 
 ## 1. Choose your storage
 
@@ -240,11 +240,11 @@ Keep the token and **encryption passphrase** separately. The encrypted database 
 
 1. Install and run easy-switch; configure a usable Codex account/API locally. Sign-ins are not copied from the first computer.
 2. Open **Settings → Task sync → Storage**, enter the same server, credentials and shared passphrase, then click **Verify & save**.
-3. Selected remote conversations appear in **Tasks** automatically. Click **Choose project folder** once for each Git project.
-4. Prefer an empty directory, such as `~/Projects/my-app` on macOS or `D:\Projects\my-app` on Windows. An existing directory must be the repository root and match the synchronized state; divergent work stops the restore.
+3. Selected remote conversations appear in **Tasks** automatically. Click **Choose project folder** once for each project or ordinary folder.
+4. Prefer an empty directory, such as `~/Projects/my-app` on macOS or `D:\Projects\my-app` on Windows. An existing Git directory must be the repository root; an existing ordinary folder must match the synchronized state. Divergent work stops the restore.
 5. Wait for **Synced**, open that project in Codex and continue the same conversation. The client may need a task-list refresh; open the mapped project if it is not already in the sidebar.
 
-Projects restore to a detached HEAD at the synchronized commit, with staging and uncommitted changes retained. Other local branches are preserved. Each destination still needs Git, dependencies and external tools. Work on one computer at a time; if edits diverge, choose **Use this computer** or **Use server version** only after reviewing which version to retain.
+Git projects restore to a detached HEAD at the synchronized commit, with staging and uncommitted changes retained. Other local branches are preserved. Ordinary folders restore their files without adding `.git`. Each destination still needs Git (also used for folder ignore rules), dependencies and external tools. Work on one computer at a time; if edits diverge, choose **Use this computer** or **Use server version** only after reviewing which version to retain. Upgrade every computer to **0.5.36+** when syncing ordinary folders.
 
 **Automatic sync boundaries:** the normal interval is 30 seconds; tray operation continues, while sleep/offline conditions pause or back off work. Transfers contain completed turns, not running processes. A task or shared project still loaded in Codex blocks incoming replacement until released, so reopening that conversation may be necessary. Live refresh of an already-open window is not guaranteed.
 
@@ -276,10 +276,11 @@ switch sync resolve <task-id> local   # Or remote, to resolve a conflict
 | Connection failed | SSH tunnel, DNS/certificate/firewall, and any outbound proxy used by easy-switch |
 | HTTP 413 / size limit | Reverse-proxy request-body limit or package size; encrypted packages are capped at 256 MiB |
 | Waiting for an open task | Finish and release/close the destination conversation, wait for sync, then reopen |
-| Project conflict | Local Git state diverged from the last sync; preserve important changes before choosing a version |
+| Task row shows Sync failed | Read the localized reason directly below the task's folder. Verify Git is available, file permissions and size limits |
+| Project conflict | Local project state diverged from the last sync; preserve important changes before choosing a version |
 | Task missing from Codex sidebar | Same local user/`CODEX_HOME`, correct mapped project, refreshed task list; cloud-only tasks are outside this feature |
 
-Current requirements/limits: a committed Git repository without submodules; 128 MiB Git bundle, 128 MiB history, 32 MiB per attachment/untracked file, 256 MiB encrypted package. Ignored files, dependencies, account configuration, complete execution environments, Git LFS objects, automatically running goals and subagent task trees are not fully migrated. Secrets committed to Git remain part of the synchronized history.
+Current requirements/limits: Git must be installed, and Git projects must not contain submodules; 128 MiB Git bundle, 128 MiB history, 128 MiB folder/uncommitted data, 32 MiB per attachment/untracked file, 256 MiB encrypted package. Ordinary folders honor `.gitignore` and additionally exclude `.git`, `node_modules`, `.env`, `.env.*` and `.DS_Store`. Empty subdirectories are not preserved; the project root is created. Ignored files, dependencies, account configuration, complete execution environments, Git LFS objects, automatically running goals and subagent task trees are not fully migrated. Other files, including sensitive files not excluded by these rules, are included; secrets committed to Git remain part of the synchronized history.
 
 Revision and object files accumulate to preserve branches; this version does not automatically garbage-collect remote history. Do not delete individual ancestor revisions. Existing clients may need to download all journal metadata once, then reuse it from memory.
 
