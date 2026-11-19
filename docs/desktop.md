@@ -140,6 +140,8 @@ Use **Check for updates** to query the official GitHub release API. In automatic
 
 ## Selected task sync / 指定任务同步
 
-Settings → Task sync configures WebDAV or an encrypted SQLite-backed self-hosted service and lists saved Codex tasks with checkboxes. Select tasks on the first computer; each destination uses the same storage/passphrase and asks once for its project directory. Completed turns, task IDs, local attachments and Git state then transfer automatically while the application runs, including in the tray. Incoming changes wait while Codex holds a task writer lock; running processes and cached open views are not migrated. Divergent edits remain separate until the user chooses a version. See the [task sync guide](task-sync.md) for setup, server deployment and tested limits.
+Settings → Task sync → Storage configures WebDAV or an encrypted SQLite-backed self-hosted service and lists saved Codex tasks with checkboxes. Select tasks on the first computer; each destination uses the same storage/passphrase and asks once for its project directory. Completed turns, task IDs, local attachments and Git state then transfer automatically while the application runs, including in the tray. Incoming changes wait while Codex holds a task writer lock; running processes and cached open views are not migrated. Divergent edits remain separate until the user chooses a version. See the [task sync guide](task-sync.md) for setup, server deployment and tested limits.
 
-“设置 → 任务同步”可配置 WebDAV／SQLite 自建服务并勾选 Codex 会话。每台电脑首次选择本地项目位置，随后后台自动同步已完成的会话轮次、附件、Git 提交及未提交改动。正在执行的进程保留在原电脑，目标会话被 Codex 占用时等待释放；不会强制关闭用户的客户端。两端同时修改会提示冲突，由用户选择采用哪份版本。
+“设置 → 任务同步 → 存储配置”可配置 WebDAV／SQLite 自建服务并勾选 Codex 会话。每台电脑首次选择本地项目位置，随后后台自动同步已完成的会话轮次、附件、Git 提交及未提交改动。正在执行的进程保留在原电脑，目标会话被 Codex 占用时等待释放；不会强制关闭用户的客户端。两端同时修改会提示冲突，由用户选择采用哪份版本。
+
+完整配置示例见[中文教程](task-sync.zh-CN.md)，包括 Zotero/WebDAV、服务器 SSH 隧道、Docker HTTPS 和 Node.js systemd。

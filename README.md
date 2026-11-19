@@ -151,6 +151,8 @@ Desktop Codex account rows show remaining quota from the account’s usage endpo
 
 Configure **Settings → Task sync** with WebDAV or the included SQLite-backed sync server, use the same encryption passphrase on each computer, and select tasks. Each destination asks for its local project folder once; saved history, task IDs, file attachments and Git commits/uncommitted changes then synchronize automatically while easy-switch runs. Linux supports `switch sync`. Running processes stay on their original machine, concurrent edits are preserved as conflicts, and already-open Codex views can require reopening the conversation. See [setup, self-hosting and limits](docs/task-sync.md).
 
+Already use Zotero? Its third-party WebDAV storage can be reused with a separate folder; Zotero Storage accounts cannot connect directly. The [step-by-step guide](docs/task-sync.md) includes field examples, Docker/HTTPS deployment, SSH tunnels, a Node.js service, backups and second-computer setup. Open **Setup guide** from the sync page for the matching language.
+
 ### Can I use an earned quota-reset card?
 
 Desktop subscription rows include a reset button. Open it to see individual cards and their expiration dates, choose a card, then confirm its use. Cards are ordered by expiration; expired cards cannot be selected. A missing detail list or expiration is shown explicitly. The app uses the [official account reset methods](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt), preserves the same idempotency key when retrying an uncertain result, and rereads card details and quota afterward. Resets do not change purchased credits or your selected provider.

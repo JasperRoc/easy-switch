@@ -19,6 +19,7 @@ let editingProvider = null, settingsOpen = false;
 const resetAttempts = new Map();
 const t = (key, values) => {
   const text = translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values);
+  if (key === 'taskSync' || key.startsWith('sync')) return text;
   return text.replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
 };
 function appearance() {
@@ -455,13 +456,14 @@ $('provider-form').addEventListener('submit', async event => {
 });
 $('provider-alias').addEventListener('input', renderLogin);
 function showSettings(open) {
+  if (!open) syncUI.close();
   settingsOpen = open;
   $('providers-page').hidden = open; $('settings-page').hidden = !open;
   $('settings').setAttribute('aria-pressed', String(open));
   for (const item of document.querySelectorAll('[data-client]')) item.setAttribute('aria-pressed', String(!open && item.dataset.client === state.client));
   for (const item of document.querySelectorAll('[data-client-item]')) item.classList.toggle('selected', !open && item.dataset.clientItem === state.client);
 }
-$('settings').addEventListener('click', () => showSettings(true));
+$('settings').addEventListener('click', () => { syncUI.close(); showSettings(true); });
 for (const item of document.querySelectorAll('[data-client]')) item.addEventListener('click', async () => {
   showSettings(false);
   if (item.dataset.client === state.client) return;

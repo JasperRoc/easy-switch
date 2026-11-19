@@ -127,6 +127,7 @@ async function boot() {
         case 'reset-cards': return await controller.resetCards(payload);
         case 'consume-reset': return await controller.consumeReset(payload);
         case 'sync-state': return controller.taskSync.snapshot();
+        case 'sync-guide': await shell.openExternal(`${repository}/blob/main/docs/task-sync${payload === 'zh-CN' ? '.zh-CN' : ''}.md`); return null;
         case 'sync-tasks': return await controller.taskSync.list();
         case 'sync-configure': return await controller.taskSync.configure(payload);
         case 'sync-select': return await controller.taskSync.select(payload);

@@ -1,0 +1,39 @@
+services:
+  sync:
+    build:
+      context: ../..
+      dockerfile: docs/sync-server/Dockerfile
+    restart: unless-stopped
+    environment:
+      SWITCH_SYNC_TOKEN: ${SWITCH_SYNC_TOKEN:?Set SWITCH_SYNC_TOKEN in .env}
+      SWITCH_SYNC_DATABASE: /data/sync.sqlite
+      SWITCH_SYNC_HOST: 0.0.0.0
+      SWITCH_SYNC_PORT: 18445
+    ports:
+      - "127.0.0.1:18445:18445"
+    volumes:
+      - sync_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      SYNC_DOMAIN: ${SYNC_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - sync
+
+volumes:
+  sync_data:
+  caddy_data:
+  caddy_config:

@@ -1,89 +1,274 @@
-# Task sync
+# Codex task sync: setup and deployment
 
-Task sync synchronizes selected **Codex** conversations between computers. It includes the saved conversation ID/history, model settings recorded in that history, local file attachments, Git commits and staged/unstaged/untracked changes. Each computer keeps its own Codex sign-in and easy-switch providers. Claude conversation sync is not included.
+[简体中文教程](task-sync.zh-CN.md) · [README](../README.md)
 
-## Desktop setup
+Task sync transfers **selected Codex conversations and their Git project state** between computers. It preserves the conversation ID, saved history, local attachments, commits, staged/unstaged changes and untracked files. Each computer chooses its local project directory once. Codex sign-ins and provider settings remain local.
 
-1. Open **Settings → Task sync → Configure & select tasks**.
-2. Choose **WebDAV** or **Self-hosted server / SQLite**, enter the server URL and credentials, and set a shared encryption passphrase of at least 12 characters. Every device uses the same storage and passphrase. Click **Verify & save**.
-3. Select the tasks to sync. Unselected local conversations are not uploaded.
-4. Configure the other computer with the same storage. Selected remote tasks appear automatically; choose the local project folder once for each project. An empty folder is suitable. A folder already containing the exact project state can also be used. Unrelated or divergent local work is never intentionally overwritten.
-5. Open the synchronized project in Codex and continue the existing task. Later updates run automatically while easy-switch is running, including while its window is hidden. Initial configuration, task selection and one project-location mapping per computer are required; subsequent transfers need no export/import action.
+## 1. Choose your storage
 
-The task list uses Codex's saved titles. The Codex client may need to refresh its project/task list to display newly imported tasks. An already loaded conversation can retain an in-memory snapshot; sync respects Codex's writer lock and waits for that conversation to be released before replacing its saved history. Close/release that conversation on the destination, then reopen it after sync. This release does not control arbitrary already-running Codex app processes or guarantee live refresh of their open views. The previous imported local history is retained in `CODEX_HOME/sync-backups` before replacement; it is separate from easy-switch's credentials and survives uninstall. When shared project files need to change, other loaded Codex tasks in that directory also block the update, so their active work is not replaced underneath them.
+| What you already use | Choose in easy-switch | What you need |
+| --- | --- | --- |
+| A Zotero account with **Zotero Storage** | Direct connection is unavailable | Separate WebDAV storage or your own server |
+| **WebDAV** for Zotero attachments | **WebDAV** | The storage service's URL, username and app password; a separate folder |
+| Nextcloud, a NAS, or another WebDAV service | **WebDAV** | The service's WebDAV endpoint and credentials |
+| An SSH server without a domain | **Self-hosted server** | The sync service plus an SSH tunnel on each computer |
+| A server and domain for direct network access | **Self-hosted server** | The sync service, DNS and HTTPS |
 
-## WebDAV
+Zotero separates library data sync from attachment file sync; attachments can use Zotero Storage or WebDAV. easy-switch uses **WebDAV storage**, does not access a Zotero library, and does not accept a Zotero account or API key as WebDAV credentials. See [Zotero's official explanation](https://www.zotero.org/support/sync).
 
-Create a dedicated `easy-switch/` directory in your WebDAV storage and enter its complete HTTPS URL. Use the WebDAV app password where required. Verification tests authenticated reading/writing, ETags and conditional requests. A WebDAV server that ignores `If-Match` / `If-None-Match` is rejected because it could silently overwrite concurrent work. Parent directories must already exist.
+## 2. Reuse WebDAV storage you already use with Zotero
 
-This implementation uses PROPFIND, MKCOL, GET, conditional PUT and DELETE for temporary verification files. It does not use or depend on a Zotero account. Real commercial WebDAV providers have not all been validated.
+### Find the actual WebDAV credentials
 
-## Self-hosted server and database
+1. Open Zotero **Settings → Sync → File Syncing**; names can differ by version or system.
+2. Check whether personal-library attachments use **WebDAV** or **Zotero Storage**.
+3. If WebDAV is selected, identify the storage service, URL and username. Obtain or create an app password from that service. You do not need to export your Zotero library.
+4. If Zotero Storage is selected, prepare a separate WebDAV service or use the server instructions below.
 
-The optional server stores encrypted task packages and revision pointers in SQLite. It requires Node.js **22.13 or later**; ordinary easy-switch clients keep their existing Node requirement. The client never connects directly to a public database port.
+### Create a dedicated folder
+
+Use the storage service's web file manager or NAS to create `easy-switch`. **Keep it outside Zotero's managed `zotero` attachment directory.**
+
+```text
+WebDAV root/
+├── zotero/        # Keep for Zotero
+└── easy-switch/   # Create for easy-switch
+```
+
+Enter a complete HTTPS URL including the folder. Zotero may display the protocol separately or append `zotero` automatically; do not copy its entire field without checking the resulting path.
+
+These are **address formats, not provisioned endpoints**:
+
+| Service | Example easy-switch URL |
+| --- | --- |
+| Generic WebDAV | `https://dav.example.com/easy-switch/` |
+| Nextcloud | `https://cloud.example.com/remote.php/dav/files/alice/easy-switch/` |
+| NAS | The NAS's HTTPS WebDAV root followed by the dedicated folder |
+
+Nextcloud shows the actual WebDAV URL in **Files settings → WebDAV** and provides app passwords for third-party clients; see its [official WebDAV guide](https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html). For other services, use their documented endpoint. A browser file-manager URL or share link is not a WebDAV endpoint.
+
+### Configure the first computer
+
+Open easy-switch → **Settings → Task sync → Storage**:
+
+| Field | Value |
+| --- | --- |
+| Storage type | **WebDAV** |
+| Server URL | The complete HTTPS WebDAV URL of the new `easy-switch/` folder |
+| Username | The WebDAV service username |
+| WebDAV app password | The app/protocol password issued by that storage service |
+| Shared encryption passphrase | Your own passphrase, at least 12 characters and identical on every computer; separate from the WebDAV password |
+| Automatic sync | On |
+
+Click **Verify & save**. The page moves to **Tasks**; select the conversations you want to upload and wait for **Synced**. Unselected local tasks are not uploaded.
+
+Verification checks reading/writing, ETags and conditional writes. **A successful Zotero verification does not prove easy-switch compatibility:** easy-switch additionally requires `If-Match` / `If-None-Match` to prevent concurrent overwrites. An incompatible server is rejected; there is no unsafe bypass.
+
+## 3. Use your own server
+
+Run this project's sync service on the server before adding it to the app. Entering an IP, SSH address or database address alone does not deploy it. The service stores encrypted packages in SQLite and serves HTTP(S); clients do not need a database driver or a public database port.
+
+The following examples target Linux. Install Git, [Docker Engine](https://docs.docker.com/engine/install/) and the [Compose plugin](https://docs.docker.com/compose/install/linux/), then confirm `docker compose version`. Docker commands require access to the Docker daemon. A Node.js alternative follows below.
+
+### 3.1 Download the deployment files and create a token
+
+Run as your server user:
 
 ```bash
 git clone https://github.com/JasperRoc/easy-switch.git
-cd easy-switch
-npm ci --omit=dev
-export SWITCH_SYNC_TOKEN="$(openssl rand -hex 32)"
-export SWITCH_SYNC_DATABASE="$PWD/data/sync.sqlite"
-node src/sync-server.js
+cd easy-switch/docs/sync-server
+cp .env.example .env
+chmod 600 .env
+openssl rand -hex 32
 ```
 
-The default listener is `127.0.0.1:18445`. Set `SWITCH_SYNC_PORT` to change the port. Put a TLS reverse proxy in front of it and configure the desktop with the HTTPS URL and the same access token. A reverse proxy must permit 256 MiB requests, preserve ETag and conditional headers, and forward WebDAV methods.
+Copy the random string, then edit `.env` in that directory:
 
-Example systemd service, with a dedicated unprivileged user and an environment file readable only by that user:
+```dotenv
+SWITCH_SYNC_TOKEN=paste-your-random-string
+SYNC_DOMAIN=sync.example.com
+```
+
+The token authorizes clients to the server. **The encryption passphrase is set separately in each client.** Keep both, and do not commit `.env`. `SYNC_DOMAIN` is unused when you run only the SSH-tunnel option.
+
+### 3.2 Option A: no domain, connect through SSH
+
+From `docs/sync-server` on the server:
+
+```bash
+docker compose up -d --build sync
+docker compose ps
+docker compose logs --tail=50 sync
+```
+
+The log should show `easy-switch sync server listening on port 18445`. Docker publishes this port only on the server's `127.0.0.1`, not on its public interfaces.
+
+On **each computer running easy-switch**, start:
+
+```bash
+ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -L 127.0.0.1:18445:127.0.0.1:18445 user@your-server
+```
+
+Replace `user@your-server` with your SSH user/address or an existing SSH alias. Use one line in Windows PowerShell. No output usually means the tunnel is established; leave the process running. Closing it disconnects sync. If the local port is occupied, change the first port after `-L` to `18446`, then use `http://127.0.0.1:18446/` in the client.
+
+| Client field | Value |
+| --- | --- |
+| Storage type | **Self-hosted server** |
+| Server URL | `http://127.0.0.1:18445/` |
+| Server access token | `SWITCH_SYNC_TOKEN` from the server's `.env` |
+| Shared encryption passphrase | The same passphrase of at least 12 characters on every computer |
+
+This option requires a maintained SSH tunnel. For direct background access without a tunnel terminal, use HTTPS below. easy-switch currently does not start SSH tunnels for you.
+
+### 3.3 Option B: domain and HTTPS
+
+1. Point the DNS A/AAAA records for your sync domain to the server. Keep only records that are actually reachable.
+2. Allow TCP **80 and 443** in the server firewall and cloud security group. If an existing website uses them, use its reverse proxy instead of starting a second listener.
+3. Set `SYNC_DOMAIN` in `.env` to your real domain, **without a scheme, port or path**.
+4. From `docs/sync-server`, run:
+
+```bash
+docker compose --profile https up -d --build
+docker compose ps
+docker compose logs --tail=50 caddy
+```
+
+The included Caddy configuration obtains/renews certificates and forwards sync requests. DNS and port reachability must satisfy [Caddy's automatic HTTPS requirements](https://caddyserver.com/docs/automatic-https).
+
+| Client field | Value |
+| --- | --- |
+| Storage type | **Self-hosted server** |
+| Server URL | `https://sync.example.com/`, using your real domain |
+| Server access token | `SWITCH_SYNC_TOKEN` from `.env` |
+| Shared encryption passphrase | The same passphrase on every computer |
+
+Do not enter a SQLite file URL or `http://public-server-IP:18445/`. Clients permit HTTPS, plus HTTP on loopback; ordinary remote HTTP is rejected.
+
+If you already run Nginx, put this `location` inside a **dedicated HTTPS server block with a valid certificate**:
+
+```nginx
+location / {
+    client_max_body_size 256m;
+    proxy_pass http://127.0.0.1:18445;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
+}
+```
+
+See the [official Nginx proxy documentation](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) for these directives. Run only `docker compose up -d --build sync` in that case. Preserve Authorization, ETag and conditional headers, permit WebDAV methods, and avoid browser-interactive authentication on this domain. Opening the root URL in a browser may return 401 or 404; verify using easy-switch's **Verify & save** action.
+
+### Without Docker: Node.js and systemd
+
+The server requires Node.js **22.13+**; clients still support Node.js 20.18.1. Check `node --version` and `command -v node`, then prepare:
+
+```bash
+git clone https://github.com/JasperRoc/easy-switch.git "$HOME/easy-switch-sync"
+mkdir -p "$HOME/.config/easy-switch-sync" "$HOME/.local/share/easy-switch-sync" "$HOME/.config/systemd/user"
+chmod 700 "$HOME/.config/easy-switch-sync" "$HOME/.local/share/easy-switch-sync"
+openssl rand -hex 32
+```
+
+Write `~/.config/easy-switch-sync/server.env`, replacing the token and **absolute** database path. Run `chmod 600 ~/.config/easy-switch-sync/server.env` afterward:
+
+```dotenv
+SWITCH_SYNC_TOKEN=your-random-token
+SWITCH_SYNC_DATABASE=/home/alice/.local/share/easy-switch-sync/sync.sqlite
+SWITCH_SYNC_HOST=127.0.0.1
+SWITCH_SYNC_PORT=18445
+```
+
+Create `~/.config/systemd/user/easy-switch-sync.service`. Use the absolute Node path from `command -v node` and your actual checkout path:
 
 ```ini
 [Unit]
-Description=easy-switch task sync
+Description=easy-switch encrypted task sync
 After=network.target
 
 [Service]
-User=easy-switch-sync
-WorkingDirectory=/opt/easy-switch
-EnvironmentFile=/etc/easy-switch-sync.env
-ExecStart=/usr/bin/node /opt/easy-switch/src/sync-server.js
+ExecStart=/usr/bin/node /home/alice/easy-switch-sync/src/sync-server.js
+EnvironmentFile=%h/.config/easy-switch-sync/server.env
 Restart=on-failure
+RestartSec=3
 UMask=0077
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-The environment file contains `SWITCH_SYNC_TOKEN` and `SWITCH_SYNC_DATABASE`. Back up the SQLite database with a SQLite-aware backup method. Clients encrypt titles, history, attachments and project contents using AES-256-GCM with a key derived by scrypt from the shared passphrase. The server can observe opaque IDs, package sizes and access timing. Losing the passphrase loses access to the encrypted library. Local sync settings retain credentials in the private easy-switch data directory and are not copied to the other computer.
-
-## Linux CLI
+This server uses only built-in Node modules; do not install desktop tooling or run `./install.sh` for it. Start it:
 
 ```bash
-switch sync setup
-switch sync list
-switch sync add <task-id>
-switch sync project <project-key> /absolute/local/project
-switch sync now
-switch sync remove <task-id>
-switch sync resolve <task-id> local   # or remote
+systemctl --user daemon-reload
+systemctl --user enable --now easy-switch-sync.service
+journalctl --user -u easy-switch-sync.service -n 50 --no-pager
 ```
 
-The existing easy-switch user service performs automatic sync. `setup` restarts it to load the initial settings; later task selections and path mappings are reloaded automatically. Removing a selection stops this computer from synchronizing that task; it does not delete the local Codex task or the remote copy. Configure and select separately on each device when you want to exclude an existing remote task.
+For startup at boot and survival after SSH logout, enable user linger. An administrator can run `sudo loginctl enable-linger username` when necessary. Then connect through the SSH tunnel above, or use your existing HTTPS reverse proxy to reach `127.0.0.1:18445`.
 
-## Continuation and conflicts
+### Update, back up, and stop the service
 
-Synchronization transfers completed turns, not a live process or an open terminal. While a task has an unfinished turn it is marked as running and is not overwritten or published. A sleeping or offline source cannot upload new work. The normal check interval is 30 seconds; network failures back off. Sleep pauses timers and pending network operations. No task enumeration or sync helper runs while sync is unconfigured.
+For Docker, run `git pull --ff-only` in the checkout, return to `docs/sync-server`, and rerun your original `docker compose ... up -d --build` command. For Node.js, pull the code and run `systemctl --user restart easy-switch-sync.service`.
 
-Every published revision uses a conditional write. If both devices changed a task after their last common revision, both copies are retained and the task shows a conflict. This version does not automatically merge tool histories or divergent project changes. Finish on one device at a time. For a conflict, choose **Use this computer** or **Use server version** in the task row, or use `switch sync resolve <task-id> local|remote`. Review the choice before confirming. The remote revision is retained as an encrypted conflict backup in the private sync cache; incoming replacement also retains the old local rollout in `CODEX_HOME/sync-backups` and the prior project snapshot in the sync cache. Cache backups are removed when easy-switch is completely uninstalled; they are not a substitute for independent backups.
+Docker stores SQLite data in the `sync_data` named volume. `docker compose down` preserves it; **`docker compose down -v` deletes the database and synchronized data**. A simple offline backup is:
 
-Git restore validates the incoming bundle and patches in a temporary checkout before changing local files. A nonempty mapping must point to the repository root, not a nested folder. Git restore uses a detached HEAD at the synchronized commit so it cannot overwrite an unrelated local branch. Staging state and untracked files are restored; ignored files, installed dependencies, SSH keys, provider login files and arbitrary external runtime state are not copied. Files and project context mentioned in a conversation can contain sensitive content; selecting a task authorizes uploading its conversation and associated Git history. A tracked secret is still part of Git history. External absolute paths in historical tool arguments can remain machine-specific.
+```bash
+mkdir -p backups
+docker compose stop sync
+docker compose cp sync:/data/. ./backups/
+docker compose start sync
+```
 
-Current limits: a committed Git repository without submodules; Git installed on each machine; 128 MiB Git bundle, 128 MiB task history, 32 MiB per local attachment/untracked file, and 256 MiB encrypted package. Large histories, submodules, Git LFS objects, ignored dependencies, automatically resumed goals, subagent task trees and cloud-only Codex sessions are not supported as complete portable execution environments. Codex may still require compatible tools, models and providers on the destination.
+Move backups to another secure location; avoid repeatedly overwriting the only backup. For Node deployments, stop the service, copy the database and any `-wal`/`-shm` files, then start it. Use SQLite's backup interface for online backups instead of copying only the main file. Restore the whole data directory while the service is stopped, retaining write permissions for the container's `node` user.
 
-## 简体中文
+Keep the token and **encryption passphrase** separately. The encrypted database cannot restore conversation contents without the passphrase.
 
-在“设置 → 任务同步 → 配置并选择任务”中填写 WebDAV 或自建同步服务地址、凭据及共享加密口令，然后勾选需要同步的 Codex 任务。另一台电脑填写同一配置，首次选择本地项目位置，后续由软件自动同步会话、Git 提交状态、暂存/未暂存改动、未跟踪文件和本地附件。会话 ID 保留，登录凭据和服务商配置各自独立。当前仅支持 Codex。
+## 4. Receive tasks on the second computer
 
-自建后端已提供，使用 Node.js 22.13+ 和 SQLite 保存加密数据，启动方式见上文；通过 HTTPS 反向代理访问。普通客户端不需要安装数据库。WebDAV 服务器必须支持 ETag 及条件写入；商业 WebDAV 服务尚未逐一实测。
+1. Install and run easy-switch; configure a usable Codex account/API locally. Sign-ins are not copied from the first computer.
+2. Open **Settings → Task sync → Storage**, enter the same server, credentials and shared passphrase, then click **Verify & save**.
+3. Selected remote conversations appear in **Tasks** automatically. Click **Choose project folder** once for each Git project.
+4. Prefer an empty directory, such as `~/Projects/my-app` on macOS or `D:\Projects\my-app` on Windows. An existing directory must be the repository root and match the synchronized state; divergent work stops the restore.
+5. Wait for **Synced**, open that project in Codex and continue the same conversation. The client may need a task-list refresh; open the mapped project if it is not already in the sidebar.
 
-每轮结束后同步，不迁移运行中的进程或终端。正常每 30 秒检查一次；睡眠时暂停，失败后降低频率。首次需要配置、勾选任务和选择项目位置；无需反复导出导入。Codex 可能需要刷新任务列表，已打开的会话可能缓存旧历史，收到新版本后需关闭再打开该会话。本版尚不能保证任意已运行 Codex 窗口实时更新。
+Projects restore to a detached HEAD at the synchronized commit, with staging and uncommitted changes retained. Other local branches are preserved. Each destination still needs Git, dependencies and external tools. Work on one computer at a time; if edits diverge, choose **Use this computer** or **Use server version** only after reviewing which version to retain.
 
-两台电脑同时离线修改同一任务会保留冲突，不静默覆盖。可在任务行选择“采用本机版本”或“采用服务端版本”，也可运行 `switch sync resolve <task-id> local|remote`；替换前保留会话和项目恢复副本。卸载会删除 easy-switch 缓存内的恢复副本，应另行保留重要备份。还原采用 detached HEAD，保留暂存状态；忽略文件、依赖、账号凭据不复制，但已经提交进 Git 的敏感文件仍属于仓库历史。当前要求已有提交且无 submodule 的 Git 项目，并需目标机器具备兼容的模型、工具和项目依赖。完整运行环境、自动恢复目标任务、子代理任务树、Git LFS 数据及云端专属任务不在本版支持范围。
+**Automatic sync boundaries:** the normal interval is 30 seconds; tray operation continues, while sleep/offline conditions pause or back off work. Transfers contain completed turns, not running processes. A task or shared project still loaded in Codex blocks incoming replacement until released, so reopening that conversation may be necessary. Live refresh of an already-open window is not guaranteed.
+
+## 5. Linux CLI
+
+`switch sync` configures a client on the current machine; this is separate from the storage server. The existing easy-switch current-user service runs background transfers:
+
+```bash
+switch sync setup           # Prompt for backend, URL, credentials and passphrase
+switch sync list            # Show task IDs, status and project=<key>
+switch sync add <task-id>   # Select a local task for upload
+switch sync project <project-key> /absolute/local/project
+switch sync now            # Optional: check immediately
+switch sync remove <task-id>
+switch sync resolve <task-id> local   # Or remote, to resolve a conflict
+```
+
+`setup` restarts the user's easy-switch service. Later sync does not require repeated `now` commands. Removing a selection stops that computer's synchronization without deleting local or remote conversations; other computers can deselect separately.
+
+## 6. Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| HTTP 401 / 403 | WebDAV app password or server token, directory permissions, and Authorization forwarding. The server token is not your SSH password |
+| HTTP 404 / 405 or unavailable collection | Complete protocol URL, existing parent directory, no share link, and reverse-proxy WebDAV method support |
+| Missing ETag / unsupported conditional writes | Use a compatible WebDAV server or this project's storage service |
+| Decryption failed | All computers must use the original shared encryption passphrase; changing a storage password does not change the encryption passphrase |
+| Connection failed | SSH tunnel, DNS/certificate/firewall, and any outbound proxy used by easy-switch |
+| HTTP 413 / size limit | Reverse-proxy request-body limit or package size; encrypted packages are capped at 256 MiB |
+| Waiting for an open task | Finish and release/close the destination conversation, wait for sync, then reopen |
+| Project conflict | Local Git state diverged from the last sync; preserve important changes before choosing a version |
+| Task missing from Codex sidebar | Same local user/`CODEX_HOME`, correct mapped project, refreshed task list; cloud-only tasks are outside this feature |
+
+Current requirements/limits: a committed Git repository without submodules; 128 MiB Git bundle, 128 MiB history, 32 MiB per attachment/untracked file, 256 MiB encrypted package. Ignored files, dependencies, account configuration, complete execution environments, Git LFS objects, automatically running goals and subagent task trees are not fully migrated. Secrets committed to Git remain part of the synchronized history.
+
+Packages use AES-256-GCM with a key derived from the passphrase by scrypt before upload. The server still observes task identifiers, sizes and access timing. Local passphrases and credentials remain in easy-switch's private directory. Replaced histories remain in `CODEX_HOME/sync-backups`; project/conflict recovery copies remain in the sync cache. Complete uninstall deletes cache recovery copies; keep independent backups of important work.
+
+Validation covers mock WebDAV protocol behavior, the SQLite service, round-trip continuation between isolated Codex homes and desktop integration. Commercial WebDAV providers, your public domain and your server environment have not all been tested.
