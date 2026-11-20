@@ -20,6 +20,7 @@ function Invoke-EasySwitchUpdate {
       throw 'Update package SHA-256 verification failed.'
     }
     $parent = Get-Process -Id $job.parent -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $directory 'last-error.txt') -Force -ErrorAction SilentlyContinue
     [IO.File]::WriteAllText($job.handshake, (@{ token = $job.token; ready = $true } | ConvertTo-Json))
     if ($parent) {
       try { if (!$parent.WaitForExit(60000)) { throw 'The previous application did not exit. Close easy-switch before retrying the update.' } }

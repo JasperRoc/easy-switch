@@ -73,6 +73,9 @@ export const messages = {
     trayHidden: 'The menu bar icon appears to be hidden. Expand your menu bar manager (such as Ice) and move easy-switch into its visible section.',
     updateChecking: 'Checking for updates…', updateCurrent: 'You’re up to date.', updateAvailable: 'easy-switch {version} is available',
     updateDownload: 'Download update', updateInstall: 'Install & restart', installUpdate: 'Install update',
+    updateReveal: 'Show installer in folder',
+    updateManualInstallHelp: 'To install manually, quit easy-switch from the tray, then run the installer and select your existing installation folder.',
+    updatePreparing: 'Preparing installation…',
     updateRestartWarning: 'Installation restarts easy-switch and can interrupt active requests. Your providers and settings are retained.',
     updateDownloading: 'Downloading update… {percent}%', updateReady: 'Verified and ready to install.', updateFailed: 'Unable to complete the update.',
     updateIdle: 'Check for an update', checkAgain: 'Check again', updateDevelopment: 'Updates are available in the installed desktop app.',
@@ -167,6 +170,9 @@ export const messages = {
     trayHidden: '菜单栏图标当前可能位于隐藏区域。请展开菜单栏管理器（如 Ice），将 easy-switch 移到常显区。',
     updateChecking: '正在检查更新…', updateCurrent: '已经是最新版本。', updateAvailable: '发现新版本 easy-switch {version}',
     updateDownload: '下载更新', updateInstall: '安装并重启', installUpdate: '安装更新',
+    updateReveal: '显示安装包',
+    updateManualInstallHelp: '如需手动安装，请从托盘完全退出 easy-switch，运行安装包并选择原安装目录。',
+    updatePreparing: '正在准备安装…',
     updateRestartWarning: '安装会重启 easy-switch，可能中断进行中的请求；服务商与设置会保留。',
     updateDownloading: '正在下载更新… {percent}%', updateReady: '校验完成，可以安装。', updateFailed: '无法完成更新。',
     updateIdle: '检查更新', checkAgain: '重新检查', updateDevelopment: '请在已安装的桌面版中使用更新功能。',
@@ -267,6 +273,8 @@ const notices = [
   ['普通文件夹快照未通过完整性校验，未应用该版本。', 'The incoming folder snapshot failed its integrity check.'],
   ['请选择空目录或原有的非 Git 项目目录。', 'Choose an empty folder or the original non-Git project folder.'],
   ['Windows 更新助手未能启动，请手动运行已下载的安装包。', 'The Windows update helper could not start. Run the downloaded installer manually.'],
+  ['请先下载并校验更新。', 'Download and verify the update first.'],
+  ['Windows 更新助手在 60 秒内未就绪。', 'The Windows update helper did not become ready within 60 seconds.'],
   ['Windows 更新文件不可用，请重新下载更新。', 'The Windows update files are unavailable. Download the update again.'],
   ['更新包 SHA-256 校验失败，请重新下载。', 'Update package SHA-256 verification failed.'],
   ['旧版软件没有退出，请完全退出 easy-switch 后重试更新。', 'The previous application did not exit. Close easy-switch before retrying the update.'],
@@ -281,6 +289,10 @@ export function localizeMessage(value, language) {
   if (sync && normalizeLanguage(language) === 'zh-CN') return `同步服务返回 HTTP ${sync[1]}${sync[2] ? `（${sync[2]}）` : ''}。${sync[3] ? localizeMessage(sync[3], language) : ''}`;
   const installer = /^The Windows installer failed \(exit code (\d+)\)\. Run the downloaded installer manually\.$/.exec(text);
   if (installer && normalizeLanguage(language) === 'zh-CN') return `Windows 安装器失败（退出码 ${installer[1]}），请手动运行已下载的安装包。`;
+  const powershell = /^Unable to start Windows PowerShell \((.+)\)\.$/.exec(text);
+  if (powershell && normalizeLanguage(language) === 'zh-CN') return `无法启动 Windows PowerShell（${powershell[1]}）。`;
+  const helper = /^The Windows update helper exited before it was ready \(([^)]+)\)\.([\s\S]*)$/.exec(text);
+  if (helper && normalizeLanguage(language) === 'zh-CN') return `Windows 更新助手在就绪前退出（${helper[1]}）。${helper[2]}`;
   if (normalizeLanguage(language) === 'zh-CN' && text.startsWith('Account authentication required. Open ')) return '请打开官方认证页面并输入下方验证码，登录同一账号后重试请求。';
   return text;
 }

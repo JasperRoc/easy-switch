@@ -215,6 +215,7 @@ button.link {display:inline-flex;align-items:center;gap:6px;border-radius:99px;}
 .release-notes code {font-size:10px;letter-spacing:0;font-weight:500;background:var(--notice);border-radius:4px;padding:1px 4px;}
 #update-transfer {margin-top:18px;}
 #update-progress {display:block;margin:0 0 7px;}
+#update-error {white-space:pre-line;}
 .update-bottom {margin-top:22px;}
 .update-bottom .actions {justify-content:flex-end;margin:16px 0 0;}
 #update-dialog[data-phase="current"] .update-emblem {color:#287b68;}

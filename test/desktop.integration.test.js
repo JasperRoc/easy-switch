@@ -135,6 +135,43 @@ test('a saved installer failure is visible on the first update review in both la
   await page.evaluate(() => document.getElementById('update-dialog').showModal());
   await page.locator('#update-error').filter({ hasText: 'Windows 安装器失败（退出码 2）' }).waitFor();
 });
+test('Windows update review offers manual recovery after the helper fails', { skip: !enabled, timeout: 30000 }, async t => {
+  const { app, page } = await launch(t);
+  await assert.rejects(page.evaluate(() => window.easySwitch.call('update-reveal', 'C:\\other.exe')), /Download and verify the update first/);
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('easy-switch:call');
+    const update = { phase: 'ready', version: '0.5.39', canRevealInstaller: true };
+    globalThis.updateActions = [];
+    ipcMain.removeHandler('easy-switch:call');
+    ipcMain.handle('easy-switch:call', async (event, action, payload) => {
+      if (action === 'state') return { ...await original(event, action, payload), platform: 'win32', update };
+      if (action === 'updates') return update;
+      if (action === 'update-install') {
+        globalThis.updateActions.push(action);
+        update.error = 'Unable to start Windows PowerShell (EACCES).';
+        throw new Error(update.error);
+      }
+      if (action === 'update-reveal') {
+        globalThis.updateActions.push([action, payload ?? null]);
+        return null;
+      }
+      return original(event, action, payload);
+    });
+  });
+  await page.click('#updates');
+  await page.getByRole('button', { name: 'Show installer in folder' }).waitFor();
+  assert.equal(await page.locator('#update-retry').isVisible(), false);
+  await page.click('#update-action');
+  await page.locator('#update-error').filter({ hasText: 'Unable to start Windows PowerShell (EACCES).' }).waitFor();
+  assert.match(await page.locator('#update-warning').textContent(), /select your existing installation folder/);
+  await page.click('#update-reveal');
+  assert.deepEqual(await app.evaluate(() => globalThis.updateActions), ['update-install', ['update-reveal', null]]);
+  await page.click('#close-update');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#updates');
+  await page.getByRole('button', { name: '显示安装包' }).waitFor();
+  await page.locator('#update-error').filter({ hasText: '无法启动 Windows PowerShell（EACCES）。' }).waitFor();
+});
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const { app, page, root } = await launch(t, {}, undefined, directory => {
     init(directory); addProvider('saved', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture-private' }, directory);

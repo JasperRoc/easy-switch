@@ -10,6 +10,7 @@ function showMapping(mapping = {}) {
 }
 let state, renderedProviders = '', refreshing = null;
 let language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
+let pendingUpdateAction;
 let importLoading = false;
 let catalogProvider = null, catalogResult = null, catalogLoading = false, catalogError = '', catalogRequest = 0;
 let catalogDraft = [], catalogMapping = {}, catalogCustom = false, catalogDirty = false, catalogDrag = null;
@@ -529,7 +530,7 @@ function renderReleaseNotes(notes) {
 }
 function renderUpdate() {
   const update = state.update || { phase: 'idle' }, phase = update.phase;
-  const busy = ['checking', 'downloading', 'installing'].includes(phase);
+  const busy = !!pendingUpdateAction || ['checking', 'downloading', 'installing'].includes(phase);
   $('update-dialog').dataset.phase = phase;
   $('update-dot').hidden = !['available', 'ready'].includes(phase);
   $('update-current').textContent = `easy-switch ${state.version}`;
@@ -545,8 +546,11 @@ function renderUpdate() {
   $('update-error').hidden = !update.error; if (update.error) $('update-error').textContent = localizeMessage(update.error, language);
   $('update-action').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase) && !update.retryDownload;
   $('update-action').disabled = busy; $('update-action').textContent = t(update.retryDownload ? 'retryDownload' : phase === 'ready' || phase === 'installing' ? 'updateInstall' : 'updateDownload');
-  $('update-retry').disabled = busy;
+  if (pendingUpdateAction === 'update-install' && phase === 'ready') $('update-action').textContent = t('updatePreparing');
+  $('update-retry').disabled = busy; $('update-retry').hidden = !!update.canRevealInstaller;
+  $('update-reveal').hidden = !update.canRevealInstaller; $('update-reveal').disabled = busy;
   $('update-warning').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase);
+  $('update-warning').textContent = t(update.canRevealInstaller && update.error ? 'updateManualInstallHelp' : 'updateRestartWarning');
   $('update-metadata').hidden = !update.version;
   $('update-metadata').textContent = [update.version ? `${state.version} → ${update.version}` : '', update.date ? new Date(update.date).toLocaleDateString(language) : '', update.size ? formattedBytes(update.size) : ''].filter(Boolean).join(' · ');
   $('update-changes').hidden = !update.version;
@@ -556,7 +560,23 @@ function renderUpdate() {
 async function showUpdates() { if(!$('update-dialog').open)$('update-dialog').showModal();try{await run('updates');}catch{} }
 $('updates').addEventListener('click',showUpdates); $('update-retry').addEventListener('click',showUpdates);
 $('close-update').addEventListener('click',()=>$('update-dialog').close());
-$('update-action').addEventListener('click',async()=>{try{await call(state.update.phase==='ready'?'update-install':'update-download');}catch(error){showError(error,'update-error');}finally{await refresh();}});
+async function runUpdateAction(action) {
+  if (pendingUpdateAction) return;
+  pendingUpdateAction = action;
+  renderUpdate();
+  let failure;
+  try { await call(action); }
+  catch (error) { failure = error; }
+  finally {
+    if (refreshing) await refreshing;
+    await refresh();
+    pendingUpdateAction = undefined;
+    renderUpdate();
+  }
+  if (failure) showError(failure, 'update-error');
+}
+$('update-action').addEventListener('click', () => runUpdateAction(state.update.phase === 'ready' ? 'update-install' : 'update-download'));
+$('update-reveal').addEventListener('click', () => runUpdateAction('update-reveal'));
 $('star').addEventListener('click',()=>call('star').catch(showError));
 window.easySwitch.onChange(nextState => { if (!document.hidden) refresh(nextState); });
 window.easySwitch.onShow(() => { if (document.activeElement?.closest('.sidebar')) document.activeElement.blur(); });

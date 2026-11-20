@@ -12,7 +12,7 @@ fs.mkdirSync(path.join(root, 'desktop-ui'), { recursive: true, mode: 0o700 });
 app.setPath('userData', path.join(root, 'desktop-ui'));
 app.setAppLogsPath(path.join(root, 'logs'));
 const ownsLock = app.requestSingleInstanceLock();
-let window, tray, controller, updater, accountImages, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, startupError = '';
+let window, tray, controller, updater, accountImages, activity, updateTimer, initialUpdate, quitting = false, quitReady = false, installingUpdate = false, startupError = '';
 let trayState = '', trayMenu, uiState = '', loginItem, uiLanguage = 'en', uiClient = 'codex', translate;
 const t = (key, values) => translate(uiLanguage, key, values).replaceAll('Codex', uiClient === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', uiClient === 'claude' ? 'Claude' : 'ChatGPT');
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
@@ -152,17 +152,24 @@ async function boot() {
         }
         case 'updates': return await updater.check();
         case 'update-download': if (!app.isPackaged) throw new Error(t('updateDevelopment')); await updater.download(); return updater.snapshot();
+        case 'update-reveal': shell.showItemInFolder(await updater.verifiedWindowsInstaller()); return null;
         case 'update-install': {
           if (!app.isPackaged) throw new Error(t('updateDevelopment'));
-          if (controller.runtime.activeRequests) {
-            const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: [t('keepRunning'), t('installUpdate')], defaultId: 0, cancelId: 0, message: t('requestsRunning'), detail: t('updateRestartWarning') });
-            if (choice.response !== 1) return updater.snapshot();
+          if (installingUpdate) return updater.snapshot();
+          installingUpdate = true;
+          try {
+            if (controller.runtime.activeRequests) {
+              const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: [t('keepRunning'), t('installUpdate')], defaultId: 0, cancelId: 0, message: t('requestsRunning'), detail: t('updateRestartWarning') });
+              if (choice.response !== 1) return updater.snapshot();
+            }
+            await controller.stop();
+            accountImages.close();
+            try { await updater.install({ codexHome: controller.codexHome }); }
+            catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
+            quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
+          } finally {
+            installingUpdate = false;
           }
-          await controller.stop();
-          accountImages.close();
-          try { await updater.install({ codexHome: controller.codexHome }); }
-          catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
-          quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
         }
         case 'star': await shell.openExternal(repository); return null;
         case 'uninstall': {

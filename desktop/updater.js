@@ -143,25 +143,49 @@ export async function startWindowsUpdate(job, run = spawn) {
   fs.copyFileSync(fileURLToPath(new URL('./windows-update.ps1', import.meta.url)), script);
   const handshake = path.join(directory, 'helper-ready.json'); fs.rmSync(handshake, { force: true });
   atomic(descriptor, { ...job, handshake });
-  const literal = value => `'${value.replaceAll("'", "''")}'`;
-  const command = `& ${literal(script)} -JobFile ${literal(descriptor)}`;
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')],
-    { cwd: directory, detached: true, windowsHide: true, stdio: 'ignore' });
+  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-JobFile', descriptor],
+    { cwd: directory, detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr?.setEncoding('utf8').on('data', chunk => { stderr += chunk.slice(0, 1200 - stderr.length); });
+  const readHandshake = () => {
+    try {
+      const ready = JSON.parse(fs.readFileSync(handshake, 'utf8'));
+      if (ready.token === job.token) return ready;
+    } catch { /* The worker may still be writing its receipt. */ }
+  };
   try {
     await new Promise((resolve, reject) => {
-      let poll;
-      const finish = error => { clearInterval(poll); clearTimeout(timer); child.removeListener('error', failed); child.removeListener('exit', failed); error ? reject(error) : resolve(); };
-      const failed = () => finish(new Error('The Windows update helper could not start. Run the downloaded installer manually.'));
-      const timer = setTimeout(failed, 15000);
-      child.once('error', failed); child.once('exit', failed);
-      poll = setInterval(() => {
-        let ready; try { ready = JSON.parse(fs.readFileSync(handshake, 'utf8')); } catch { return; }
-        if (ready.token === job.token) { if (ready.error) finish(new Error(ready.error)); else if (ready.ready) finish(); }
+      const finish = error => {
+        clearInterval(poll); clearTimeout(timer);
+        child.removeListener('error', failed); child.removeListener('close', exited);
+        error ? reject(error) : resolve();
+      };
+      const failed = error => finish(new Error(`Unable to start Windows PowerShell (${error.code || error.message}).`));
+      const exited = (code, signal) => {
+        const detail = stderr.trim();
+        // A worker that just failed can exit before the next poll observes its receipt.
+        const error = readHandshake()?.error || `The Windows update helper exited before it was ready (${code ?? signal}).${detail ? '\n' + detail : ''}`;
+        finish(new Error(error));
+      };
+      const poll = setInterval(() => {
+        const ready = readHandshake();
+        if (ready?.error) finish(new Error(ready.error));
+        else if (ready?.ready && child.exitCode == null && child.signalCode == null) finish();
       }, 100);
+      const timer = setTimeout(() => {
+        finish(new Error(readHandshake()?.error || 'The Windows update helper did not become ready within 60 seconds.'));
+      }, 60000);
+      child.once('error', failed); child.once('close', exited);
     });
     child.unref();
-  } catch (error) { child.kill(); throw error; }
+  } catch (error) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      child.once('error', () => {});
+      child.kill();
+    }
+    throw error;
+  } finally { child.stderr?.destroy(); }
 }
 export class DesktopUpdater {
   constructor({ root, current, platform = process.platform, arch = process.arch, changed = () => {}, fetchImpl, systemFetch, useSystemNetwork = () => true }) {
@@ -172,7 +196,8 @@ export class DesktopUpdater {
     const error = path.join(this.directory, 'last-error.txt');
     if (fs.existsSync(error)) { this.state = { ...this.state, phase: 'error', failedAction: 'install', error: fs.readFileSync(error, 'utf8') }; this.installErrorPending = true; fs.rmSync(error); }
   }
-  snapshot() { return { ...this.state, retryDownload: this.state.phase === 'error' && this.state.failedAction === 'download' && !!this.release,
+  get canRevealInstaller() { return this.platform === 'win32' && this.state.phase === 'ready' && !!this.staged; }
+  snapshot() { return { ...this.state, canRevealInstaller: this.canRevealInstaller, retryDownload: this.state.phase === 'error' && this.state.failedAction === 'download' && !!this.release,
     notes: this.release?.notes || '', date: this.release?.date || '', size: this.release?.asset.size || 0 }; }
   emit(patch) { this.state = { ...this.state, ...patch }; this.changed(); }
   async connection(operation) {
@@ -213,6 +238,27 @@ export class DesktopUpdater {
       this.emit({ phase: 'ready', received: release.asset.size });
     }).catch(error => { const message = updateError(error, 'download'); this.emit({ phase: 'error', failedAction: 'download', error: message }); throw new Error(message); }).finally(() => { this.pending = null; });
     return this.pending;
+  }
+  async verifiedWindowsInstaller() {
+    if (!this.canRevealInstaller) throw new Error('Download and verify the update first.');
+    const file = this.staged, { size, sha256 } = this.release.asset;
+    let verified = false;
+    try {
+      const info = fs.lstatSync(file);
+      if (info.isFile() && info.size === size) {
+        const hash = crypto.createHash('sha256');
+        for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+        verified = hash.digest('hex') === sha256;
+      }
+    } catch { /* A missing or unreadable installer also needs a new download. */ }
+    if (!this.canRevealInstaller || this.staged !== file) throw new Error('Download and verify the update first.');
+    if (!verified) {
+      const error = 'Update package SHA-256 verification failed.';
+      this.staged = null;
+      this.emit({ phase: 'error', failedAction: 'download', error });
+      throw new Error(error);
+    }
+    return file;
   }
   confirmLaunch() {
     if (!fs.existsSync(this.receipt)) return;

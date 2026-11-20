@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { selectRelease, compareVersions, downloadVerified, downloadPackage, validateArchiveEntries, DesktopUpdater, startWindowsUpdate } from '../desktop/updater.js';
 import helper from '../desktop/update-helper.cjs';
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -28,14 +29,14 @@ test('checking updates exposes release notes and performs no download or install
  const urls=[],updater=new DesktopUpdater({root:temporary(t),current:'0.4.0',platform:'darwin',arch:'arm64',fetchImpl:async url=>{urls.push(url);return Response.json([release('0.5.0')]);}});
  await updater.check();assert.equal(updater.snapshot().phase,'available');assert.equal(updater.snapshot().notes,'Release notes');assert.equal(urls.length,1);assert.equal(updater.staged,null);
 });
-test('Windows waits for a verified helper handshake outside the installation directory and quotes paths safely', async t => {
+test('Windows waits for the helper handshake and passes paths as literal arguments', async t => {
  const directory=path.join(temporary(t), "用户's updates");fs.mkdirSync(directory);
  const receipt=path.join(directory,'pending.json'),job={current:'C:\\Program Files\\easy-switch\\easy-switch.exe',staged:path.join(directory,'update.exe'),receipt,version:'1.0.0',token:'fixture-token',parent:42,sha256:digest('abc'),size:3};
  let child;
  await startWindowsUpdate(job,(file,args,options)=>{
   assert.match(file,/WindowsPowerShell\\v1\.0\\powershell\.exe$/);assert.equal(options.cwd,directory);assert.equal(options.windowsHide,true);
-  assert.equal(options.detached,true);assert.equal(options.stdio,'ignore');
-  const command=Buffer.from(args.at(-1),'base64').toString('utf16le');assert.match(command,/用户''s updates/);assert.match(command,/ -JobFile /);
+  assert.equal(options.detached,true);assert.deepEqual(options.stdio,['ignore','ignore','pipe']);
+  assert.deepEqual(args.slice(-4),['-File',path.join(directory,'windows-update.ps1'),'-JobFile',path.join(directory,'install.json')]);
   const descriptor=JSON.parse(fs.readFileSync(path.join(directory,'install.json')));assert.equal(descriptor.current,job.current);
   assert.equal(descriptor.sha256,job.sha256);assert.equal(fs.existsSync(path.join(directory,'windows-update.ps1')),true);
   child=new EventEmitter();child.unref=()=>{child.unreferenced=true;};child.kill=()=>{child.killed=true;};
@@ -44,17 +45,44 @@ test('Windows waits for a verified helper handshake outside the installation dir
  });
  assert.equal(child.unreferenced,true);assert.equal(child.killed,undefined);
 });
-test('Windows rejects a helper that exits or fails verification instead of treating spawn as installation success', async t => {
+test('Windows retains the helper verification error when it writes a receipt and immediately exits', async t => {
  const directory=temporary(t),job={current:'C:\\easy-switch\\easy-switch.exe',staged:'fixture.exe',receipt:path.join(directory,'pending.json'),version:'1.0.0',token:'fixture-token'};
- for(const kind of ['exit','error','verification']) {
-  let child;
-  await assert.rejects(startWindowsUpdate(job,()=>{
-   child=new EventEmitter();child.unref=()=>{};child.kill=()=>{child.killed=true;};
-   setTimeout(()=>kind==='verification'?fs.writeFileSync(path.join(directory,'helper-ready.json'),JSON.stringify({token:job.token,error:'Update package SHA-256 verification failed.'})):child.emit(kind,kind==='exit'?1:Error('blocked')),10);
-   return child;
-  }),kind==='verification'?/SHA-256/:/helper could not start/);
-  assert.equal(child.killed,true);
- }
+ await assert.rejects(startWindowsUpdate(job,()=>{
+  const child=new EventEmitter();child.unref=()=>{};child.kill=()=>{};
+  setImmediate(()=>{
+   fs.writeFileSync(path.join(directory,'helper-ready.json'),JSON.stringify({token:job.token,error:'Update package SHA-256 verification failed.'}));
+   child.emit('exit',1,null);
+   child.emit('close',1,null);
+  });
+  return child;
+ }),/SHA-256/);
+});
+test('Windows reports launch failures, early exits and startup timeouts separately', async t => {
+ const directory=temporary(t),job={receipt:path.join(directory,'pending.json'),token:'fixture-token'};
+ await assert.rejects(startWindowsUpdate(job,()=>{
+  const child=new EventEmitter();
+  setImmediate(()=>child.emit('error',Object.assign(Error('access denied'),{code:'EACCES'})));
+  return child;
+ }),/Unable to start Windows PowerShell \(EACCES\)/);
+
+ await assert.rejects(startWindowsUpdate(job,()=>{
+  const child=new EventEmitter();child.stderr=new PassThrough();
+  setImmediate(()=>{
+   child.emit('exit',1,null);
+   child.stderr.end('PowerShell could not read the job file.');
+   child.emit('close',1,null);
+  });
+  return child;
+ }),/exited before it was ready \(1\)\.\nPowerShell could not read the job file/);
+
+ t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ const waiting=new EventEmitter();
+ Object.assign(waiting,{pid:42,exitCode:null,signalCode:null,kill(){this.killed=true;}});
+ const result=startWindowsUpdate(job,()=>waiting);
+ const rejection=assert.rejects(result,/did not become ready within 60 seconds/);
+ t.mock.timers.tick(60000);
+ await rejection;
+ assert.equal(waiting.killed,true);
 });
 test('startup confirms only the requested version and executable, retaining the receipt token', t => {
  const updater=new DesktopUpdater({root:temporary(t),current:'1.0.0'});
@@ -99,6 +127,25 @@ test('automatic updates use the system network transport and a failed download c
  assert.equal(fs.existsSync(path.join(root,'updates','easy-switch-0.5.0-win-x64.exe.part')),false);
  await updater.download();assert.equal(updater.snapshot().phase,'ready');assert.equal(updater.snapshot().retryDownload,false);
  assert.equal(fs.readFileSync(updater.staged,'utf8'),'abc');
+});
+
+test('Windows manual recovery reveals only the verified installer and retries a changed file', async t => {
+ const root=temporary(t);
+ const updater=new DesktopUpdater({root,current:'0.5.37',platform:'win32',arch:'x64',fetchImpl:async url=>
+  url.includes('api.github.com') ? Response.json([release('0.5.38','win-x64.exe')]) : new Response('abc')});
+ await updater.check();
+ assert.equal(updater.snapshot().canRevealInstaller,false);
+ await assert.rejects(updater.verifiedWindowsInstaller(),/Download and verify/);
+ await updater.download();
+ const installer=path.join(root,'updates','easy-switch-0.5.38-win-x64.exe');
+ assert.equal(updater.snapshot().canRevealInstaller,true);
+ assert.equal(await updater.verifiedWindowsInstaller(),installer);
+ fs.writeFileSync(installer,'abd');
+ await assert.rejects(updater.verifiedWindowsInstaller(),/SHA-256/);
+ assert.equal(updater.snapshot().canRevealInstaller,false);
+ assert.equal(updater.snapshot().retryDownload,true);
+ await updater.download();
+ assert.equal(await updater.verifiedWindowsInstaller(),installer);
 });
 
 test('large downloads use bounded parallel ranges, verify the whole file and resume only complete parts', async t => {

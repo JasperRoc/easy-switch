@@ -81,7 +81,14 @@
     <section id="update-changes" hidden><h3 data-i18n="whatsNew">What’s new</h3><div id="update-notes" class="release-notes"></div></section>
     <div id="update-transfer" hidden><progress id="update-progress" max="100"></progress><span id="update-bytes" class="help"></span></div>
     <p id="update-error" class="notice error" role="alert" hidden></p>
-    <div class="update-bottom"><p id="update-warning" class="help" data-i18n="updateRestartWarning" hidden></p><div class="actions"><button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button><button id="update-action"></button></div></div>
+    <div class="update-bottom">
+      <p id="update-warning" class="help" hidden></p>
+      <div class="actions">
+        <button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button>
+        <button id="update-reveal" class="secondary" data-i18n="updateReveal" hidden>Show installer in folder</button>
+        <button id="update-action"></button>
+      </div>
+    </div>
   </dialog>
   <dialog id="reset-dialog" aria-labelledby="reset-title">
     <div class="section-heading"><h2 id="reset-title"></h2><button id="close-reset" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
