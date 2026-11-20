@@ -11,7 +11,7 @@ try {
   foreach ($scenario in @('success', 'installer-failure', 'version-unchanged', 'startup-unconfirmed', 'corrupt-package', 'parent-running')) {
     $script:events = [Collections.Generic.List[string]]::new()
     $script:scenario = $scenario
-    $script:directory = Join-Path $root "用户's update $scenario"
+    $script:directory = Join-Path $root "User's update $scenario"
     New-Item -ItemType Directory -Path $script:directory | Out-Null
     $installed = Join-Path $root ('Program Files ' + $scenario)
     New-Item -ItemType Directory -Path $installed | Out-Null

@@ -37,11 +37,11 @@ To recover an affected installation:
 
 From 0.5.37, a PowerShell worker runs outside the application directory, verifies the downloaded hash before confirming readiness, waits for the old process, and passes the existing directory to NSIS. It checks the installer exit code and executable version, launches that exact copy and waits for its startup receipt. The worker saves installation errors in `updates/last-error.txt` for the next launch and keeps the installer in the cache.
 
-From 0.5.39, the update dialog distinguishes PowerShell launch errors, early exits and timeouts. Use **Show installer in folder** to verify the downloaded package again and select it in File Explorer. PowerShell preflight and installer control flow are tested on macOS. A full Windows upgrade still needs verification on Windows.
+From 0.5.39, the update dialog distinguishes PowerShell launch errors, early exits and timeouts. Use **Show installer in folder** to verify the downloaded package again and select it in File Explorer. PowerShell preflight and installer control flow are tested on macOS. From 0.5.41, the app explicitly starts the installation routine when launching the helper. If your current version reports that the helper exited before it was ready, install 0.5.41 or later over the existing copy using the steps above.
 
 0.5.37 之前（包括 0.5.5）的更新只确认隐藏的 PowerShell 已启动，没有检查安装退出码、安装目录和重启后的版本，因此失败可能没有提示。手动更新时，从托盘完全退出 easy-switch，再运行最新 Windows 安装包覆盖原目录。默认下载缓存位于 `%USERPROFILE%\.codex-switch\updates`。直接覆盖安装会保留服务商与设置，完整卸载会清理这些数据。若有多个安装副本，确认快捷方式指向正确目录。新版会检查助手、安装结果和启动回执，安装错误记录在 `updates/last-error.txt`，并在下次启动时显示。
 
-自 0.5.39 起，更新窗口会区分 PowerShell 启动失败、助手提前退出和超时。点击 **显示安装包** 可重新校验下载的文件，并在资源管理器中定位它。PowerShell 预检与安装控制流程已在 macOS 验证，完整升级仍需在 Windows 上实测。
+自 0.5.39 起，更新窗口会区分 PowerShell 启动失败、助手提前退出和超时。点击 **显示安装包** 可重新校验下载的文件，并在资源管理器中定位它。已在 macOS 验证 PowerShell 预检与安装控制流程。自 0.5.41 起，软件启动助手时会显式调用安装流程。若当前版本提示助手在就绪前退出，请按上面的步骤覆盖安装 0.5.41 或更新版本。
 
 ## Subscription plan refresh / 订阅套餐刷新
 

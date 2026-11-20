@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$JobFile)
+param([Parameter(Mandatory=$true)][string]$JobFile, [switch]$RunUpdate)
 $ErrorActionPreference = 'Stop'
 
 function Invoke-EasySwitchUpdate {
@@ -73,6 +73,6 @@ function Invoke-EasySwitchUpdate {
   }
 }
 
-if ($MyInvocation.InvocationName -ne '.') {
+if ($RunUpdate) {
   if (!(Invoke-EasySwitchUpdate)) { exit 1 }
 }

@@ -36,7 +36,7 @@ test('Windows waits for the helper handshake and passes paths as literal argumen
  await startWindowsUpdate(job,(file,args,options)=>{
   assert.match(file,/WindowsPowerShell\\v1\.0\\powershell\.exe$/);assert.equal(options.cwd,directory);assert.equal(options.windowsHide,true);
   assert.equal(options.detached,true);assert.deepEqual(options.stdio,['ignore','ignore','pipe']);
-  assert.deepEqual(args.slice(-4),['-File',path.join(directory,'windows-update.ps1'),'-JobFile',path.join(directory,'install.json')]);
+  assert.deepEqual(args.slice(-5),['-File',path.join(directory,'windows-update.ps1'),'-JobFile',path.join(directory,'install.json'),'-RunUpdate']);
   const descriptor=JSON.parse(fs.readFileSync(path.join(directory,'install.json')));assert.equal(descriptor.current,job.current);
   assert.equal(descriptor.sha256,job.sha256);assert.equal(fs.existsSync(path.join(directory,'windows-update.ps1')),true);
   child=new EventEmitter();child.unref=()=>{child.unreferenced=true;};child.kill=()=>{child.killed=true;};

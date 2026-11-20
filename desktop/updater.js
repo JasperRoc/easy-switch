@@ -144,7 +144,7 @@ export async function startWindowsUpdate(job, run = spawn) {
   const handshake = path.join(directory, 'helper-ready.json'); fs.rmSync(handshake, { force: true });
   atomic(descriptor, { ...job, handshake });
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-JobFile', descriptor],
+  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-JobFile', descriptor, '-RunUpdate'],
     { cwd: directory, detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   child.stderr?.setEncoding('utf8').on('data', chunk => { stderr += chunk.slice(0, 1200 - stderr.length); });
