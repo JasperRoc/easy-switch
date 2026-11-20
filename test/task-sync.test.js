@@ -10,7 +10,7 @@ import { TaskSync } from '../src/task-sync.js';
 import { createSyncServer } from '../src/sync-server.js';
 import { SyncStorage, syncKey, seal, unseal, digest } from '../src/sync-storage.js';
 import { projectSnapshot, restoreProject } from '../src/sync-project.js';
-import { CodexTasks } from '../src/sync-codex.js';
+import { CodexTasks, relocateWorkspaceRoots } from '../src/sync-codex.js';
 import { checkpoint, expandContext } from '../src/compaction.js';
 import { SyncJournal } from '../src/sync-journal.js';
 
@@ -260,20 +260,34 @@ test('attachments and paths keep a stable history hash after moving to another c
   const root = fixture(t), source = path.join(root, 'source'), destination = path.join(root, 'destination'), attachment = path.join(root, 'picture.png');
   fs.mkdirSync(source); fs.mkdirSync(destination); fs.writeFileSync(attachment, 'fixture image');
   const id = 'task-attachment', timestamp = new Date().toISOString(), file = path.join(root, 'source.jsonl');
-  const records = [{ type: 'session_meta', payload: { id, cwd: source, timestamp } },
+  const records = [{ type: 'session_meta', payload: { id, cwd: source, timestamp, runtime_workspace_roots: [root] } },
     { type: 'response_item', payload: { type: 'message', content: [{ type: 'local_image', path: attachment }] } },
     { type: 'response_item', payload: checkpoint('Read ' + source + '/file.txt', 'local-a') }];
   fs.writeFileSync(file, records.map(value => JSON.stringify(value)).join('\n') + '\n');
   const a = new CodexTasks({ token: () => 'local-a' }), b = new CodexTasks({ token: () => 'local-b' });
   const first = a.read({ id, cwd: source, path: file });
+  assert.deepEqual(first.records[0].payload.runtime_workspace_roots, ['$PROJECT']);
   assert.equal(first.attachments[0].name, digest(Buffer.from('fixture image')) + '.png');
   const saved = path.join(root, first.attachments[0].name); fs.writeFileSync(saved, Buffer.from(first.attachments[0].data, 'base64'));
   const decoded = b.transform(first.records, [['$PROJECT', destination], ['$ATTACHMENTS', root]], null, 'local-b');
   const next = path.join(root, 'destination.jsonl'); fs.writeFileSync(next, decoded.map(value => JSON.stringify(value)).join('\n') + '\n');
   const second = b.read({ id, cwd: destination, path: next });
   assert.equal(second.hash, first.hash); assert.deepEqual(second.attachments, first.attachments);
+  const legacy = structuredClone(decoded); legacy[0].payload.runtime_workspace_roots = ['C:\\Users\\another-computer\\Codex'];
+  const broken = path.join(root, 'legacy.jsonl'); fs.writeFileSync(broken, legacy.map(value => JSON.stringify(value)).join('\n') + '\n');
+  const repair = b.read({ id, cwd: destination, path: broken });
+  assert.equal(repair.hash, first.hash); assert.equal(repair.workspaceRepair, true); assert.notEqual(repair.legacyHash, repair.hash);
   assert.equal(a.transform('C:\\code\\nested\\file.txt', [['C:\\code', '$PROJECT']], null, null), '$PROJECT/nested/file.txt');
   assert.equal(b.transform('{"file":"$PROJECT/nested/file.txt"}', [['$PROJECT', 'D:\\project']], null, null), '{"file":"D:\\\\project/nested/file.txt"}');
+});
+test('runtime roots from another host or an ancestor are narrowed to the mapped project on Windows and POSIX', () => {
+  const record = { type: 'session_meta', payload: { cwd: '$PROJECT', runtime_workspace_roots: ['/Users/example/Documents/Codex', '$PROJECT', '$PROJECT/sub'] } };
+  assert.deepEqual(relocateWorkspaceRoots(record, 'D:\\Projects\\task').payload.runtime_workspace_roots, ['D:\\Projects\\task', 'D:\\Projects\\task\\sub']);
+  const windows = { type: 'event_msg', payload: { type: 'thread_settings_applied', thread_settings: { runtime_workspace_roots: ['C:\\Users\\example', '$PROJECT'] } } };
+  assert.deepEqual(relocateWorkspaceRoots(windows, '/home/user/task').payload.thread_settings.runtime_workspace_roots, ['/home/user/task']);
+  assert.deepEqual(relocateWorkspaceRoots({ runtimeWorkspaceRoots: [] }, '/home/user/task').runtimeWorkspaceRoots, []);
+  assert.deepEqual(relocateWorkspaceRoots({ runtime_workspace_roots: ['$PROJECT/../../elsewhere'] }, 'D:\\Projects\\task').runtime_workspace_roots, ['D:\\Projects\\task']);
+  assert.deepEqual(relocateWorkspaceRoots({ runtime_workspace_roots: ['\\\\server\\share\\task\\sub'] }, '\\\\server\\share\\task').runtime_workspace_roots, ['\\\\server\\share\\task\\sub']);
 });
 test('sync settings from a second process retain selections and reject concurrent writers', async t => {
   const root = fixture(t), tasks = { list: async () => [{ id: 'task', title: 'Fixture' }] };

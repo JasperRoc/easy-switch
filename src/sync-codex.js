@@ -6,6 +6,30 @@ import { once } from 'node:events';
 import { checkpoint, expandContext } from './compaction.js';
 import { digest, maxPackage, syncID } from './sync-storage.js';
 
+export function relocateWorkspaceRoots(value, projectRoot) {
+  if (Array.isArray(value)) return value.map(item => relocateWorkspaceRoots(item, projectRoot));
+  if (!value || typeof value !== 'object') return value;
+  const paths = /^[a-z]:[\\/]|^\\\\/i.test(projectRoot) ? path.win32 : path.posix;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (['runtime_workspace_roots', 'runtimeWorkspaceRoots'].includes(key) && Array.isArray(item)) {
+      const roots = item.map(root => {
+        if (typeof root !== 'string') return projectRoot;
+        if (root === '$PROJECT' || root.startsWith('$PROJECT/')) root = paths.join(projectRoot, root.slice('$PROJECT'.length));
+        const relative = paths.relative(projectRoot, root);
+        const inside = relative === '' || relative !== '..' && !relative.startsWith('..' + paths.sep) && !paths.isAbsolute(relative);
+        return inside ? paths.join(projectRoot, relative) : projectRoot;
+      });
+      return [key, [...new Set(roots)]];
+    }
+    return [key, relocateWorkspaceRoots(item, projectRoot)];
+  }));
+}
+function invalidWorkspaceRoots(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, item]) => ['runtime_workspace_roots', 'runtimeWorkspaceRoots'].includes(key) && Array.isArray(item)
+    ? item.some(root => typeof root !== 'string' || (process.platform === 'win32' ? !/^(?:[a-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/i.test(root) : !path.isAbsolute(root)))
+    : invalidWorkspaceRoots(item));
+}
 export async function codexSession({ binary, codexHome, signal }, operation) {
   signal?.throwIfAborted();
   const child = spawn(binary, ['app-server', '--stdio'], { env: { ...process.env, CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -23,7 +47,7 @@ export async function codexSession({ binary, codexHome, signal }, operation) {
   const timer = setTimeout(abort, 30000);
   const call = (method, params) => new Promise((resolve, reject) => { const n = ++id; pending.set(n, { resolve, reject, method }); child.stdin.write(JSON.stringify({ id: n, method, params }) + '\n'); });
   try {
-    await call('initialize', { clientInfo: { name: 'easy_switch_sync', version: '1.0.0' } });
+    await call('initialize', { clientInfo: { name: 'easy_switch_sync', version: '1.0.0' }, capabilities: { experimentalApi: true } });
     child.stdin.write('{"method":"initialized"}\n');
     return await operation(call);
   } finally {
@@ -44,11 +68,11 @@ export class CodexTasks {
         path: thread.path, provider: thread.modelProvider, updatedAt: thread.updatedAt * 1000 }));
     });
   }
-  async withWriter(task, signal, operation) {
+  async withWriter(task, signal, operation, runtimeWorkspaceRoots) {
     const tasks = (Array.isArray(task) ? task : [task]).filter(Boolean);
     if (!tasks.length) return operation();
     return codexSession({ ...this, signal }, async call => {
-      try { for (const task of tasks) await call('thread/resume', { threadId: task.id, excludeTurns: true }); }
+      try { for (const task of tasks) await call('thread/resume', { threadId: task.id, excludeTurns: true, ...(runtimeWorkspaceRoots ? { cwd: task.cwd, runtimeWorkspaceRoots } : {}) }); }
       catch (error) {
         if (/active writer|already.*(?:loaded|running)/i.test(error.cause?.message || '')) {
           const busy = new Error('This task is open in Codex. Its incoming revision will be applied when Codex releases it.'); busy.code = 'SYNC_BUSY'; throw busy;
@@ -95,14 +119,28 @@ export class CodexTasks {
       const relative = path.relative(fs.realpathSync(projectRoot), fs.realpathSync(from)).split(path.sep).join('/');
       return [from, '$PROJECT' + (relative ? '/' + relative : '')];
     })];
-    const canonical = records.map(record => this.transform(record, mappings, this.token(), null));
-    const history = { records: canonical, hash: digest(JSON.stringify(canonical)), timestamp: meta.payload.timestamp, attachments: attachments.map(({ name, data }) => ({ name, data })) };
+    const legacy = records.map(record => this.transform(record, mappings, this.token(), null)), canonical = relocateWorkspaceRoots(legacy, '$PROJECT');
+    const history = { records: canonical, hash: digest(JSON.stringify(canonical)), legacyHash: digest(JSON.stringify(legacy)), workspaceRepair: invalidWorkspaceRoots(records),
+      timestamp: meta.payload.timestamp, attachments: attachments.map(({ name, data }) => ({ name, data })) };
     // Keep only lightweight lookup data; large histories are released after each sync pass.
     if (raw.length + attachments.reduce((size, item) => size + item.data.length, 0) < 1024 * 1024) {
       if (this.cache.size >= 20) this.cache.delete(this.cache.keys().next().value);
       this.cache.set(task.path, { size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, root: projectRoot, history });
     }
     return history;
+  }
+  async repairWorkspaceRoots(task, projectRoot, signal) {
+    return this.withWriter(task, signal, async () => {
+      const history = this.read(task, projectRoot);
+      if (!history) throw Object.assign(new Error('The local task changed during sync.'), { code: 'SYNC_BUSY' });
+      const raw = fs.readFileSync(task.path, 'utf8'), records = raw.trimEnd().split('\n').map(line => JSON.parse(line));
+      if (!invalidWorkspaceRoots(records)) return;
+      const backup = path.join(this.codexHome, 'sync-backups', task.id + '.jsonl');
+      fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 }); fs.copyFileSync(task.path, backup); fs.chmodSync(backup, 0o600);
+      const temp = task.path + '.sync.tmp';
+      fs.writeFileSync(temp, relocateWorkspaceRoots(records, projectRoot).map(record => JSON.stringify(record)).join('\n') + '\n', { mode: 0o600 }); fs.renameSync(temp, task.path);
+      this.cache.delete(task.path);
+    }, [projectRoot]);
   }
   transform(value, paths, fromToken, toToken) {
     if (typeof value === 'string') {
@@ -138,7 +176,7 @@ export class CodexTasks {
       fs.mkdirSync(attachmentRoot, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(attachmentRoot, attachment.name), Buffer.from(attachment.data, 'base64'), { mode: 0o600 });
     }
-    const records = this.transform(history.records, [['$PROJECT', projectRoot], ['$ATTACHMENTS', attachmentRoot]], null, this.token());
+    const records = relocateWorkspaceRoots(this.transform(history.records, [['$PROJECT', projectRoot], ['$ATTACHMENTS', attachmentRoot]], null, this.token()), projectRoot);
     if (records[0]?.type !== 'session_meta' || records[0].payload?.id !== task.id) throw new Error('Invalid synced Codex task history.');
     const text = records.map(record => JSON.stringify(record)).join('\n') + '\n';
     const date = new Date(history.timestamp);

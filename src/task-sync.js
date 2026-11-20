@@ -196,7 +196,12 @@ export class TaskSync {
           const stamp = this.tasks.stamp?.(task), cached = this.historyHashes.get(id);
           history = stamp && cached?.stamp === stamp ? { hash: cached.hash } : this.tasks.read(task, project.root);
           if (!history) { entry.status = 'running'; continue; }
-          if (stamp) this.historyHashes.set(id, { stamp, hash: history.hash });
+          if (history.legacyHash && history.legacyHash === selected.historyHash) selected.historyHash = history.hash;
+          if (history.workspaceRepair && this.tasks.repairWorkspaceRoots) {
+            await this.tasks.repairWorkspaceRoots(task, project.root, signal);
+            history = this.tasks.read(task, project.root); this.historyHashes.delete(id);
+            if (!history) { entry.status = 'running'; continue; }
+          } else if (stamp) this.historyHashes.set(id, { stamp, hash: history.hash });
           const projectKey = digest(project.origin || project.root);
           entry.projectKey ||= projectKey; this.config.projects[entry.projectKey] ||= project.root;
           if (touchedProjects.has(project.root)) { entry.status = 'pending'; this.localDirty = true; continue; }

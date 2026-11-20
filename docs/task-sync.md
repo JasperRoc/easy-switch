@@ -246,6 +246,8 @@ Keep the token and **encryption passphrase** separately. The encrypted database 
 
 Git projects restore to a detached HEAD at the synchronized commit, with staging and uncommitted changes retained. Other local branches are preserved. Ordinary folders restore their files without adding `.git`. Each destination still needs Git (also used for folder ignore rules), dependencies and external tools. Work on one computer at a time; if edits diverge, choose **Use this computer** or **Use server version** only after reviewing which version to retain. Upgrade every computer to **0.5.36+** when syncing ordinary folders.
 
+Version **0.5.38+** also relocates Codex runtime workspace roots. Roots inside the synchronized project retain their relative position; ancestor directories and other roots outside it are narrowed to the mapped project folder. External workspace files are not copied and access is not expanded to a destination parent folder. Existing synchronized copies with foreign roots are backed up and repaired automatically after the task is released, including when the content revision is unchanged. On an affected Windows computer, close the conversation (fully quit Codex if it remains loaded), update easy-switch, click **Sync now**, then reopen the same task. Existing remote packages remain readable; deleting the task or storage is unnecessary.
+
 **Automatic sync boundaries:** the normal interval is 30 seconds; tray operation continues, while sleep/offline conditions pause or back off work. Transfers contain completed turns, not running processes. A task or shared project still loaded in Codex blocks incoming replacement until released, so reopening that conversation may be necessary. Live refresh of an already-open window is not guaranteed.
 
 ## 5. Linux CLI
@@ -276,6 +278,7 @@ switch sync resolve <task-id> local   # Or remote, to resolve a conflict
 | Connection failed | SSH tunnel, DNS/certificate/firewall, and any outbound proxy used by easy-switch |
 | HTTP 413 / size limit | Reverse-proxy request-body limit or package size; encrypted packages are capped at 256 MiB |
 | Waiting for an open task | Finish and release/close the destination conversation, wait for sync, then reopen |
+| `cannot restore workspace root` / `path is not absolute` after changing systems | Upgrade to 0.5.38+, release the destination Codex task, and sync again to replace the old host's runtime roots with the mapped project folder |
 | Task row shows Sync failed | Read the localized reason directly below the task's folder. Verify Git is available, file permissions and size limits |
 | Project conflict | Local project state diverged from the last sync; preserve important changes before choosing a version |
 | Task missing from Codex sidebar | Same local user/`CODEX_HOME`, correct mapped project, refreshed task list; cloud-only tasks are outside this feature |
