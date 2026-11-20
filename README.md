@@ -151,13 +151,13 @@ Desktop Codex account rows show remaining quota from the account’s usage endpo
 
 ### Can I continue a selected Codex task on another computer?
 
-Configure **Settings → Task sync** with WebDAV or the included SQLite-backed sync server, use the same encryption passphrase on each computer, and select tasks. Each destination asks for its local project folder once; saved history, task IDs, file attachments and project files then synchronize automatically while easy-switch runs. Git projects include commits/uncommitted changes; ordinary and empty folders also work with **0.5.36+ on every computer**. Linux supports `switch sync`. Running processes stay on their original machine, concurrent edits are preserved as conflicts, and already-open Codex views can require reopening the conversation. Task failures show the specific reason below the folder path. See [setup, self-hosting and limits](docs/task-sync.md).
+Configure **Settings → Task sync** with WebDAV or the included SQLite-backed sync server, use the same encryption passphrase on each computer, and select tasks. From **0.5.40**, each destination automatically restores new projects to `easy-switch-projects` and reuses saved project locations. Saved history, task IDs, attachments, Git state and ordinary folders synchronize while easy-switch runs. Linux supports `switch sync`. Concurrent edits remain available as conflicts. Already-open Codex views may require reopening the conversation. [Setup, self-hosting and limits](docs/task-sync.md)
 
 Already use Zotero? Its third-party WebDAV storage can be reused with a separate folder; Zotero Storage accounts cannot connect directly. The [step-by-step guide](docs/task-sync.md) includes field examples, Docker/HTTPS deployment, SSH tunnels, a Node.js service, backups and second-computer setup. Open **Setup guide** from the sync page for the matching language.
 
 For Nutstore and other WebDAV services without atomic conditional writes, upgrade **every computer to 0.5.35+**. Sync uses separate immutable revision files and preserves concurrent branches; ETags are optional.
 
-For macOS/Linux ↔ Windows transfers, use **0.5.38+** to relocate saved runtime workspace roots. Existing copies with foreign roots are repaired after Codex releases the task; sync again and reopen it. Keep the same task, storage and passphrase.
+On Windows, **0.5.40+** keeps the existing history and retries if Windows blocks file replacement. Existing copies with foreign workspace paths are repaired after Codex releases the task. [Task sync troubleshooting](docs/task-sync.md#6-troubleshooting)
 
 ### Can I use an earned quota-reset card?
 

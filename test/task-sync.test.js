@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
 import { TaskSync } from '../src/task-sync.js';
 import { createSyncServer } from '../src/sync-server.js';
 import { SyncStorage, syncKey, seal, unseal, digest } from '../src/sync-storage.js';
 import { projectSnapshot, restoreProject } from '../src/sync-project.js';
-import { CodexTasks, relocateWorkspaceRoots } from '../src/sync-codex.js';
+import { CodexTasks, relocateWorkspaceRoots, withWindowsWriter } from '../src/sync-codex.js';
 import { checkpoint, expandContext } from '../src/compaction.js';
 import { SyncJournal } from '../src/sync-journal.js';
 
@@ -121,11 +121,13 @@ test('unchanged WebDAV references use listing ETags without one GET per task', a
   const ref = { version: 1, id, title: 'Remote task', projectKey: 'a'.repeat(64), revision: 'b'.repeat(64), object: 'c'.repeat(64) };
   const sync = new TaskSync({ root, tasks: { list: async () => [] }, fetchImpl: async (_url, options) => {
     if (options.method === 'PROPFIND') return new Response('<d:multistatus xmlns:d="DAV:"><d:response><d:href>/refs/selected-task.bin</d:href><d:propstat><d:prop><d:getetag>&quot;stable&quot;</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>', { status: 207 });
+    if (!_url.includes('/refs/')) return new Response(null, { status: 404 });
     reads++; return new Response(seal(ref, key), { headers: { etag: '"stable"' } });
   } });
   t.after(() => sync.close()); sync.config = { ...sync.config, kind: 'webdav', url: 'https://dav.example.test/library/', username: 'user', secret: 'password', passphrase: 'fixture shared passphrase', enabled: true }; sync.save();
   await sync.run(); await sync.run();
-  assert.equal(reads, 1); assert.equal(sync.snapshot().tasks[0].status, 'needsProject');
+  assert.equal(reads, 1, 'unchanged references are cached while the missing package is retried');
+  assert.match(sync.snapshot().tasks[0].message, /package is incomplete/);
 });
 test('immutable revision journals retain concurrent versions when WebDAV ignores preconditions and omits ETags', async t => {
   const { config, objects, writes, reads } = await unconditionalWebDAV(t), storage = new SyncStorage(config);
@@ -273,7 +275,8 @@ test('attachments and paths keep a stable history hash after moving to another c
   const next = path.join(root, 'destination.jsonl'); fs.writeFileSync(next, decoded.map(value => JSON.stringify(value)).join('\n') + '\n');
   const second = b.read({ id, cwd: destination, path: next });
   assert.equal(second.hash, first.hash); assert.deepEqual(second.attachments, first.attachments);
-  const legacy = structuredClone(decoded); legacy[0].payload.runtime_workspace_roots = ['C:\\Users\\another-computer\\Codex'];
+  const legacy = structuredClone(decoded);
+  legacy[0].payload.runtime_workspace_roots = [process.platform === 'win32' ? '/Users/another-computer/Codex' : 'C:\\Users\\another-computer\\Codex'];
   const broken = path.join(root, 'legacy.jsonl'); fs.writeFileSync(broken, legacy.map(value => JSON.stringify(value)).join('\n') + '\n');
   const repair = b.read({ id, cwd: destination, path: broken });
   assert.equal(repair.hash, first.hash); assert.equal(repair.workspaceRepair, true); assert.notEqual(repair.legacyHash, repair.hash);
@@ -288,6 +291,57 @@ test('runtime roots from another host or an ancestor are narrowed to the mapped 
   assert.deepEqual(relocateWorkspaceRoots({ runtimeWorkspaceRoots: [] }, '/home/user/task').runtimeWorkspaceRoots, []);
   assert.deepEqual(relocateWorkspaceRoots({ runtime_workspace_roots: ['$PROJECT/../../elsewhere'] }, 'D:\\Projects\\task').runtime_workspace_roots, ['D:\\Projects\\task']);
   assert.deepEqual(relocateWorkspaceRoots({ runtime_workspace_roots: ['\\\\server\\share\\task\\sub'] }, '\\\\server\\share\\task').runtime_workspace_roots, ['\\\\server\\share\\task\\sub']);
+});
+test('Windows history repair backs up the rollout and retries a blocked atomic replacement', async t => {
+  const home = fixture(t), id = 'repair-task', file = path.join(home, 'rollout.jsonl');
+  const meta = { type: 'session_meta', payload: { id, cwd: home, timestamp: new Date().toISOString(), runtime_workspace_roots: [process.platform === 'win32' ? '/Users/old' : 'C:\\old'] } };
+  const text = JSON.stringify(meta) + '\n';
+  fs.writeFileSync(file, text);
+  const tasks = new CodexTasks({ codexHome: home, token: () => 'fixture', platform: 'win32' });
+  t.mock.method(tasks, 'withWriter', (_task, _signal, apply) => apply());
+  const rename = fs.renameSync;
+  let blocked = true, attempts = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === file && blocked) {
+      attempts++;
+      assert.equal(fs.readFileSync(file, 'utf8'), text);
+      throw Object.assign(new Error('Windows denied replacement'), { code: 'EPERM' });
+    }
+    return rename(from, to);
+  });
+  await assert.rejects(tasks.repairWorkspaceRoots({ id, path: file, cwd: home }, home), { code: 'SYNC_FILE_BUSY' });
+  assert.ok(attempts > 1);
+  assert.equal(fs.readFileSync(file, 'utf8'), text);
+  assert.equal(fs.readFileSync(path.join(home, 'sync-backups', id + '.jsonl'), 'utf8'), text);
+  assert.equal(fs.readdirSync(home).some(name => name.endsWith('.tmp')), false);
+  blocked = false;
+  await tasks.repairWorkspaceRoots({ id, path: file, cwd: home }, home);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).payload.runtime_workspace_roots, [home]);
+});
+test('Windows writer waits for the lock helper and closes its pipe after the protected operation', async t => {
+  const home = path.join(fixture(t), "会话's home");
+  const launch = (_file, _args, options) => spawn(process.execPath, ['-e', `
+    const lines = require('node:readline').createInterface({ input: process.stdin });
+    lines.once('line', line => {
+      const job = JSON.parse(Buffer.from(line, 'base64'));
+      if (job.directory !== process.argv[1] || job.ids.join() !== 'one,two') process.exit(1);
+      process.stdout.write('ready\\n');
+    });
+  `, path.join(home, 'thread-writer-locks')], options);
+  const value = await withWindowsWriter(home, ['one', 'two'], undefined, signal => {
+    assert.equal(signal.aborted, false);
+    return 'protected';
+  }, launch);
+  assert.equal(value, 'protected');
+});
+test('Windows lock helper blocks another writer and releases the lock without opening the rollout', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
+  const home = fixture(t), file = path.join(home, 'history.jsonl'), replacement = path.join(home, 'next.jsonl');
+  fs.writeFileSync(file, 'old'); fs.writeFileSync(replacement, 'new');
+  await withWindowsWriter(home, ['one'], undefined, async () => {
+    await assert.rejects(withWindowsWriter(home, ['one'], undefined, () => assert.fail('writer entered')), { code: 'SYNC_BUSY' });
+    fs.renameSync(replacement, file);
+  });
+  await withWindowsWriter(home, ['one'], undefined, () => assert.equal(fs.readFileSync(file, 'utf8'), 'new'));
 });
 test('sync settings from a second process retain selections and reject concurrent writers', async t => {
   const root = fixture(t), tasks = { list: async () => [{ id: 'task', title: 'Fixture' }] };
@@ -322,10 +376,37 @@ for (const kind of ['server', 'webdav', 'folder']) test(`two computers exchange 
   t.after(async () => { await a.close(); await b.close(); });
   await a.configure(config); await b.configure(config); await a.list(); await a.select({ id: 'task-1', enabled: true });
   await a.run(); assert.equal(a.snapshot().tasks.find(task => task.id === 'task-1').status, 'synced');
-  await b.run(); const incoming = b.snapshot().tasks[0]; assert.equal(incoming.title, 'Selected task'); assert.equal(incoming.status, 'needsProject');
+  const { tasks: [incoming] } = await b.run(); assert.equal(incoming.title, 'Selected task');
+  assert.equal(incoming.status, 'synced', JSON.stringify(b.snapshot()));
   assert.equal(b.snapshot().tasks.some(task => task.id === 'task-2'), false);
-  const target = path.join(root, 'project-b'); await b.mapProject({ key: incoming.projectKey, directory: target }); await b.run();
-  assert.equal(b.snapshot().tasks[0].status, 'synced', JSON.stringify(b.snapshot())); assert.equal(imported.hash, 'history-a');
+  const target = incoming.cwd;
+  assert.equal(path.dirname(target), path.join(root, 'easy-switch-projects'));
+  assert.equal(b.load().projects[incoming.projectKey], target);
+  assert.equal(imported.hash, 'history-a');
+
+  // An earlier updater could restore the project before failing to replace its history.
+  fs.writeFileSync(path.join(source, 'file.txt'), 'updated on A\n');
+  history = { ...history, hash: 'next-turn-a' };
+  await a.run();
+  fs.writeFileSync(path.join(target, 'file.txt'), 'updated on A\n');
+  assert.equal((await b.run()).tasks[0].status, 'synced');
+  assert.equal(imported.hash, 'next-turn-a');
+
+  // A blocked rollout replacement must still allow the next server revision to apply.
+  t.mock.method(tasksB, 'install', async () => { throw Object.assign(new Error('History in use'), { code: 'SYNC_FILE_BUSY' }); });
+  fs.writeFileSync(path.join(source, 'file.txt'), 'while blocked\n');
+  history = { ...history, hash: 'blocked-turn-a' };
+  await a.run(); assert.equal((await b.run()).tasks[0].status, 'waitingFile');
+  assert.equal(imported.hash, 'next-turn-a');
+  assert.equal(b.load().selected['task-1'].historyHash, 'next-turn-a');
+  assert.equal(fs.readFileSync(path.join(target, 'file.txt'), 'utf8'), 'while blocked\n');
+  tasksB.install.mock.restore();
+  fs.writeFileSync(path.join(source, 'file.txt'), 'newest on A\n');
+  history = { ...history, hash: 'newest-turn-a' };
+  await a.run(); assert.equal((await b.run()).tasks[0].status, 'synced');
+  assert.equal(imported.hash, 'newest-turn-a');
+  assert.equal(fs.readFileSync(path.join(target, 'file.txt'), 'utf8'), 'newest on A\n');
+
   fs.writeFileSync(path.join(target, 'file.txt'), 'continued on B\n'); imported = { ...imported, hash: 'history-b' };
   await b.run(); await a.run(); assert.equal(fs.readFileSync(path.join(source, 'file.txt'), 'utf8'), 'continued on B\n');
   history = { ...history, hash: 'concurrent-a' }; imported = { ...imported, hash: 'concurrent-b' };
@@ -357,7 +438,7 @@ test('simultaneous task publishers preserve both heads on WebDAV without conditi
     install: async (task, value, cwd) => { historyB = value; right.set(task.id, { ...task, cwd }); return 'fixture'; } } });
   t.after(async () => { release(); await a.close(); await b.close(); });
   await a.configure(config); await b.configure(config); await a.list(); await a.select({ id: 'shared', enabled: true }); await a.run();
-  const incoming = await b.run(); await b.mapProject({ key: incoming.tasks[0].projectKey, directory: path.join(root, 'target') }); await b.run();
+  await b.run();
   historyA = { ...historyA, hash: 'left branch' }; historyB = { ...historyB, hash: 'right branch' }; simultaneous = true;
   await Promise.all([a.run(), b.run()]);
   const journal = new SyncJournal(new SyncStorage(config), syncKey(config.passphrase)), ref = (await journal.read()).get('shared');
@@ -379,10 +460,33 @@ test('two selected tasks sharing a project accept the same incoming Git update w
   t.after(async () => { await a.close(); await b.close(); });
   await a.configure(config); await b.configure(config); await a.list();
   for (const id of ['one', 'two']) await a.select({ id, enabled: true });
-  await a.run(); const pending = await b.run(), target = path.join(root, 'shared-b');
-  await b.mapProject({ key: pending.tasks[0].projectKey, directory: target }); await b.run();
+  const uploaded = await a.run(), target = path.join(root, 'shared-b');
+  await b.mapProject({ key: uploaded.tasks[0].projectKey, directory: target });
+  const incoming = await b.run();
+  assert.ok(incoming.tasks.every(task => task.cwd === target && task.status === 'synced'), JSON.stringify(incoming));
   fs.writeFileSync(path.join(target, 'file.txt'), 'shared update\n'); right.histories.set('one', { ...right.histories.get('one'), hash: 'new turn' });
   await b.run(); await a.run(); const result = await a.run();
   assert.ok(result.tasks.every(task => task.status === 'synced'), JSON.stringify(result));
   assert.equal(fs.readFileSync(path.join(source, 'file.txt'), 'utf8'), 'shared update\n');
+});
+test('automatic mappings share one folder per project and separate independent clones of the same remote', async t => {
+  const root = fixture(t), { config } = await unconditionalWebDAV(t);
+  const first = repository(path.join(root, 'first')), second = repository(path.join(root, 'second'));
+  for (const directory of [first, second]) git(directory, 'remote', 'add', 'origin', 'https://example.test/project.git');
+  fs.writeFileSync(path.join(second, 'file.txt'), 'second clone\n');
+  const tasks = ['one', 'two', 'three'].map(id => ({ id, title: id, cwd: id === 'three' ? second : first }));
+  const a = new TaskSync({ root: path.join(root, 'source'), tasks: { list: async () => tasks,
+    read: task => ({ records: [], hash: task.id, timestamp: new Date().toISOString() }) } });
+  const b = new TaskSync({ root: path.join(root, 'destination'), tasks: { list: async () => [], install: async () => 'fixture' } });
+  t.after(async () => { await a.close(); await b.close(); });
+  await a.configure(config); await b.configure(config); await a.list();
+  for (const { id } of tasks) await a.select({ id, enabled: true });
+  await a.run();
+  const incoming = await b.run();
+  assert.ok(incoming.tasks.every(task => task.status === 'synced'), JSON.stringify(incoming));
+  const byID = Object.fromEntries(incoming.tasks.map(task => [task.id, task.cwd]));
+  assert.equal(byID.one, byID.two);
+  assert.notEqual(byID.one, byID.three);
+  assert.equal(fs.readFileSync(path.join(byID.one, 'file.txt'), 'utf8'), 'base\n');
+  assert.equal(fs.readFileSync(path.join(byID.three, 'file.txt'), 'utf8'), 'second clone\n');
 });

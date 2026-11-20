@@ -21,6 +21,8 @@ for (const kind of ['git', 'folder']) test(`real Codex selected task and ${kind}
     git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.test');
     fs.writeFileSync(path.join(project, 'file.txt'), 'committed\n'); git('add', '.'); git('commit', '-qm', 'Fixture');
   }
+  const cwd = kind === 'git' ? path.join(project, 'empty-subdirectory') : project;
+  fs.mkdirSync(cwd, { recursive: true });
   fs.writeFileSync(path.join(project, 'file.txt'), 'uncommitted on A\n');
   const requests = [];
   const upstream = http.createServer(async (req, res) => {
@@ -43,7 +45,7 @@ for (const kind of ['git', 'folder']) test(`real Codex selected task and ${kind}
   const [a, b] = roots.map(entry => new TaskSync({ root: entry.root, codexHome: entry.home, binary }));
   t.after(async () => { await a.close(); await b.close(); server.closeAllConnections(); server.close(); upstream.closeAllConnections(); upstream.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const first = await codexSession({ binary, codexHome: roots[0].home }, async call => {
-    const { thread } = await call('thread/start', { cwd: project, runtimeWorkspaceRoots: [dir], approvalPolicy: 'never', sandbox: 'read-only' });
+    const { thread } = await call('thread/start', { cwd, runtimeWorkspaceRoots: [dir], approvalPolicy: 'never', sandbox: 'read-only' });
     await call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Remember the first computer', text_elements: [] }] });
     for (let i = 0; i < 100; i++) {
       const result = await call('thread/read', { threadId: thread.id, includeTurns: true }).catch(() => null);
@@ -54,32 +56,37 @@ for (const kind of ['git', 'folder']) test(`real Codex selected task and ${kind}
   });
   await a.configure(config); await a.list(); await a.select({ id: first.id, enabled: true });
   const uploaded = await a.run(); assert.equal(uploaded.tasks[0].status, 'synced', JSON.stringify(uploaded));
-  await b.configure(config); const incoming = await b.run(); assert.equal(incoming.tasks[0].status, 'needsProject');
-  const destination = path.join(dir, 'project-b'); await b.mapProject({ key: incoming.tasks[0].projectKey, directory: destination });
+  await b.configure(config);
   const downloaded = await b.run(); assert.equal(downloaded.tasks[0].status, 'synced', JSON.stringify(downloaded));
-  assert.equal(fs.readFileSync(path.join(destination, 'file.txt'), 'utf8'), 'uncommitted on A\n');
+  const [{ projectKey, cwd: destination }] = downloaded.tasks;
+  const destinationRoot = path.join(dir, 'b', 'easy-switch-projects', projectKey);
+  assert.equal(downloaded.projects[projectKey], destinationRoot);
+  assert.equal(destination, path.join(destinationRoot, path.relative(project, cwd)));
+  assert.ok(fs.statSync(destination).isDirectory());
+  assert.equal(fs.readFileSync(path.join(destinationRoot, 'file.txt'), 'utf8'), 'uncommitted on A\n');
   const tasksB = new CodexTasks({ binary, codexHome: roots[1].home, token: () => init(roots[1].root).token });
   assert.ok((await tasksB.list()).some(task => task.id === first.id));
   const imported = (await tasksB.list()).find(task => task.id === first.id);
   const importedMeta = JSON.parse(fs.readFileSync(imported.path, 'utf8').split('\n')[0]);
-  if (importedMeta.payload.runtime_workspace_roots) assert.deepEqual(importedMeta.payload.runtime_workspace_roots, [destination]);
+  if (importedMeta.payload.runtime_workspace_roots) assert.deepEqual(importedMeta.payload.runtime_workspace_roots.map(root => fs.realpathSync(root)), [fs.realpathSync(destinationRoot)]);
   // Reproduce an already-imported foreign workspace root even when content is otherwise unchanged.
   const damaged = fs.readFileSync(imported.path, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
-  damaged[0].payload.runtime_workspace_roots = ['C:\\Users\\other-computer\\Codex'];
+  damaged[0].payload.runtime_workspace_roots = [process.platform === 'win32' ? '/Users/other-computer/Codex' : 'C:\\Users\\other-computer\\Codex'];
   fs.writeFileSync(imported.path, damaged.map(record => JSON.stringify(record)).join('\n') + '\n');
-  const legacy = tasksB.read(imported, destination), saved = b.load();
+  const legacy = tasksB.read(imported, destinationRoot), saved = b.load();
   saved.selected[first.id].historyHash = legacy.legacyHash;
   atomic(b.file, saved);
   await codexSession({ binary, codexHome: roots[1].home }, async call => {
-    await call('thread/resume', { threadId: first.id, cwd: destination, runtimeWorkspaceRoots: [destination], excludeTurns: true });
+    await call('thread/resume', { threadId: first.id, cwd: destination, runtimeWorkspaceRoots: [destinationRoot], excludeTurns: true });
     const waiting = await b.run(); assert.equal(waiting.tasks[0].status, 'opened', JSON.stringify(waiting));
   });
   const repaired = await b.run(); assert.equal(repaired.tasks[0].status, 'synced', JSON.stringify(repaired));
   const afterRepair = JSON.parse(fs.readFileSync(imported.path, 'utf8').split('\n')[0]);
-  assert.deepEqual(afterRepair.payload.runtime_workspace_roots.map(root => fs.realpathSync(root)), [fs.realpathSync(destination)]);
+  assert.deepEqual(afterRepair.payload.runtime_workspace_roots.map(root => fs.realpathSync(root)), [fs.realpathSync(destinationRoot)]);
   assert.ok(fs.existsSync(path.join(roots[1].home, 'sync-backups', first.id + '.jsonl')));
   await codexSession({ binary, codexHome: roots[1].home }, async call => {
     const resumed = await call('thread/resume', { threadId: first.id, excludeTurns: true }); assert.equal(resumed.thread.id, first.id);
+    assert.equal(fs.realpathSync(resumed.thread.cwd), fs.realpathSync(destination));
     await call('turn/start', { threadId: first.id, input: [{ type: 'text', text: 'Continue on the second computer', text_elements: [] }] });
     for (let i = 0; i < 100; i++) {
       const result = await call('thread/read', { threadId: first.id, includeTurns: true });

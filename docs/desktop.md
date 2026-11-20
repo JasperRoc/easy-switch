@@ -159,8 +159,8 @@ Use **Check for updates** to query the official GitHub release API. In automatic
 
 ## Selected task sync / 指定任务同步
 
-Settings → Task sync → Storage configures WebDAV or an encrypted SQLite-backed self-hosted service and lists saved Codex tasks with checkboxes. Select tasks on the first computer; each destination uses the same storage/passphrase and asks once for its project directory. Completed turns, task IDs, local attachments and Git state then transfer automatically while the application runs, including in the tray. Incoming changes wait while Codex holds a task writer lock; running processes and cached open views are not migrated. Divergent edits remain separate until the user chooses a version. See the [task sync guide](task-sync.md) for setup, server deployment and tested limits.
+In **Settings → Task sync → Storage**, configure WebDAV or an encrypted SQLite-backed self-hosted service. Select saved Codex tasks on the first computer. Each destination uses the same storage and passphrase and automatically restores new projects to `easy-switch-projects`. Completed turns, task IDs, attachments and Git state transfer while the app runs, including in the tray. Incoming changes wait while Codex holds the task writer lock. Divergent edits remain available until the user chooses a version. [Task sync guide](task-sync.md)
 
-“设置 → 任务同步 → 存储配置”可配置 WebDAV／SQLite 自建服务并勾选 Codex 会话。每台电脑首次选择本地项目位置，随后后台自动同步已完成的会话轮次、附件、Git 提交及未提交改动。正在执行的进程保留在原电脑，目标会话被 Codex 占用时等待释放；不会强制关闭用户的客户端。两端同时修改会提示冲突，由用户选择采用哪份版本。
+在“设置 → 任务同步 → 存储配置”配置 WebDAV 或 SQLite 自建服务，再勾选需要同步的 Codex 会话。目标电脑使用相同的存储和共享口令，将新项目自动恢复到 `easy-switch-projects`。应用在后台也会同步已完成的会话轮次、附件、Git 提交和未提交改动。目标会话仍在 Codex 中打开时，同步会等待写入锁释放。两端同时修改会保留各自版本，由用户处理冲突。
 
 完整配置示例见[中文教程](task-sync.zh-CN.md)，包括 Zotero/WebDAV、服务器 SSH 隧道、Docker HTTPS 和 Node.js systemd。

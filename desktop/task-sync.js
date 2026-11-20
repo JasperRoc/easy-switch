@@ -50,14 +50,13 @@ export function taskSyncUI({ call, language }) {
         const message = document.createElement('small'); message.className = 'sync-task-message';
         message.textContent = localizeMessage(task.message, language()); status.title = message.textContent; info.append(message);
       }
-      if (task.enabled && ['needsProject', 'conflict'].includes(task.status)) {
+      if (task.enabled && task.status === 'conflict') {
         const choices = document.createElement('div'); choices.className = 'sync-task-actions';
-        for (const choice of task.status === 'needsProject' ? ['project'] : ['local', 'remote']) {
+        for (const choice of ['local', 'remote']) {
           const button = document.createElement('button'); button.className = 'secondary'; button.disabled = busy;
-          button.textContent = t(choice === 'project' ? 'syncChooseProject' : 'syncUse_' + choice);
+          button.textContent = t('syncUse_' + choice);
           button.addEventListener('click', () => {
-            if (choice === 'project') action('sync-project', task.projectKey);
-            else if (confirm(t('syncResolveConfirm'))) action('sync-resolve', { id: task.id, choice });
+            if (confirm(t('syncResolveConfirm'))) action('sync-resolve', { id: task.id, choice });
           }); choices.append(button);
         }
         info.append(status);

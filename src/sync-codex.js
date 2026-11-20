@@ -3,6 +3,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { checkpoint, expandContext } from './compaction.js';
 import { digest, maxPackage, syncID } from './sync-storage.js';
 
@@ -55,8 +57,48 @@ export async function codexSession({ binary, codexHome, signal }, operation) {
     const force = setTimeout(() => child.kill('SIGKILL'), 1000); await ended; clearTimeout(force);
   }
 }
+function writerBusy() {
+  return Object.assign(new Error('This task is open in Codex. Its incoming revision will be applied when Codex releases it.'), { code: 'SYNC_BUSY' });
+}
+
+export async function withWindowsWriter(codexHome, ids, signal, operation, run = spawn) {
+  signal?.throwIfAborted();
+  if (ids.some(id => !syncID(id))) throw new Error('Invalid synced task ID.');
+  const script = fs.readFileSync(new URL('./sync-writer.ps1', import.meta.url), 'utf8');
+  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  child.stdin.on('error', () => {});
+  const failure = new Error('Unable to acquire the Codex history lock on Windows.');
+  const disconnected = new AbortController();
+  const closed = once(child, 'close').catch(() => {}).then(() => { disconnected.abort(failure); return 'closed'; });
+  const lines = createInterface({ input: child.stdout });
+  const startup = new AbortController();
+  const startupSignals = [startup.signal, AbortSignal.timeout(15000)];
+  if (signal) startupSignals.push(signal);
+  const ready = once(lines, 'line', { signal: AbortSignal.any(startupSignals) }).then(([status]) => status);
+  let status;
+  try {
+    child.stdin.write(Buffer.from(JSON.stringify({ directory: path.join(codexHome, 'thread-writer-locks'), ids })).toString('base64') + '\n');
+    status = await Promise.race([ready, closed]);
+    if (status === 'busy') throw writerBusy();
+    if (status !== 'ready') throw failure;
+    const writerSignal = signal ? AbortSignal.any([signal, disconnected.signal]) : disconnected.signal;
+    writerSignal.throwIfAborted();
+    return await operation(writerSignal);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error.name === 'AbortError' && status !== 'ready') throw failure;
+    throw error;
+  } finally {
+    startup.abort(); lines.close(); child.stdin.end();
+    if (!status) child.kill();
+    await closed;
+  }
+}
+
 export class CodexTasks {
-  constructor({ binary, codexHome, token }) { Object.assign(this, { binary, codexHome, token }); this.cache = new Map(); }
+  constructor({ binary, codexHome, token, platform = process.platform }) { Object.assign(this, { binary, codexHome, token, platform }); this.cache = new Map(); }
   async list(signal) {
     return codexSession({ ...this, signal }, async call => {
       const threads = []; let cursor;
@@ -70,16 +112,20 @@ export class CodexTasks {
   }
   async withWriter(task, signal, operation, runtimeWorkspaceRoots) {
     const tasks = (Array.isArray(task) ? task : [task]).filter(Boolean);
-    if (!tasks.length) return operation();
+    if (!tasks.length) return operation(signal);
+    // Resuming a rollout opens its JSONL, which Windows can then refuse to replace.
+    if (this.platform === 'win32') return withWindowsWriter(this.codexHome, [...new Set(tasks.map(task => task.id))], signal, operation);
+    const existing = tasks.filter(task => task.cwd);
+    if (!existing.length) return operation(signal);
     return codexSession({ ...this, signal }, async call => {
-      try { for (const task of tasks) await call('thread/resume', { threadId: task.id, excludeTurns: true, ...(runtimeWorkspaceRoots ? { cwd: task.cwd, runtimeWorkspaceRoots } : {}) }); }
+      try { for (const task of existing) await call('thread/resume', { threadId: task.id, excludeTurns: true, ...(runtimeWorkspaceRoots ? { cwd: task.cwd, runtimeWorkspaceRoots } : {}) }); }
       catch (error) {
         if (/active writer|already.*(?:loaded|running)/i.test(error.cause?.message || '')) {
-          const busy = new Error('This task is open in Codex. Its incoming revision will be applied when Codex releases it.'); busy.code = 'SYNC_BUSY'; throw busy;
+          throw writerBusy();
         }
         throw error;
       }
-      return operation();
+      return operation(signal);
     });
   }
   stamp(task) { const stat = fs.statSync(task.path); return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`; }
@@ -130,17 +176,36 @@ export class CodexTasks {
     return history;
   }
   async repairWorkspaceRoots(task, projectRoot, signal) {
-    return this.withWriter(task, signal, async () => {
+    return this.withWriter(task, signal, async (writerSignal = signal) => {
       const history = this.read(task, projectRoot);
       if (!history) throw Object.assign(new Error('The local task changed during sync.'), { code: 'SYNC_BUSY' });
       const raw = fs.readFileSync(task.path, 'utf8'), records = raw.trimEnd().split('\n').map(line => JSON.parse(line));
       if (!invalidWorkspaceRoots(records)) return;
-      const backup = path.join(this.codexHome, 'sync-backups', task.id + '.jsonl');
-      fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 }); fs.copyFileSync(task.path, backup); fs.chmodSync(backup, 0o600);
-      const temp = task.path + '.sync.tmp';
-      fs.writeFileSync(temp, relocateWorkspaceRoots(records, projectRoot).map(record => JSON.stringify(record)).join('\n') + '\n', { mode: 0o600 }); fs.renameSync(temp, task.path);
-      this.cache.delete(task.path);
+      await this.writeRollout(task.id, task.path, relocateWorkspaceRoots(records, projectRoot), writerSignal);
     }, [projectRoot]);
+  }
+  async writeRollout(id, file, records, signal) {
+    signal?.throwIfAborted();
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    if (fs.existsSync(file)) {
+      const backup = path.join(this.codexHome, 'sync-backups', id + '.jsonl');
+      fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 });
+      fs.copyFileSync(file, backup); fs.chmodSync(backup, 0o600);
+    }
+    const temp = path.join(path.dirname(file), '.sync-' + randomUUID() + '.tmp');
+    try {
+      fs.writeFileSync(temp, records.map(record => JSON.stringify(record)).join('\n') + '\n', { mode: 0o600, flag: 'wx' });
+      for (let attempt = 0; ; attempt++) {
+        signal?.throwIfAborted();
+        try { fs.renameSync(temp, file); break; }
+        catch (error) {
+          if (this.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+          if (attempt === 4) throw Object.assign(new Error(`Windows could not replace the Codex history file (${error.code}). Sync will retry automatically.`, { cause: error }), { code: 'SYNC_FILE_BUSY' });
+          await delay(100 * (attempt + 1), undefined, { signal });
+        }
+      }
+      this.cache.delete(file);
+    } finally { await fs.promises.rm(temp, { force: true }).catch(() => {}); }
   }
   transform(value, paths, fromToken, toToken) {
     if (typeof value === 'string') {
@@ -178,20 +243,13 @@ export class CodexTasks {
     }
     const records = relocateWorkspaceRoots(this.transform(history.records, [['$PROJECT', projectRoot], ['$ATTACHMENTS', attachmentRoot]], null, this.token()), projectRoot);
     if (records[0]?.type !== 'session_meta' || records[0].payload?.id !== task.id) throw new Error('Invalid synced Codex task history.');
-    const text = records.map(record => JSON.stringify(record)).join('\n') + '\n';
     const date = new Date(history.timestamp);
     if (!Number.isFinite(date.getTime())) throw new Error('Invalid synced task creation date.');
     const file = existingPath || path.join(this.codexHome, 'sessions', ...date.toISOString().slice(0, 10).split('-'), `rollout-${date.toISOString().slice(0, 19).replaceAll(':', '-')}-${task.id}.jsonl`);
     const allowed = ['sessions', 'archived_sessions'].some(folder => path.resolve(file).startsWith(path.resolve(this.codexHome, folder) + path.sep) ||
       fs.existsSync(path.join(this.codexHome, folder)) && path.resolve(file).startsWith(fs.realpathSync(path.join(this.codexHome, folder)) + path.sep));
     if (!allowed) throw new Error('Task history is outside the Codex session directory.');
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const temp = file + '.sync.tmp';
-    if (existingPath) {
-      const backup = path.join(this.codexHome, 'sync-backups', task.id + '.jsonl');
-      fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 }); fs.copyFileSync(file, backup); fs.chmodSync(backup, 0o600);
-    }
-    fs.writeFileSync(temp, text, { mode: 0o600 }); fs.renameSync(temp, file);
+    await this.writeRollout(task.id, file, records, signal);
     // Let the official client repair its own indexes; never copy/merge its SQLite files.
     await codexSession({ ...this, signal }, async call => {
       await call('thread/list', { limit: 1, modelProviders: [] });

@@ -5,13 +5,14 @@ import { atomic, init } from './store.js';
 import { createUpstreamFetch } from './network.js';
 import { SyncStorage, syncKey, syncURL, syncID, seal, unseal, digest } from './sync-storage.js';
 import { CodexTasks } from './sync-codex.js';
-import { projectSnapshot, restoreProject } from './sync-project.js';
+import { inside, projectSnapshot, restoreProject } from './sync-project.js';
 import { SyncJournal } from './sync-journal.js';
 
 export class TaskSync {
   constructor({ root, codexHome, binary, fetchImpl, tasks, changed = () => {}, interval = 30000 }) {
     Object.assign(this, { root, codexHome, binary, changed, interval });
     this.file = path.join(root, 'sync.json'); this.cache = path.join(root, 'sync-cache');
+    this.projectDirectory = path.resolve(root, '..', 'easy-switch-projects');
     this.entries = []; this.phase = 'idle'; this.error = ''; this.lastSynced = null;
     try { this.config = this.load(); }
     catch (error) { this.config = { selected: {}, projects: {} }; this.error = error.message; this.phase = 'error'; }
@@ -202,43 +203,67 @@ export class TaskSync {
             history = this.tasks.read(task, project.root); this.historyHashes.delete(id);
             if (!history) { entry.status = 'running'; continue; }
           } else if (stamp) this.historyHashes.set(id, { stamp, hash: history.hash });
-          const projectKey = digest(project.origin || project.root);
-          entry.projectKey ||= projectKey; this.config.projects[entry.projectKey] ||= project.root;
-          if (touchedProjects.has(project.root)) { entry.status = 'pending'; this.localDirty = true; continue; }
+          entry.projectKey ||= Object.keys(this.config.projects).find(key => !path.relative(this.config.projects[key], project.root)) ||
+            digest(this.config.device + ':' + project.root);
+          this.config.projects[entry.projectKey] ||= project.root;
+          if (touchedProjects.has(fs.realpathSync(project.root))) { entry.status = 'pending'; this.localDirty = true; continue; }
           revision = digest(history.hash + project.fingerprint);
           Object.assign(entry, task, { local: true });
         }
         if (ref && revision === ref.revision && !selected.resolution) { Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint }); entry.status = 'synced'; continue; }
         const localChanged = !!task && (selected.historyHash ? history.hash !== selected.historyHash || project.fingerprint !== selected.projectHash : revision !== selected.revision);
         const remoteChanged = !!ref && ref.revision !== selected.revision;
-        if (localChanged && remoteChanged && !selected.resolution) { entry.status = 'conflict'; entry.message = 'Both computers changed this task. Local and remote versions are preserved.'; continue; }
         if (ref && (!task || remoteChanged) && !selected.resolution) {
-          const directory = this.config.projects[ref.projectKey];
           entry.projectKey = ref.projectKey;
-          if (!directory) { entry.status = 'needsProject'; continue; }
           const object = await storage.get(`objects/${ref.object}.bin`, signal);
           if (!object || digest(object.data) !== ref.object) throw new Error('The synchronized task package is incomplete.');
           const pack = unseal(object.data, key);
           if (pack.version !== 1 || pack.id !== id || !pack.history || !pack.project) throw new Error('Invalid synchronized task package.');
+          if (localChanged && (!selected.historyHash ||
+              (history.hash !== selected.historyHash && history.hash !== pack.history.hash) ||
+              (project.fingerprint !== selected.projectHash && project.fingerprint !== pack.project.fingerprint))) {
+            entry.status = 'conflict'; entry.message = 'Both computers changed this task. Local and remote versions are preserved.'; continue;
+          }
+          const mapped = this.config.projects[ref.projectKey];
+          const directory = path.resolve(mapped || path.join(this.projectDirectory, ref.projectKey));
+          const { relative } = pack.project;
+          const cwd = relative === '' ? directory : inside(directory, relative);
+          if (!mapped) {
+            fs.mkdirSync(this.projectDirectory, { recursive: true, mode: 0o700 });
+            if (!fs.lstatSync(this.projectDirectory).isDirectory()) throw new Error('The automatic sync project location must be a local directory.');
+          }
           if (task && (this.tasks.read(task, project.root)?.hash !== history.hash)) { entry.status = 'running'; continue; }
           if (task && project.fingerprint !== (await projectSnapshot(task.cwd, this.cache, false)).fingerprint) throw new Error('The local project changed during sync. Retry after this turn finishes.');
-          const cwd = path.resolve(directory, pack.project.relative || '.');
-          if (!cwd.startsWith(path.resolve(directory) + path.sep) && cwd !== path.resolve(directory)) throw new Error('Invalid synchronized project directory.');
-          const apply = async () => {
+          const projectPath = fs.existsSync(directory) ? fs.realpathSync(directory) : null;
+          const shared = projectPath ? local.filter(item => {
+            if (item.id === id) return false;
+            try {
+              const relative = path.relative(projectPath, fs.realpathSync(item.cwd));
+              return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+            } catch { return false; }
+          }) : [];
+          const previousProject = project || shared.map(item => projectStates.get(item.id)).find(Boolean);
+          const apply = async (writerSignal = signal) => {
+            writerSignal.throwIfAborted();
             if (task && this.tasks.read(task, project.root)?.hash !== history.hash) throw Object.assign(new Error('The local task changed during sync.'), { code: 'SYNC_BUSY' });
             await restoreProject(pack.project, directory, this.cache, selected.projectHash);
-            return this.tasks.install({ id, title: ref.title }, pack.history, cwd, task?.path, signal, directory);
+            touchedProjects.add(fs.realpathSync(directory));
+            this.localDirty = true; this.historyHashes.delete(id);
+            for (const other of shared) if (previousProject && this.config.selected[other.id]?.projectHash === previousProject.fingerprint &&
+                projectStates.get(other.id)?.root === previousProject.root)
+              this.config.selected[other.id].projectHash = pack.project.fingerprint;
+            // The project restore is complete even if replacement of the history has to wait.
+            this.config.projects[ref.projectKey] = directory;
+            selected.projectHash = pack.project.fingerprint;
+            this.save();
+            writerSignal.throwIfAborted();
+            fs.mkdirSync(relative ? inside(directory, relative) : cwd, { recursive: true });
+            if (!fs.lstatSync(cwd).isDirectory()) throw new Error('The synchronized working directory must be a local directory.');
+            return this.tasks.install({ id, title: ref.title }, pack.history, cwd, task?.path, writerSignal, directory);
           };
-          const writers = pack.project.fingerprint !== project?.fingerprint ? local.filter(item => {
-            if (item.id === id) return true;
-            try { const relative = path.relative(fs.realpathSync(directory), fs.realpathSync(item.cwd)); return !relative.startsWith('..') && !path.isAbsolute(relative); } catch { return item.id === id; }
-          }) : [task];
+          const writers = [task || { id }, ...(pack.project.fingerprint !== previousProject?.fingerprint ? shared : [])];
           const installed = this.tasks.withWriter ? await this.tasks.withWriter(writers, signal, apply) : await apply();
-          touchedProjects.add(fs.realpathSync(directory));
-          this.localDirty = true; this.historyHashes.delete(id);
-          for (const other of local) if (other.id !== id && this.config.selected[other.id]?.projectHash === project?.fingerprint && projectStates.get(other.id)?.root === project?.root)
-            this.config.selected[other.id].projectHash = pack.project.fingerprint;
-          Object.assign(selected, { revision: ref.revision, historyHash: pack.history.hash, projectHash: pack.project.fingerprint });
+          Object.assign(selected, { revision: ref.revision, historyHash: pack.history.hash });
           Object.assign(entry, { local: true, path: installed, cwd, status: 'synced', message: '' });
         } else if (task && (localChanged || selected.resolution)) {
           if (!history.records) history = this.tasks.read(task, project.root);
@@ -255,7 +280,10 @@ export class TaskSync {
           Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint, resolution: undefined });
           entry.status = 'synced'; entry.remote = true; entry.message = '';
         } else entry.status = 'synced';
-      } catch (error) { entry.status = error.code === 'SYNC_CONFLICT' ? 'conflict' : error.code === 'SYNC_BUSY' ? 'opened' : 'error'; entry.message = error.message; }
+      } catch (error) {
+        entry.status = { SYNC_CONFLICT: 'conflict', SYNC_BUSY: 'opened', SYNC_FILE_BUSY: 'waitingFile' }[error.code] || 'error';
+        entry.message = error.message;
+      }
       this.save();
     }
     this.save(); this.phase = 'idle'; this.lastSynced = Date.now(); this.changed(); return this.snapshot();

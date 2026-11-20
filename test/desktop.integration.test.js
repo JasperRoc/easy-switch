@@ -66,6 +66,7 @@ test('task sync settings verify encrypted storage, show selectable Codex tasks a
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'sync.json'))).kind, 'server');
   assert.equal(await page.locator('#sync-library').isVisible(), true);
   assert.equal(await page.locator('#sync-connection').isVisible(), false);
+  assert.match(await page.locator('[data-i18n="syncHelp"]').textContent(), /restored automatically/);
   await page.click('#sync-guide');
   assert.deepEqual(await app.evaluate(() => globalThis.syncGuideURLs), ['https://github.com/JasperRoc/easy-switch/blob/main/docs/task-sync.md']);
   await page.click('#close-sync'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
@@ -111,15 +112,21 @@ test('task sync settings verify encrypted storage, show selectable Codex tasks a
     ipcMain.handle('easy-switch:call', async (event, action, payload) => {
       const value = await original(event, action, payload);
       if (['sync-state', 'sync-tasks'].includes(action)) return { ...value, tasks: [{ id: 'failed-folder', title: 'Folder task', cwd: '/project', enabled: true, local: true, status: 'error',
-        message: 'Git could not prepare this project. Check Git installation, repository state and file access.' }] };
+        message: 'Git could not prepare this project. Check Git installation, repository state and file access.' },
+      { id: 'waiting-history', title: 'Waiting task', cwd: 'C:\\sync\\project', enabled: true, local: true, status: 'waitingFile',
+        message: 'Windows could not replace the Codex history file (EPERM). Sync will retry automatically.' }] };
       return value;
     });
   });
   await page.click('#sync-tasks-tab'); await page.click('#sync-refresh');
-  const message = page.locator('.sync-task-message');
+  const message = page.locator('.sync-task').filter({ hasText: 'Folder task' }).locator('.sync-task-message');
   await message.waitFor();
   assert.equal(await message.isVisible(), true); assert.match(await message.textContent(), /Git 无法准备此项目/);
   assert.equal(await message.evaluate(element => getComputedStyle(element).whiteSpace), 'normal');
+  const waiting = page.locator('.sync-task').filter({ hasText: 'Waiting task' });
+  assert.equal(await waiting.locator('.sync-task-status').textContent(), '等待写入会话');
+  assert.match(await waiting.locator('.sync-task-message').textContent(), /EPERM.*自动重试/);
+  assert.equal(await page.getByRole('button', { name: '选择项目位置' }).count(), 0);
   await page.screenshot({ path: path.join(project, '.desktop-test', 'sync-error-details-zh.png') });
   await page.click('#close-sync');
 });

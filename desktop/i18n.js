@@ -10,11 +10,12 @@ export const messages = {
     syncResolveConfirm: 'Replace the other version with the selected one? Both revisions are retained for recovery.',
     syncAddress: 'Server URL', syncUsername: 'Username', syncPassword: 'Password / access token', syncPassphrase: 'Shared encryption passphrase',
     syncPassphraseHelp: 'At least 12 characters, shared across computers. Leave saved passwords blank to keep them.', syncAutomatic: 'Automatic sync', syncVerify: 'Verify & save',
-    syncHelp: 'Select Codex tasks to sync. Choose a project folder once on each computer.',
+    syncHelp: 'Select Codex tasks to sync. Projects are restored automatically on each computer.',
     syncSearch: 'Search tasks', syncRefresh: 'Refresh tasks', syncNow: 'Sync now', syncEmpty: 'No saved Codex tasks.', syncOtherComputer: 'From another computer',
     syncWorking: 'Synchronizing…', syncReady: 'Automatic sync is configured', syncSetup: 'Configure storage to enable task sync', syncSelectTask: 'Synchronize {title}',
-    syncChooseProject: 'Choose project folder', syncTask_synced: 'Synced', syncTask_pending: 'Waiting to sync', syncTask_off: 'Not selected', syncTask_running: 'Syncs after this turn ends',
-    syncTask_needsProject: 'Choose the local project folder once', syncTask_conflict: 'Conflicting edits preserved', syncTask_error: 'Sync failed', syncTask_opened: 'Waiting for the open Codex task to be released',
+    syncTask_synced: 'Synced', syncTask_pending: 'Waiting to sync', syncTask_off: 'Not selected', syncTask_running: 'Syncs after this turn ends',
+    syncTask_conflict: 'Conflicting edits preserved', syncTask_error: 'Sync failed', syncTask_opened: 'Waiting for the open Codex task to be released',
+    syncTask_waitingFile: 'Waiting to write history',
     syncLimits: 'Completed turns and project files sync automatically, with Git history when available. Open Codex tasks wait until released; running processes stay on their computer.',
     uninstall: 'Uninstall easy-switch', uninstallDetail: 'Restore client connections and remove this app, saved providers, login copies, preferences, downloads and caches. Original Codex/Claude sign-ins and conversations are kept. This cannot be undone.',
     modelCatalog: 'Model catalog', modelID: 'Model ID', modelDisplayName: 'Display name',
@@ -107,11 +108,12 @@ export const messages = {
     syncResolveConfirm: '将另一版本替换为所选版本？两份修订都会保留以便恢复。',
     syncAddress: '服务器地址', syncUsername: '用户名', syncPassword: '密码 / 访问令牌', syncPassphrase: '共享加密口令',
     syncPassphraseHelp: '至少 12 个字符，各台电脑保持一致。已保存的密码和口令留空保留。', syncAutomatic: '自动同步', syncVerify: '验证并保存',
-    syncHelp: '勾选需要同步的 Codex 任务，每台电脑首次选择项目位置。',
+    syncHelp: '勾选需要同步的 Codex 任务，项目会自动恢复到本机。',
     syncSearch: '搜索任务', syncRefresh: '刷新任务', syncNow: '立即同步', syncEmpty: '暂无已保存的 Codex 任务。', syncOtherComputer: '来自另一台电脑',
     syncWorking: '正在同步…', syncReady: '已配置自动同步', syncSetup: '配置存储后启用任务同步', syncSelectTask: '同步 {title}',
-    syncChooseProject: '选择项目位置', syncTask_synced: '已同步', syncTask_pending: '等待同步', syncTask_off: '未选择', syncTask_running: '本轮任务结束后同步',
-    syncTask_needsProject: '首次使用，请选择本地项目位置', syncTask_conflict: '两端修改已保留，请处理冲突', syncTask_error: '同步失败', syncTask_opened: '等待 Codex 释放已打开的会话',
+    syncTask_synced: '已同步', syncTask_pending: '等待同步', syncTask_off: '未选择', syncTask_running: '本轮任务结束后同步',
+    syncTask_conflict: '两端修改已保留，请处理冲突', syncTask_error: '同步失败', syncTask_opened: '等待 Codex 释放已打开的会话',
+    syncTask_waitingFile: '等待写入会话',
     syncLimits: '自动同步完整会话轮次和项目文件，Git 项目同时保留提交历史。目标会话已打开时等待释放，运行中的进程保留在原电脑。',
     uninstall: '彻底卸载 easy-switch', uninstallDetail: '恢复客户端连接，并删除软件、已保存的服务商、独立登录副本、偏好设置、下载和缓存。保留 Codex/Claude 原有登录及会话。此操作不可撤销。',
     modelCatalog: '模型目录', modelID: '模型 ID', modelDisplayName: '显示名称',
@@ -271,6 +273,10 @@ const notices = [
   ['会话历史超过 128 MiB 同步上限。', 'This task history exceeds the 128 MiB sync limit.'],
   ['Git 历史超过 128 MiB 同步上限。', 'This Git history exceeds the 128 MiB sync limit.'],
   ['普通文件夹快照未通过完整性校验，未应用该版本。', 'The incoming folder snapshot failed its integrity check.'],
+  ['自动同步的项目位置必须是本地目录。', 'The automatic sync project location must be a local directory.'],
+  ['同步会话的工作目录必须是本地目录。', 'The synchronized working directory must be a local directory.'],
+  ['无法获取 Windows 上的 Codex 会话写入锁。', 'Unable to acquire the Codex history lock on Windows.'],
+  ['会话在 Codex 中仍处于打开状态，释放后将自动应用同步版本。', 'This task is open in Codex. Its incoming revision will be applied when Codex releases it.'],
   ['请选择空目录或原有的非 Git 项目目录。', 'Choose an empty folder or the original non-Git project folder.'],
   ['Windows 更新助手未能启动，请手动运行已下载的安装包。', 'The Windows update helper could not start. Run the downloaded installer manually.'],
   ['请先下载并校验更新。', 'Download and verify the update first.'],
@@ -287,6 +293,8 @@ export function localizeMessage(value, language) {
   if (match) return match[normalizeLanguage(language) === 'zh-CN' ? 0 : 1];
   const sync = /^Sync server returned HTTP (\d{3})(?: \(([^)]+)\))?\.(?: (.+))?$/.exec(text);
   if (sync && normalizeLanguage(language) === 'zh-CN') return `同步服务返回 HTTP ${sync[1]}${sync[2] ? `（${sync[2]}）` : ''}。${sync[3] ? localizeMessage(sync[3], language) : ''}`;
+  const history = /^Windows could not replace the Codex history file \((\w+)\)\. Sync will retry automatically\.$/.exec(text);
+  if (history && normalizeLanguage(language) === 'zh-CN') return `Windows 暂时无法替换 Codex 会话文件（${history[1]}），同步会自动重试。`;
   const installer = /^The Windows installer failed \(exit code (\d+)\)\. Run the downloaded installer manually\.$/.exec(text);
   if (installer && normalizeLanguage(language) === 'zh-CN') return `Windows 安装器失败（退出码 ${installer[1]}），请手动运行已下载的安装包。`;
   const powershell = /^Unable to start Windows PowerShell \((.+)\)\.$/.exec(text);

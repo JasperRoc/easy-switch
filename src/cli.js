@@ -36,7 +36,7 @@ const help = `easy-switch
   switch sync setup           配置 WebDAV 或自建任务同步服务
   switch sync list            列出可勾选的 Codex 任务
   switch sync add|remove <id>  开启或关闭指定任务的自动同步
-  switch sync project <key> <path>  首次指定本机项目位置
+  switch sync project <key> <path>  可选，手动指定本机项目位置
   switch sync now             立即同步；后台服务会自动持续同步
   switch sync resolve <id> local|remote  选择发生冲突时保留的版本
   switch uninstall            恢复客户端设置并彻底卸载（含已保存的账号/API）
@@ -139,7 +139,7 @@ async function main() {
         await sync.mapProject({ key: name, directory: path.resolve(args[3]) }); await sync.run(); console.log('已保存本机项目位置');
       } else if (type === 'resolve' && args.length === 4) {
         const result = await sync.resolve({ id: name, choice: args[3] }); if (result.error) throw new Error(result.error); console.log('已保存版本选择；请通过 switch sync list 查看同步状态。');
-      } else if (type === 'now') { const result = await sync.run(); if (result.error) throw new Error(result.error); console.log('同步完成；冲突和待指定位置请运行 switch sync list 查看。'); }
+      } else if (type === 'now') { const result = await sync.run(); if (result.error) throw new Error(result.error); console.log('本轮检查完成。运行 switch sync list 查看任务状态。'); }
       else throw new Error('用法：switch sync setup|list|add <id>|remove <id>|project <key> <path>|resolve <id> local|remote|now');
     } finally { await sync.close(); }
     return;

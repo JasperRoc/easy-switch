@@ -133,10 +133,6 @@ async function boot() {
         case 'sync-select': return await controller.taskSync.select(payload);
         case 'sync-resolve': return await controller.taskSync.resolve(payload);
         case 'sync-now': return await controller.taskSync.run();
-        case 'sync-project': {
-          const chosen = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
-          return chosen.canceled ? controller.taskSync.snapshot() : controller.taskSync.mapProject({ key: payload, directory: chosen.filePaths[0] });
-        }
         case 'start': await controller.start(); startupError = ''; result = snapshot(); break;
         case 'stop': await controller.stop(); accountImages.close(); result = snapshot(); break;
         case 'routing': await controller.setRouting(payload); if (payload.client === 'codex' && !payload.enabled) { accountImages.close(); } startupError = ''; result = snapshot(); break;
