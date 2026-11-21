@@ -155,7 +155,7 @@ test('Windows update review offers manual recovery after the helper fails', { sk
       if (action === 'updates') return update;
       if (action === 'update-install') {
         globalThis.updateActions.push(action);
-        update.error = 'Unable to start Windows PowerShell (EACCES).';
+        update.error = 'Unable to start the Windows update helper (EACCES).';
         throw new Error(update.error);
       }
       if (action === 'update-reveal') {
@@ -169,7 +169,7 @@ test('Windows update review offers manual recovery after the helper fails', { sk
   await page.getByRole('button', { name: 'Show installer in folder' }).waitFor();
   assert.equal(await page.locator('#update-retry').isVisible(), false);
   await page.click('#update-action');
-  await page.locator('#update-error').filter({ hasText: 'Unable to start Windows PowerShell (EACCES).' }).waitFor();
+  await page.locator('#update-error').filter({ hasText: 'Unable to start the Windows update helper (EACCES).' }).waitFor();
   assert.match(await page.locator('#update-warning').textContent(), /select your existing installation folder/);
   await page.click('#update-reveal');
   assert.deepEqual(await app.evaluate(() => globalThis.updateActions), ['update-install', ['update-reveal', null]]);
@@ -177,7 +177,7 @@ test('Windows update review offers manual recovery after the helper fails', { sk
   await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
   await page.click('#updates');
   await page.getByRole('button', { name: '显示安装包' }).waitFor();
-  await page.locator('#update-error').filter({ hasText: '无法启动 Windows PowerShell（EACCES）。' }).waitFor();
+  await page.locator('#update-error').filter({ hasText: '无法启动 Windows 更新助手（EACCES）。' }).waitFor();
 });
 test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 30000 }, async t => {
   const { app, page, root } = await launch(t, {}, undefined, directory => {

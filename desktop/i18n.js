@@ -286,6 +286,10 @@ const notices = [
   ['请先下载并校验更新。', 'Download and verify the update first.'],
   ['Windows 更新助手在 60 秒内未就绪。', 'The Windows update helper did not become ready within 60 seconds.'],
   ['Windows 更新文件不可用，请重新下载更新。', 'The Windows update files are unavailable. Download the update again.'],
+  ['Windows 更新助手无法准备关闭 easy-switch。', 'The Windows update helper could not prepare to close easy-switch.'],
+  ['无法启动 Windows 安装包，请手动运行已下载的安装包。', 'The Windows installer could not start. Run the downloaded installer manually.'],
+  ['无法启动更新后的 easy-switch。', 'The updated Windows application could not start.'],
+  ['easy-switch 数据目录位于安装目录内，请先移出数据目录再更新。', 'The easy-switch data directory is inside its installation folder. Move it before updating.'],
   ['更新包 SHA-256 校验失败，请重新下载。', 'Update package SHA-256 verification failed.'],
   ['旧版软件没有退出，请完全退出 easy-switch 后重试更新。', 'The previous application did not exit. Close easy-switch before retrying the update.'],
   ['安装器未替换当前这份 easy-switch，请手动运行下载的安装包并选择原安装目录。', 'The Windows installer did not replace this copy of easy-switch. Run the downloaded installer manually in the existing installation folder.'],
@@ -301,8 +305,8 @@ export function localizeMessage(value, language) {
   if (history && normalizeLanguage(language) === 'zh-CN') return `Windows 暂时无法替换 Codex 会话文件（${history[1]}），同步会自动重试。`;
   const installer = /^The Windows installer failed \(exit code (\d+)\)\. Run the downloaded installer manually\.$/.exec(text);
   if (installer && normalizeLanguage(language) === 'zh-CN') return `Windows 安装器失败（退出码 ${installer[1]}），请手动运行已下载的安装包。`;
-  const powershell = /^Unable to start Windows PowerShell \((.+)\)\.$/.exec(text);
-  if (powershell && normalizeLanguage(language) === 'zh-CN') return `无法启动 Windows PowerShell（${powershell[1]}）。`;
+  const windowsHelper = /^Unable to (prepare|start) the Windows update helper \((.+)\)\.$/.exec(text);
+  if (windowsHelper && normalizeLanguage(language) === 'zh-CN') return `无法${windowsHelper[1] === 'prepare' ? '准备' : '启动'} Windows 更新助手（${windowsHelper[2]}）。`;
   const helper = /^The Windows update helper exited before it was ready \(([^)]+)\)\.([\s\S]*)$/.exec(text);
   if (helper && normalizeLanguage(language) === 'zh-CN') return `Windows 更新助手在就绪前退出（${helper[1]}）。${helper[2]}`;
   if (normalizeLanguage(language) === 'zh-CN' && text.startsWith('Account authentication required. Open ')) return '请打开官方认证页面并输入下方验证码，登录同一账号后重试请求。';

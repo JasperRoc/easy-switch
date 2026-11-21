@@ -138,45 +138,37 @@ export async function verifyMacApplication(application, version) {
   if (fs.lstatSync(application).isSymbolicLink() || await read('CFBundleIdentifier') !== 'io.github.jasperroc.easy-switch' || await read('CFBundleShortVersionString') !== version) throw new Error('The staged application identity or version does not match the release.');
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', application]);
 }
-export async function startWindowsUpdate(job, run = spawn) {
-  const directory = path.dirname(job.receipt), descriptor = path.join(directory, 'install.json'), script = path.join(directory, 'windows-update.ps1');
-  fs.copyFileSync(fileURLToPath(new URL('./windows-update.ps1', import.meta.url)), script);
-  const handshake = path.join(directory, 'helper-ready.json'); fs.rmSync(handshake, { force: true });
-  atomic(descriptor, { ...job, handshake });
-  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const child = run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-JobFile', descriptor, '-RunUpdate'],
-    { cwd: directory, detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-  let stderr = '';
-  child.stderr?.setEncoding('utf8').on('data', chunk => { stderr += chunk.slice(0, 1200 - stderr.length); });
-  const readHandshake = () => {
-    try {
-      const ready = JSON.parse(fs.readFileSync(handshake, 'utf8'));
-      if (ready.token === job.token) return ready;
-    } catch { /* The worker may still be writing its receipt. */ }
-  };
+export async function startWindowsUpdate(job, bundledHelper, run = spawn) {
+  const directory = path.dirname(job.receipt);
+  const helper = path.join(directory, 'windows-update.exe');
+  const handshake = path.join(directory, 'helper-ready.txt');
+  const failure = path.join(directory, 'last-error.txt');
+  try { fs.copyFileSync(bundledHelper, helper); }
+  catch (error) { throw new Error(`Unable to prepare the Windows update helper (${error.code}).`, { cause: error }); }
+  for (const file of [handshake, failure, path.join(directory, 'app-ready.txt')]) fs.rmSync(file, { force: true });
+  const fields = { parent: job.parent, current: job.current, installer: job.staged, version: job.version.split('-')[0], token: job.token };
+  const ini = '\ufeff[update]\r\n' + Object.entries(fields).map(([key, value]) => `${key}=${value}\r\n`).join('');
+  fs.writeFileSync(path.join(directory, 'windows-install.ini'), ini, { encoding: 'utf16le', mode: 0o600 });
+  const env = { ...process.env, ...job.environment };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = run(helper, [], { cwd: directory, env, detached: true, windowsHide: true, stdio: 'ignore' });
+  const read = file => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
   try {
     await new Promise((resolve, reject) => {
       const finish = error => {
         clearInterval(poll); clearTimeout(timer);
-        child.removeListener('error', failed); child.removeListener('close', exited);
+        child.removeListener('error', failed); child.removeListener('exit', exited);
         error ? reject(error) : resolve();
       };
-      const failed = error => finish(new Error(`Unable to start Windows PowerShell (${error.code || error.message}).`));
-      const exited = (code, signal) => {
-        const detail = stderr.trim();
-        // A worker that just failed can exit before the next poll observes its receipt.
-        const error = readHandshake()?.error || `The Windows update helper exited before it was ready (${code ?? signal}).${detail ? '\n' + detail : ''}`;
-        finish(new Error(error));
-      };
+      const failed = error => finish(new Error(`Unable to start the Windows update helper (${error.code || error.message}).`));
+      const exited = (code, signal) => finish(new Error(read(failure) || `The Windows update helper exited before it was ready (${code ?? signal}).`));
       const poll = setInterval(() => {
-        const ready = readHandshake();
-        if (ready?.error) finish(new Error(ready.error));
-        else if (ready?.ready && child.exitCode == null && child.signalCode == null) finish();
+        if (read(handshake) === job.token && child.exitCode == null && child.signalCode == null) finish();
       }, 100);
       const timer = setTimeout(() => {
-        finish(new Error(readHandshake()?.error || 'The Windows update helper did not become ready within 60 seconds.'));
+        finish(new Error(read(failure) || 'The Windows update helper did not become ready within 60 seconds.'));
       }, 60000);
-      child.once('error', failed); child.once('close', exited);
+      child.once('error', failed); child.once('exit', exited);
     });
     child.unref();
   } catch (error) {
@@ -185,7 +177,7 @@ export async function startWindowsUpdate(job, run = spawn) {
       child.kill();
     }
     throw error;
-  } finally { child.stderr?.destroy(); }
+  }
 }
 export class DesktopUpdater {
   constructor({ root, current, platform = process.platform, arch = process.arch, changed = () => {}, fetchImpl, systemFetch, useSystemNetwork = () => true }) {
@@ -264,7 +256,9 @@ export class DesktopUpdater {
     if (!fs.existsSync(this.receipt)) return;
     const pending = JSON.parse(fs.readFileSync(this.receipt, 'utf8'));
     const normalize = value => this.platform === 'win32' ? path.win32.resolve(value).toLowerCase() : path.resolve(value);
-    if (pending.version === this.current && (!pending.executable || normalize(pending.executable) === normalize(process.execPath))) atomic(this.receipt, { ...pending, ready: true });
+    if (pending.version !== this.current || pending.executable && normalize(pending.executable) !== normalize(process.execPath)) return;
+    atomic(this.receipt, { ...pending, ready: true });
+    if (pending.nativeHelper) fs.writeFileSync(path.join(this.directory, 'app-ready.txt'), pending.token, { mode: 0o600 });
   }
   async install({ executable = process.execPath, codexHome }) {
     if (this.state.phase !== 'ready' || !this.staged) throw new Error('Download and verify the update first.');
@@ -287,10 +281,16 @@ export class DesktopUpdater {
       });
       child.send({ install: true }); child.disconnect(); child.unref();
     } else {
-      const token = crypto.randomUUID(); atomic(this.receipt, { version, token, executable, ready: false });
+      const staged = await this.verifiedWindowsInstaller();
+      const installed = fs.realpathSync(path.dirname(executable));
+      const relative = path.relative(installed, fs.realpathSync(this.directory));
+      if (!relative || !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)) {
+        throw new Error('The easy-switch data directory is inside its installation folder. Move it before updating.');
+      }
+      const token = crypto.randomUUID(); atomic(this.receipt, { version, token, executable, ready: false, nativeHelper: true });
       try {
-        await startWindowsUpdate({ parent: process.pid, current: executable, staged: this.staged, receipt: this.receipt, version, token,
-          sha256: this.release.asset.sha256, size: this.release.asset.size, environment: { SWITCH_HOME: this.root, CODEX_HOME: codexHome } });
+        await startWindowsUpdate({ parent: process.pid, current: executable, staged, receipt: this.receipt, version, token,
+          environment: { SWITCH_HOME: this.root, CODEX_HOME: codexHome } }, path.join(process.resourcesPath, 'windows-update.exe'));
       } catch (error) { fs.rmSync(this.receipt, { force: true }); throw error; }
     }
     this.emit({ phase: 'installing' });

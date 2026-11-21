@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { selectRelease, compareVersions, downloadVerified, downloadPackage, validateArchiveEntries, DesktopUpdater, startWindowsUpdate } from '../desktop/updater.js';
 import helper from '../desktop/update-helper.cjs';
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -29,56 +28,64 @@ test('checking updates exposes release notes and performs no download or install
  const urls=[],updater=new DesktopUpdater({root:temporary(t),current:'0.4.0',platform:'darwin',arch:'arm64',fetchImpl:async url=>{urls.push(url);return Response.json([release('0.5.0')]);}});
  await updater.check();assert.equal(updater.snapshot().phase,'available');assert.equal(updater.snapshot().notes,'Release notes');assert.equal(urls.length,1);assert.equal(updater.staged,null);
 });
-test('Windows waits for the helper handshake and passes paths as literal arguments', async t => {
- const directory=path.join(temporary(t), "用户's updates");fs.mkdirSync(directory);
- const receipt=path.join(directory,'pending.json'),job={current:'C:\\Program Files\\easy-switch\\easy-switch.exe',staged:path.join(directory,'update.exe'),receipt,version:'1.0.0',token:'fixture-token',parent:42,sha256:digest('abc'),size:3};
+test('Windows starts a bundled native helper outside the app and waits for its readiness token', async t => {
+ const root = temporary(t), directory = path.join(root, "用户's updates"); fs.mkdirSync(directory);
+ const bundled = path.join(root, 'bundled.exe'); fs.writeFileSync(bundled, 'helper fixture');
+ const job = { current: 'C:\\Program Files\\easy-switch\\easy-switch.exe', staged: path.join(directory, 'update.exe'),
+  receipt: path.join(directory, 'pending.json'), version: '1.0.0-beta.1', token: 'fixture-token', parent: 42,
+  environment: { SWITCH_HOME: root, CODEX_HOME: 'C:\\Users\\Example\\Codex' } };
+ const handshake = path.join(directory, 'helper-ready.txt'); fs.writeFileSync(handshake, 'old-token');
  let child;
- await startWindowsUpdate(job,(file,args,options)=>{
-  assert.match(file,/WindowsPowerShell\\v1\.0\\powershell\.exe$/);assert.equal(options.cwd,directory);assert.equal(options.windowsHide,true);
-  assert.equal(options.detached,true);assert.deepEqual(options.stdio,['ignore','ignore','pipe']);
-  assert.deepEqual(args.slice(-5),['-File',path.join(directory,'windows-update.ps1'),'-JobFile',path.join(directory,'install.json'),'-RunUpdate']);
-  const descriptor=JSON.parse(fs.readFileSync(path.join(directory,'install.json')));assert.equal(descriptor.current,job.current);
-  assert.equal(descriptor.sha256,job.sha256);assert.equal(fs.existsSync(path.join(directory,'windows-update.ps1')),true);
+ await startWindowsUpdate(job,bundled,(file,args,options)=>{
+  assert.equal(file, path.join(directory, 'windows-update.exe'));
+  assert.equal(fs.readFileSync(file, 'utf8'), 'helper fixture');
+  assert.deepEqual(args, []);
+  assert.equal(options.cwd, directory); assert.equal(options.windowsHide, true);
+  assert.equal(options.detached, true); assert.equal(options.stdio, 'ignore');
+  assert.equal(options.env.SWITCH_HOME, root); assert.equal(options.env.CODEX_HOME, job.environment.CODEX_HOME);
+  assert.equal(options.env.ELECTRON_RUN_AS_NODE, undefined);
+  const descriptor = fs.readFileSync(path.join(directory, 'windows-install.ini'), 'utf16le');
+  assert.equal(descriptor, `\ufeff[update]\r\nparent=42\r\ncurrent=${job.current}\r\ninstaller=${job.staged}\r\nversion=1.0.0\r\ntoken=fixture-token\r\n`);
+  assert.equal(fs.existsSync(handshake), false);
   child=new EventEmitter();child.unref=()=>{child.unreferenced=true;};child.kill=()=>{child.killed=true;};
-  setTimeout(()=>fs.writeFileSync(descriptor.handshake,JSON.stringify({token:job.token,ready:true})),20);
+  setTimeout(()=>fs.writeFileSync(handshake,job.token),20);
   return child;
  });
  assert.equal(child.unreferenced,true);assert.equal(child.killed,undefined);
 });
-test('Windows retains the helper verification error when it writes a receipt and immediately exits', async t => {
+test('Windows reports the native helper error when it exits before readiness', async t => {
  const directory=temporary(t),job={current:'C:\\easy-switch\\easy-switch.exe',staged:'fixture.exe',receipt:path.join(directory,'pending.json'),version:'1.0.0',token:'fixture-token'};
- await assert.rejects(startWindowsUpdate(job,()=>{
+ const bundled = path.join(directory, 'bundled.exe'); fs.writeFileSync(bundled, 'helper fixture');
+ await assert.rejects(startWindowsUpdate(job,bundled,()=>{
   const child=new EventEmitter();child.unref=()=>{};child.kill=()=>{};
   setImmediate(()=>{
-   fs.writeFileSync(path.join(directory,'helper-ready.json'),JSON.stringify({token:job.token,error:'Update package SHA-256 verification failed.'}));
+   fs.writeFileSync(path.join(directory,'last-error.txt'),'The Windows update files are unavailable. Download the update again.');
    child.emit('exit',1,null);
-   child.emit('close',1,null);
   });
   return child;
- }),/SHA-256/);
+ }),/Windows update files are unavailable/);
 });
-test('Windows reports launch failures, early exits and startup timeouts separately', async t => {
- const directory=temporary(t),job={receipt:path.join(directory,'pending.json'),token:'fixture-token'};
- await assert.rejects(startWindowsUpdate(job,()=>{
+test('Windows reports a missing helper, launch failures, early exits and readiness timeouts separately', async t => {
+ const directory=temporary(t),job={receipt:path.join(directory,'pending.json'),token:'fixture-token',version:'1.0.0'};
+ const bundled = path.join(directory, 'bundled.exe');
+ await assert.rejects(startWindowsUpdate(job, bundled), /Unable to prepare the Windows update helper \(ENOENT\)/);
+ fs.writeFileSync(bundled, 'helper fixture');
+ await assert.rejects(startWindowsUpdate(job,bundled,()=>{
   const child=new EventEmitter();
   setImmediate(()=>child.emit('error',Object.assign(Error('access denied'),{code:'EACCES'})));
   return child;
- }),/Unable to start Windows PowerShell \(EACCES\)/);
+ }),/Unable to start the Windows update helper \(EACCES\)/);
 
- await assert.rejects(startWindowsUpdate(job,()=>{
-  const child=new EventEmitter();child.stderr=new PassThrough();
-  setImmediate(()=>{
-   child.emit('exit',1,null);
-   child.stderr.end('PowerShell could not read the job file.');
-   child.emit('close',1,null);
-  });
+ await assert.rejects(startWindowsUpdate(job,bundled,()=>{
+  const child=new EventEmitter();
+  setImmediate(()=>child.emit('exit',0,null));
   return child;
- }),/exited before it was ready \(1\)\.\nPowerShell could not read the job file/);
+ }),/exited before it was ready \(0\)/);
 
  t.mock.timers.enable({apis:['setTimeout','setInterval']});
  const waiting=new EventEmitter();
  Object.assign(waiting,{pid:42,exitCode:null,signalCode:null,kill(){this.killed=true;}});
- const result=startWindowsUpdate(job,()=>waiting);
+ const result=startWindowsUpdate(job,bundled,()=>waiting);
  const rejection=assert.rejects(result,/did not become ready within 60 seconds/);
  t.mock.timers.tick(60000);
  await rejection;
@@ -91,8 +98,9 @@ test('startup confirms only the requested version and executable, retaining the 
   fs.writeFileSync(updater.receipt,JSON.stringify({...pending,...change}));updater.confirmLaunch();
   const value=JSON.parse(fs.readFileSync(updater.receipt));assert.equal(value.ready,Object.keys(change).length===0);assert.equal(value.token,pending.token);
  }
- updater.platform='win32';fs.writeFileSync(updater.receipt,JSON.stringify({...pending,executable:process.execPath.toUpperCase()}));updater.confirmLaunch();
+ updater.platform='win32';fs.writeFileSync(updater.receipt,JSON.stringify({...pending,executable:process.execPath.toUpperCase(),nativeHelper:true}));updater.confirmLaunch();
  assert.equal(JSON.parse(fs.readFileSync(updater.receipt)).ready,true,'Windows executable paths ignore case');
+ assert.equal(fs.readFileSync(path.join(updater.directory,'app-ready.txt'),'utf8'),pending.token);
 });
 test('a Windows installer failure remains visible on first check without losing the recovery installer', async t => {
  const root=temporary(t),directory=path.join(root,'updates');fs.mkdirSync(directory);

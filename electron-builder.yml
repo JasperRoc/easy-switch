@@ -15,6 +15,7 @@ files:
   - package.json
 asar: true
 npmRebuild: false
+afterPack: scripts/build-windows-update.cjs
 afterSign: scripts/verify-mac.cjs
 mac:
   category: public.app-category.developer-tools

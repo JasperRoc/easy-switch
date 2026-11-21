@@ -22,11 +22,11 @@ Node.js, Electron and a pinned official Codex executable are bundled. No termina
 
 The current packages have no publisher certificate; macOS uses ad hoc code signing for bundle integrity and is not notarized. Windows SmartScreen or macOS Gatekeeper may request first-launch approval. Obtain packages only from the project's releases and compare their SHA-256 sums with `SHA256SUMS.txt`. For macOS first-launch approval and the previous damaged-app alert, follow the instructions below. A managed device can prohibit unsigned software; these builds do not bypass organization policy.
 
-Apple silicon macOS packaged-app tests cover adding an API, model discovery, catalog editing, family mapping, routing start/stop, window hiding, normal exit and forced-process-exit recovery. Intel macOS and Windows packages are built, but have not been run on those systems. This release is experimental.
+Apple silicon macOS packaged-app tests cover adding an API, model discovery, catalog editing, family mapping, routing start/stop, window hiding, normal exit and forced-process-exit recovery. The packaged Windows upgrade has been exercised under Wine. Native Windows and Intel macOS runtime verification is pending. This release is experimental.
 
 ## Windows update recovery
 
-Versions before 0.5.37, including 0.5.5, start a hidden PowerShell command and only confirm that the shell started. They do not verify the installer exit code, the installation directory or the restarted version, so installation failures can leave the old copy without an explanation.
+Windows versions through 0.5.42 use a PowerShell update helper. If it exits before confirming readiness, the running copy stays on the current version even after the installer is downloaded and verified. An in-place installation of 0.5.43 or later installs the native updater for future releases.
 
 To recover an affected installation:
 
@@ -35,13 +35,11 @@ To recover an affected installation:
 3. Install into the existing easy-switch folder and open it. **Do not uninstall first**: a complete uninstall removes saved providers and preferences. Normal installation over the previous version retains them.
 4. Check the version shown in the app. An existing old shortcut may point to a second installation; open the executable from the selected installation folder if necessary.
 
-From 0.5.37, a PowerShell worker runs outside the application directory, verifies the downloaded hash before confirming readiness, waits for the old process, and passes the existing directory to NSIS. It checks the installer exit code and executable version, launches that exact copy and waits for its startup receipt. The worker saves installation errors in `updates/last-error.txt` for the next launch and keeps the installer in the cache.
+From 0.5.43, easy-switch verifies the installer again before starting its bundled Windows helper. The helper waits for easy-switch to exit, installs into the original directory, checks the executable version and confirms startup. If installation fails, the helper retains the installer and saves the reason in `updates/last-error.txt`. **Show installer in folder** verifies the cached package again before selecting it in File Explorer.
 
-From 0.5.39, the update dialog distinguishes PowerShell launch errors, early exits and timeouts. Use **Show installer in folder** to verify the downloaded package again and select it in File Explorer. PowerShell preflight and installer control flow are tested on macOS. From 0.5.41, the app explicitly starts the installation routine when launching the helper. If your current version reports that the helper exited before it was ready, install 0.5.41 or later over the existing copy using the steps above.
+Windows 版 0.5.42 及之前使用 PowerShell 更新助手。如果助手在就绪前退出，安装包即使通过了校验，软件也会停留在旧版本。从托盘完全退出 easy-switch，运行 **0.5.43 或更新版本**的 Windows 安装包，选择原安装目录覆盖安装，即可保留服务商、偏好与同步设置，并启用新的更新助手。下载缓存默认位于 `%USERPROFILE%\.codex-switch\updates`，可点击 **显示安装包** 在资源管理器中定位。
 
-0.5.37 之前（包括 0.5.5）的更新只确认隐藏的 PowerShell 已启动，没有检查安装退出码、安装目录和重启后的版本，因此失败可能没有提示。手动更新时，从托盘完全退出 easy-switch，再运行最新 Windows 安装包覆盖原目录。默认下载缓存位于 `%USERPROFILE%\.codex-switch\updates`。直接覆盖安装会保留服务商与设置，完整卸载会清理这些数据。若有多个安装副本，确认快捷方式指向正确目录。新版会检查助手、安装结果和启动回执，安装错误记录在 `updates/last-error.txt`，并在下次启动时显示。
-
-自 0.5.39 起，更新窗口会区分 PowerShell 启动失败、助手提前退出和超时。点击 **显示安装包** 可重新校验下载的文件，并在资源管理器中定位它。已在 macOS 验证 PowerShell 预检与安装控制流程。自 0.5.41 起，软件启动助手时会显式调用安装流程。若当前版本提示助手在就绪前退出，请按上面的步骤覆盖安装 0.5.41 或更新版本。
+0.5.43 起，Windows 版用随包提供的原生助手处理更新。软件再次校验安装包，助手等待旧版退出，然后覆盖原目录、核对安装后的版本并确认新版启动。安装失败时会保留安装包，并将原因写入 `updates/last-error.txt`。
 
 ## Subscription plan refresh / 订阅套餐刷新
 

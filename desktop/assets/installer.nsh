@@ -32,6 +32,21 @@
   !insertmacro MUI_PAGE_WELCOME
 !macroend
 
+; Check for the app with NSIS's native process plugin on every install and uninstall.
+!macro customCheckAppRunning
+  ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $0
+  ${While} $0 == 0
+    Sleep 1000
+    ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $0
+    ${If} $0 == 0
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY +3
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  ${EndWhile}
+  ${nsProcess::Unload}
+!macroend
+
 ; Updates preserve providers. A real uninstall restores routes before erasing data.
 !macro customUnInstall
   ${ifNot} ${isUpdated}

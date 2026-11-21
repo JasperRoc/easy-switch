@@ -161,7 +161,10 @@ async function boot() {
             await controller.stop();
             accountImages.close();
             try { await updater.install({ codexHome: controller.codexHome }); }
-            catch (error) { updater.emit({ phase: 'ready', error: error.message }); await controller.start(); throw error; }
+            catch (error) {
+              if (updater.snapshot().phase !== 'error') updater.emit({ phase: 'ready', error: error.message });
+              await controller.start(); throw error;
+            }
             quitting = true; quitReady = true; activity?.stop(); clearTimeout(initialUpdate); clearInterval(updateTimer); app.quit(); return null;
           } finally {
             installingUpdate = false;
@@ -194,7 +197,8 @@ async function boot() {
   app.dock?.hide();
   try { await controller.start(); } catch (error) { startupError = error.message; }
   await window.loadFile(path.join(__dirname, 'index.html'));
-  updateTray(); updater.confirmLaunch();
+  updateTray();
+  if (process.platform !== 'win32' || !startupError) updater.confirmLaunch();
   nativeTheme.on('updated', () => { if (activity?.visible()) refreshDesktop(true); });
   activity = desktopActivity({ window, powerMonitor, foreground: visible => {
     controller.usage.setPaused(!visible || !controller.runtime.clientEnabled('codex'));
