@@ -122,7 +122,7 @@ export class TaskSync {
       fs.writeFileSync(path.join(this.cache, 'conflict-' + id + '.bin'), seal(ref, key), { mode: 0o600 });
       if (choice === 'remote') await journal.publish(ref, ref.heads);
       this.config.selected[id] = { ...this.config.selected[id], revision: choice === 'local' ? ref.revision : digest(history.hash + project.fingerprint),
-        historyHash: choice === 'remote' ? history.hash : undefined, projectHash: project.fingerprint, resolution: choice === 'local' ? ref.heads : undefined };
+        historyHash: choice === 'remote' ? history.contentHash || history.hash : undefined, projectHash: project.fingerprint, resolution: choice === 'local' ? ref.heads : undefined };
       this.save();
     });
     return this.run();
@@ -183,6 +183,7 @@ export class TaskSync {
       catch { /* Per-task errors below retain their own status. */ }
     }
     const touchedProjects = new Set();
+    const provider = this.tasks.routingProvider?.();
     for (const [id, selected] of Object.entries(this.config.selected)) {
       signal.throwIfAborted(); if (!selected.enabled) continue;
       const task = localMap.get(id), ref = remote.get(id);
@@ -195,14 +196,30 @@ export class TaskSync {
         if (task) {
           project = projectStates.get(id) || await projectSnapshot(task.cwd, this.cache, false);
           const stamp = this.tasks.stamp?.(task), cached = this.historyHashes.get(id);
-          history = stamp && cached?.stamp === stamp ? { hash: cached.hash } : this.tasks.read(task, project.root);
+          history = stamp && cached?.stamp === stamp ? cached.history : this.tasks.read(task, project.root);
           if (!history) { entry.status = 'running'; continue; }
-          if (history.legacyHash && history.legacyHash === selected.historyHash) selected.historyHash = history.hash;
-          if (history.workspaceRepair && this.tasks.repairWorkspaceRoots) {
-            await this.tasks.repairWorkspaceRoots(task, project.root, signal);
+          const localHistoryHash = history.contentHash || history.hash;
+          if (selected.installingHistoryHash === localHistoryHash ||
+              selected.historyHash && [history.hash, history.legacyHash].includes(selected.historyHash)) {
+            selected.historyHash = localHistoryHash;
+          }
+          const repairProvider = provider && (history.providerRepair || task.provider !== provider || selected.providerRepair);
+          if (history.workspaceRepair || repairProvider) {
+            if (repairProvider && !selected.providerRepair) {
+              selected.providerRepair = true;
+              this.save();
+            }
+            await this.tasks.repair(task, project.root, signal, { workspaceRepair: history.workspaceRepair, provider: repairProvider ? provider : undefined });
+            if (repairProvider) {
+              task.provider = provider;
+              delete selected.providerRepair;
+            }
             history = this.tasks.read(task, project.root); this.historyHashes.delete(id);
             if (!history) { entry.status = 'running'; continue; }
-          } else if (stamp) this.historyHashes.set(id, { stamp, hash: history.hash });
+          } else if (stamp) {
+            const { hash, contentHash, legacyHash, providerRepair } = history;
+            this.historyHashes.set(id, { stamp, history: { hash, contentHash, legacyHash, providerRepair } });
+          }
           entry.projectKey ||= Object.keys(this.config.projects).find(key => !path.relative(this.config.projects[key], project.root)) ||
             digest(this.config.device + ':' + project.root);
           this.config.projects[entry.projectKey] ||= project.root;
@@ -210,8 +227,13 @@ export class TaskSync {
           revision = digest(history.hash + project.fingerprint);
           Object.assign(entry, task, { local: true });
         }
-        if (ref && revision === ref.revision && !selected.resolution) { Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint }); entry.status = 'synced'; continue; }
-        const localChanged = !!task && (selected.historyHash ? history.hash !== selected.historyHash || project.fingerprint !== selected.projectHash : revision !== selected.revision);
+        const historyHash = history?.contentHash || history?.hash;
+        if (ref && revision === ref.revision && !selected.resolution) {
+          Object.assign(selected, { revision, historyHash, projectHash: project.fingerprint });
+          delete selected.installingHistoryHash;
+          entry.status = 'synced'; continue;
+        }
+        const localChanged = !!task && (selected.historyHash ? historyHash !== selected.historyHash || project.fingerprint !== selected.projectHash : revision !== selected.revision);
         const remoteChanged = !!ref && ref.revision !== selected.revision;
         if (ref && (!task || remoteChanged) && !selected.resolution) {
           entry.projectKey = ref.projectKey;
@@ -219,8 +241,9 @@ export class TaskSync {
           if (!object || digest(object.data) !== ref.object) throw new Error('The synchronized task package is incomplete.');
           const pack = unseal(object.data, key);
           if (pack.version !== 1 || pack.id !== id || !pack.history || !pack.project) throw new Error('Invalid synchronized task package.');
-          if (localChanged && (!selected.historyHash ||
-              (history.hash !== selected.historyHash && history.hash !== pack.history.hash) ||
+          const incomingHash = this.tasks.contentHash?.(pack.history.records) ?? pack.history.hash;
+          if (localChanged && (
+              (historyHash !== selected.historyHash && historyHash !== incomingHash) ||
               (project.fingerprint !== selected.projectHash && project.fingerprint !== pack.project.fingerprint))) {
             entry.status = 'conflict'; entry.message = 'Both computers changed this task. Local and remote versions are preserved.'; continue;
           }
@@ -252,19 +275,23 @@ export class TaskSync {
             for (const other of shared) if (previousProject && this.config.selected[other.id]?.projectHash === previousProject.fingerprint &&
                 projectStates.get(other.id)?.root === previousProject.root)
               this.config.selected[other.id].projectHash = pack.project.fingerprint;
-            // The project restore is complete even if replacement of the history has to wait.
+            // Recognize our own completed writes if the rollout replacement or indexing must be retried.
             this.config.projects[ref.projectKey] = directory;
             selected.projectHash = pack.project.fingerprint;
+            selected.installingHistoryHash = incomingHash;
+            if (provider) selected.providerRepair = true;
             this.save();
             writerSignal.throwIfAborted();
             fs.mkdirSync(relative ? inside(directory, relative) : cwd, { recursive: true });
             if (!fs.lstatSync(cwd).isDirectory()) throw new Error('The synchronized working directory must be a local directory.');
-            return this.tasks.install({ id, title: ref.title }, pack.history, cwd, task?.path, writerSignal, directory);
+            return this.tasks.install({ id, title: ref.title, provider: provider || task?.provider }, pack.history, cwd, task?.path, writerSignal, directory);
           };
           const writers = [task || { id }, ...(pack.project.fingerprint !== previousProject?.fingerprint ? shared : [])];
           const installed = this.tasks.withWriter ? await this.tasks.withWriter(writers, signal, apply) : await apply();
-          Object.assign(selected, { revision: ref.revision, historyHash: pack.history.hash });
-          Object.assign(entry, { local: true, path: installed, cwd, status: 'synced', message: '' });
+          Object.assign(selected, { revision: ref.revision, historyHash: incomingHash });
+          delete selected.installingHistoryHash;
+          if (provider) delete selected.providerRepair;
+          Object.assign(entry, { local: true, path: installed, cwd, provider: provider || task?.provider, status: 'synced', message: '' });
         } else if (task && (localChanged || selected.resolution)) {
           if (!history.records) history = this.tasks.read(task, project.root);
           if (!history) { entry.status = 'running'; continue; }
@@ -277,7 +304,7 @@ export class TaskSync {
           const heads = selected.resolution || ref?.heads || [];
           if (JSON.stringify(latest?.heads || []) !== JSON.stringify(heads)) throw Object.assign(new Error('Another computer published a revision. Both versions are preserved.'), { code: 'SYNC_CONFLICT' });
           await journal.publish(next, heads, signal);
-          Object.assign(selected, { revision, historyHash: history.hash, projectHash: project.fingerprint, resolution: undefined });
+          Object.assign(selected, { revision, historyHash, projectHash: project.fingerprint, resolution: undefined });
           entry.status = 'synced'; entry.remote = true; entry.message = '';
         } else entry.status = 'synced';
       } catch (error) {

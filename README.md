@@ -153,6 +153,8 @@ Desktop Codex account rows show remaining quota from the account’s usage endpo
 
 Configure **Settings → Task sync** with WebDAV or the included SQLite-backed sync server, use the same encryption passphrase on each computer, and select tasks. From **0.5.40**, each destination automatically restores new projects to `easy-switch-projects` and reuses saved project locations. Saved history, task IDs, attachments, Git state and ordinary folders synchronize while easy-switch runs. Linux supports `switch sync`. Concurrent edits remain available as conflicts. Already-open Codex views may require reopening the conversation. [Setup, self-hosting and limits](docs/task-sync.md)
 
+From **0.5.42**, when Codex routing is enabled, synced conversations use the provider selected in the destination computer’s easy-switch. The next sync also repairs existing copies after Codex releases them. [Resume a synced conversation](docs/task-sync.md#4-receive-tasks-on-the-second-computer)
+
 Already use Zotero? Its third-party WebDAV storage can be reused with a separate folder; Zotero Storage accounts cannot connect directly. The [step-by-step guide](docs/task-sync.md) includes field examples, Docker/HTTPS deployment, SSH tunnels, a Node.js service, backups and second-computer setup. Open **Setup guide** from the sync page for the matching language.
 
 For Nutstore and other WebDAV services without atomic conditional writes, upgrade **every computer to 0.5.35+**. Sync uses separate immutable revision files and preserves concurrent branches; ETags are optional.

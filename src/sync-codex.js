@@ -1,12 +1,56 @@
 import fs from 'node:fs';
+import { devNull } from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { parse } from 'smol-toml';
 import { checkpoint, expandContext } from './compaction.js';
 import { digest, maxPackage, syncID } from './sync-storage.js';
+
+const easySwitchProvider = 'easy_switch';
+const execute = promisify(execFile);
+
+async function updateIndexedProvider(database, id, provider, signal) {
+  if (!fs.statSync(database, { throwIfNoEntry: false })?.isFile()) return;
+  const { DatabaseSync } = await import('node:sqlite').catch(error => {
+    if (error.code !== 'ERR_UNKNOWN_BUILTIN_MODULE') throw error;
+    return {};
+  });
+  signal?.throwIfAborted();
+  const sql = 'UPDATE threads SET model_provider = $provider WHERE id = $id AND model_provider IS NOT $provider';
+  if (!DatabaseSync) {
+    // The desktop bundles Node's SQLite module. Older supported CLI runtimes can use sqlite3.
+    const literal = text => "CAST(X'" + Buffer.from(text).toString('hex') + "' AS TEXT)";
+    const statement = sql.replaceAll('$provider', literal(provider)).replaceAll('$id', literal(id));
+    await execute('sqlite3', ['-batch', '-bail', '-init', devNull, '-cmd', '.timeout 1000', database, statement], { signal, timeout: 5000, windowsHide: true })
+      .catch(error => {
+        if (error.code === 'ENOENT') throw new Error('Codex provider repair requires sqlite3 or Node.js 22.13+.');
+        throw error;
+      });
+    return;
+  }
+  const db = new DatabaseSync(database);
+  try {
+    db.exec('PRAGMA busy_timeout = 100');
+    db.prepare(sql).run({ $provider: provider, $id: id });
+  } finally { db.close(); }
+}
+
+function providerFields(records, id) {
+  const fields = new Map();
+  for (const { type, payload } of records) {
+    if (type === 'session_meta' && payload?.id === id) fields.set(payload, 'model_provider');
+    if (type === 'event_msg' && payload?.type === 'thread_settings_applied' &&
+        (payload.thread_id == null || payload.thread_id === id) && payload.thread_settings) {
+      fields.set(payload.thread_settings, 'model_provider_id');
+    }
+  }
+  return fields;
+}
 
 export function relocateWorkspaceRoots(value, projectRoot) {
   if (Array.isArray(value)) return value.map(item => relocateWorkspaceRoots(item, projectRoot));
@@ -97,8 +141,61 @@ export async function withWindowsWriter(codexHome, ids, signal, operation, run =
   }
 }
 
+async function withPosixWriter(codexHome, ids, signal, operation) {
+  signal?.throwIfAborted();
+  const directory = path.join(codexHome, 'thread-writer-locks');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const locks = [];
+  // The parent retains the open file description after the locking command exits.
+  const [command, args] = process.platform === 'darwin'
+    ? ['/usr/bin/perl', ['-MFcntl=:flock', '-e', 'exit(flock(STDIN, LOCK_EX | LOCK_NB) ? 0 : $!{EWOULDBLOCK} ? 75 : 1)']]
+    : ['flock', ['-n', '-E', '75', '0']];
+  const acquire = async (name, attempts) => {
+    const fd = fs.openSync(path.join(directory, name), 'a+', 0o600);
+    locks.push(fd);
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      signal?.throwIfAborted();
+      const child = spawn(command, args, { stdio: [fd, 'ignore', 'ignore'], signal });
+      const [code] = await once(child, 'close').catch(error => {
+        signal?.throwIfAborted();
+        throw new Error('Unable to acquire the Codex history lock.', { cause: error });
+      });
+      if (code === 0) return fd;
+      if (code !== 75) throw new Error('Unable to acquire the Codex history lock.');
+      if (attempt + 1 < attempts) await delay(50, undefined, { signal });
+    }
+    throw writerBusy();
+  };
+  try {
+    const coordination = await acquire('.coordination.lock', 20);
+    for (const id of ids) await acquire(id + '.lock', 1);
+    fs.closeSync(coordination); locks.shift();
+    signal?.throwIfAborted();
+    return await operation(signal);
+  } finally { for (const fd of locks) fs.closeSync(fd); }
+}
+
 export class CodexTasks {
   constructor({ binary, codexHome, token, platform = process.platform }) { Object.assign(this, { binary, codexHome, token, platform }); this.cache = new Map(); }
+  routingProvider() {
+    try {
+      const config = parse(fs.readFileSync(path.join(this.codexHome, 'config.toml'), 'utf8'));
+      const url = config.model_providers?.[easySwitchProvider]?.base_url;
+      if (config.model_provider === easySwitchProvider && /^http:\/\/127\.0\.0\.1:\d+\/v1\/?$/.test(url || '')) {
+        return easySwitchProvider;
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw new Error('Unable to read Codex routing configuration.');
+    }
+  }
+  contentHash(records) {
+    const fields = providerFields(records, records[0]?.payload?.id);
+    // The stored revision still carries the provider for compatibility with older clients.
+    return digest(JSON.stringify(records, function (key, value) {
+      if ((key === 'model_provider' || key === 'model_provider_id') && fields.get(this) === key) return undefined;
+      return value;
+    }));
+  }
   async list(signal) {
     return codexSession({ ...this, signal }, async call => {
       const threads = []; let cursor;
@@ -110,23 +207,13 @@ export class CodexTasks {
         path: thread.path, provider: thread.modelProvider, updatedAt: thread.updatedAt * 1000 }));
     });
   }
-  async withWriter(task, signal, operation, runtimeWorkspaceRoots) {
-    const tasks = (Array.isArray(task) ? task : [task]).filter(Boolean);
-    if (!tasks.length) return operation(signal);
-    // Resuming a rollout opens its JSONL, which Windows can then refuse to replace.
-    if (this.platform === 'win32') return withWindowsWriter(this.codexHome, [...new Set(tasks.map(task => task.id))], signal, operation);
-    const existing = tasks.filter(task => task.cwd);
-    if (!existing.length) return operation(signal);
-    return codexSession({ ...this, signal }, async call => {
-      try { for (const task of existing) await call('thread/resume', { threadId: task.id, excludeTurns: true, ...(runtimeWorkspaceRoots ? { cwd: task.cwd, runtimeWorkspaceRoots } : {}) }); }
-      catch (error) {
-        if (/active writer|already.*(?:loaded|running)/i.test(error.cause?.message || '')) {
-          throw writerBusy();
-        }
-        throw error;
-      }
-      return operation(signal);
-    });
+  async withWriter(task, signal, operation) {
+    const ids = [...new Set((Array.isArray(task) ? task : [task]).filter(Boolean).map(task => task.id))];
+    if (!ids.length) return operation(signal);
+    if (ids.some(id => !syncID(id))) throw new Error('Invalid synced task ID.');
+    // Take Codex's writer locks without loading the thread or opening its rollout.
+    return this.platform === 'win32' ? withWindowsWriter(this.codexHome, ids, signal, operation) :
+      withPosixWriter(this.codexHome, ids, signal, operation);
   }
   stamp(task) { const stat = fs.statSync(task.path); return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`; }
   read(task, projectRoot = task.cwd) {
@@ -166,7 +253,9 @@ export class CodexTasks {
       return [from, '$PROJECT' + (relative ? '/' + relative : '')];
     })];
     const legacy = records.map(record => this.transform(record, mappings, this.token(), null)), canonical = relocateWorkspaceRoots(legacy, '$PROJECT');
-    const history = { records: canonical, hash: digest(JSON.stringify(canonical)), legacyHash: digest(JSON.stringify(legacy)), workspaceRepair: invalidWorkspaceRoots(records),
+    const history = { records: canonical, hash: digest(JSON.stringify(canonical)), contentHash: this.contentHash(canonical),
+      legacyHash: digest(JSON.stringify(legacy)), workspaceRepair: invalidWorkspaceRoots(records),
+      providerRepair: [...providerFields(records, task.id)].some(([data, key]) => data[key] !== easySwitchProvider),
       timestamp: meta.payload.timestamp, attachments: attachments.map(({ name, data }) => ({ name, data })) };
     // Keep only lightweight lookup data; large histories are released after each sync pass.
     if (raw.length + attachments.reduce((size, item) => size + item.data.length, 0) < 1024 * 1024) {
@@ -175,14 +264,19 @@ export class CodexTasks {
     }
     return history;
   }
-  async repairWorkspaceRoots(task, projectRoot, signal) {
+  async repair(task, projectRoot, signal, { workspaceRepair, provider } = {}) {
     return this.withWriter(task, signal, async (writerSignal = signal) => {
-      const history = this.read(task, projectRoot);
-      if (!history) throw Object.assign(new Error('The local task changed during sync.'), { code: 'SYNC_BUSY' });
+      if (!this.read(task, projectRoot)) throw writerBusy();
       const raw = fs.readFileSync(task.path, 'utf8'), records = raw.trimEnd().split('\n').map(line => JSON.parse(line));
-      if (!invalidWorkspaceRoots(records)) return;
-      await this.writeRollout(task.id, task.path, relocateWorkspaceRoots(records, projectRoot), writerSignal);
-    }, [projectRoot]);
+      const repairRoots = workspaceRepair && invalidWorkspaceRoots(records);
+      const fields = provider ? providerFields(records, task.id) : [];
+      const providerChanged = [...fields].some(([data, key]) => data[key] !== provider);
+      if (repairRoots || providerChanged) {
+        for (const [data, key] of fields) data[key] = provider;
+        await this.writeRollout(task.id, task.path, repairRoots ? relocateWorkspaceRoots(records, projectRoot) : records, writerSignal);
+      }
+      if (provider) await this.index({ id: task.id, provider }, writerSignal, { repairProvider: true });
+    });
   }
   async writeRollout(id, file, records, signal) {
     signal?.throwIfAborted();
@@ -249,12 +343,24 @@ export class CodexTasks {
     const allowed = ['sessions', 'archived_sessions'].some(folder => path.resolve(file).startsWith(path.resolve(this.codexHome, folder) + path.sep) ||
       fs.existsSync(path.join(this.codexHome, folder)) && path.resolve(file).startsWith(fs.realpathSync(path.join(this.codexHome, folder)) + path.sep));
     if (!allowed) throw new Error('Task history is outside the Codex session directory.');
+    if (task.provider) for (const [data, key] of providerFields(records, task.id)) data[key] = task.provider;
     await this.writeRollout(task.id, file, records, signal);
-    // Let the official client repair its own indexes; never copy/merge its SQLite files.
+    await this.index(task, signal, { repairProvider: !!existingPath });
+    return file;
+  }
+  async index(task, signal, { repairProvider = false } = {}) {
+    // Codex indexes new imports. An existing paginated thread retains its indexed provider.
     await codexSession({ ...this, signal }, async call => {
       await call('thread/list', { limit: 1, modelProviders: [] });
       if (task.title) await call('thread/name/set', { threadId: task.id, name: task.title });
+      if (task.provider) {
+        const readProvider = async () => (await call('thread/read', { threadId: task.id, includeTurns: false })).thread.modelProvider;
+        if (!repairProvider && await readProvider() === task.provider) return;
+        const { config } = await call('config/read', {});
+        const directory = path.resolve(config.sqlite_home || process.env.CODEX_SQLITE_HOME || this.codexHome);
+        await updateIndexedProvider(path.join(directory, 'state_5.sqlite'), task.id, task.provider, signal);
+        if (await readProvider() !== task.provider) throw new Error('Codex could not update the local provider for this task. Sync will retry.');
+      }
     });
-    return file;
   }
 }

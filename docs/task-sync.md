@@ -238,10 +238,12 @@ Keep the token and **encryption passphrase** separately. The encrypted database 
 
 ## 4. Receive tasks on the second computer
 
-1. Install and run easy-switch; configure a usable Codex account/API locally. Sign-ins are not copied from the first computer.
+1. Install and run easy-switch, configure a usable Codex account or API locally, and enable Codex routing.
 2. Open **Settings → Task sync → Storage**, enter the same server, credentials and shared passphrase, then click **Verify & save**.
 3. Selected remote conversations appear in **Tasks**. From 0.5.40, easy-switch automatically restores their projects into `~/easy-switch-projects/<project-id>` on macOS or Linux and `%USERPROFILE%\easy-switch-projects\<project-id>` on Windows. With a custom `SWITCH_HOME`, the default `easy-switch-projects` folder is next to that directory. Previously mapped folders are reused.
 4. Wait for **Synced**, then continue the same conversation in Codex. If the client filters the task list by project, open the local folder shown in the synced row.
+
+From **0.5.42**, sync binds selected conversations to the local easy-switch route while Codex routing is enabled. Each computer uses its own provider selection and credentials. The next sync also repairs previously imported conversations, including when their content is already up to date. If Codex still has the old copy open, close the conversation or fully quit Codex to release it. Then click **Sync now**, wait for **Synced**, and reopen the same conversation. Keep Codex routing enabled when using these conversations.
 
 Git projects restore to a detached HEAD at the synchronized commit, with staging and uncommitted changes retained. Other local branches are preserved. Ordinary folders restore their files without adding `.git`. Each destination still needs Git (also used for folder ignore rules), dependencies and external tools. Work on one computer at a time; if edits diverge, choose **Use this computer** or **Use server version** only after reviewing which version to retain. Upgrade every computer to **0.5.36+** when syncing ordinary folders.
 
@@ -267,11 +269,14 @@ switch sync resolve <task-id> local   # Or remote, to resolve a conflict
 
 `setup` restarts the user's easy-switch service. Later sync does not require repeated `now` commands. Removing a selection stops that computer's synchronization without deleting local or remote conversations; other computers can deselect separately.
 
+On Linux, task sync uses the system `flock` command for Codex writer locks. Repairing a saved provider in Codex's SQLite index uses Node.js 22.13+ or the `sqlite3` command on older Node.js runtimes.
+
 ## 6. Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
 | HTTP 401 / 403 | WebDAV app password or server token, directory permissions, and Authorization forwarding. The server token is not your SSH password |
+| Codex returns HTTP 401 from `api.openai.com/v1/responses` in a synced conversation | Upgrade the destination to 0.5.42+, enable Codex routing, release the conversation, sync, and reopen it |
 | HTTP 404 / 405 or unavailable collection | Complete protocol URL, existing parent directory, no share link, and reverse-proxy WebDAV method support |
 | Old conditional-write error | Update every device to 0.5.35+ and verify again; immutable revision files no longer need atomic conditional overwrites |
 | Incomplete revision journal / Nutstore listing limit | Retry after storage consistency recovers; do not delete ancestor revision files. At 750 listed entries, Nutstore sync pauses pending complete listing support |

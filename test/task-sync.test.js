@@ -309,13 +309,13 @@ test('Windows history repair backs up the rollout and retries a blocked atomic r
     }
     return rename(from, to);
   });
-  await assert.rejects(tasks.repairWorkspaceRoots({ id, path: file, cwd: home }, home), { code: 'SYNC_FILE_BUSY' });
+  await assert.rejects(tasks.repair({ id, path: file, cwd: home }, home, undefined, { workspaceRepair: true }), { code: 'SYNC_FILE_BUSY' });
   assert.ok(attempts > 1);
   assert.equal(fs.readFileSync(file, 'utf8'), text);
   assert.equal(fs.readFileSync(path.join(home, 'sync-backups', id + '.jsonl'), 'utf8'), text);
   assert.equal(fs.readdirSync(home).some(name => name.endsWith('.tmp')), false);
   blocked = false;
-  await tasks.repairWorkspaceRoots({ id, path: file, cwd: home }, home);
+  await tasks.repair({ id, path: file, cwd: home }, home, undefined, { workspaceRepair: true });
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).payload.runtime_workspace_roots, [home]);
 });
 test('Windows writer waits for the lock helper and closes its pipe after the protected operation', async t => {
