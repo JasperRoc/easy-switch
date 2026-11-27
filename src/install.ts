@@ -1,0 +1,203 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
+import { parse, stringify } from 'smol-toml';
+import { init, atomic } from './store.js';
+import { saveNetwork } from './network.js';
+import { restoreClaude } from './claude-config.js';
+import { restoreClaudeDesktop } from './claude-desktop.js';
+import { removeCompletion } from './completion.js';
+import { userPrefix, removeLauncher } from './linux-package.js';
+import { codexBinary } from './codex-binary.js';
+
+const providerName = 'fluid';
+const unitName = 'fluid.service';
+const digest = text => crypto.createHash('sha256').update(text).digest('hex');
+export function writeText(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${crypto.randomUUID()}.tmp`;
+  try { fs.writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' }); fs.renameSync(tmp, file); }
+  finally { fs.rmSync(tmp, { force: true }); }
+}
+// Edit only the managed scalar, preserving comments and unrelated settings.
+export function setting(text, table, key, value) {
+  const before = parse(text), expected = JSON.parse(JSON.stringify(before));
+  const target = table ? (expected[table] ??= {}) : expected;
+  if (value === undefined) delete target[key]; else target[key] = value;
+  const headers = [...text.matchAll(/^[ \t]*\[[^\r\n]*\][ \t]*(?:#[^\r\n]*)?$/gm)];
+  const index = table ? headers.findIndex(match => match[0].trim() === `[${table}]`) : -1;
+  const start = table ? (index < 0 ? text.length : headers[index].index + headers[index][0].length) : 0;
+  const end = table ? (index < 0 ? text.length : headers[index + 1]?.index ?? text.length) : headers[0]?.index ?? text.length;
+  const pattern = new RegExp(`^[ \\t]*(?:${key}|"${key}"|'${key}')[ \\t]*=[^\\r\\n]*(?:\\r?\\n|$)`, 'm');
+  const line = value === undefined ? '' : stringify({ [key]: value });
+  const section = text.slice(start, end);
+  let result;
+  if (pattern.test(section)) result = text.slice(0, start) + section.replace(pattern, line) + text.slice(end);
+  else if (value === undefined) result = text;
+  else if (table && index < 0) result = `${text}\n[${table}]\n${line}`;
+  else result = text.slice(0, start) + '\n' + line + text.slice(start);
+  if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), expected)) throw new Error('Cannot safely update managed settings in this TOML layout.');
+  return result;
+}
+
+function providerConfig(port, token, nativeAuth = false) {
+  return {
+    name: 'fluid', base_url: `http://127.0.0.1:${port}/v1`,
+    model_catalog_url: `http://127.0.0.1:${port}/v1/models`,
+    experimental_bearer_token: token,
+    wire_api: 'responses', requires_openai_auth: false, supports_websockets: false,
+    capabilities: { remote_compaction: 'unsupported' },
+    http_headers: { Authorization: `Bearer ${token}`, ...(nativeAuth ? { 'X-Fluid-Token': token, 'x-openai-actor-authorization': `Bearer ${token}` } : {}) },
+  };
+}
+export function patchedConfig(original, port, token, nativeAuth = false) {
+  const before = parse(original);
+  if (before.model_providers?.[providerName]) throw new Error('已存在 fluid provider；请先卸载旧接入配置');
+  // Preserve comments and formatting; parse + compare both sides to fail closed on unusual TOML.
+  let source = original;
+  if (Object.hasOwn(before, 'model_provider')) {
+    const pattern = /^[ \t]*(?:model_provider|"model_provider"|'model_provider')[ \t]*=[^\r\n]*(?:\r?\n|$)/m;
+    if (!pattern.test(source)) throw new Error('无法安全修改 model_provider，请将其改为单行根配置');
+    source = source.replace(pattern, '');
+  }
+  const provider = providerConfig(port, token, nativeAuth);
+  // Local actor auth exposes native images without tying the client's send gate
+  // or text identity to the quota of a particular subscription account.
+  const result = `model_provider = "${providerName}"\n${source}\n[model_providers.${providerName}]\nname = "fluid"\nbase_url = "http://127.0.0.1:${port}/v1"\nmodel_catalog_url = "http://127.0.0.1:${port}/v1/models"\nexperimental_bearer_token = "${token}"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\ncapabilities = { remote_compaction = "unsupported" }\nhttp_headers = { Authorization = "Bearer ${token}"${nativeAuth ? `, "X-Fluid-Token" = "${token}", "x-openai-actor-authorization" = "Bearer ${token}"` : ''} }\n`;
+  const expected = { ...before, model_provider: providerName, model_providers: { ...(before.model_providers as Record<string, unknown>), [providerName]: provider } };
+  if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(result))), JSON.parse(JSON.stringify(expected)))) throw new Error('TOML 结构复杂，无法只修改代理设置；未写入配置');
+  return setting(result, 'features', 'api_key_model_discovery', true);
+}
+export function prepareConfig(root, codexHome, port, token) {
+  const file = path.join(codexHome, 'config.toml');
+  const recordFile = path.join(root, 'installation.json');
+  const exists = fs.existsSync(file);
+  const original = exists ? fs.readFileSync(file, 'utf8') : '';
+  if (fs.existsSync(recordFile)) {
+    const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+    if (record.file !== file || record.port !== port) throw new Error('安装路径或端口发生变化，请先恢复原路径/端口；未修改配置');
+    const current = parse(original);
+    const expected = providerConfig(port, token);
+    const managed = JSON.parse(JSON.stringify(current.model_providers?.[providerName] ?? null));
+    const legacy = { ...expected };
+    for (const key of ['model_catalog_url', 'experimental_bearer_token', 'capabilities']) if (!Object.hasOwn(managed || {}, key)) delete legacy[key];
+    if (current.model_provider !== providerName || !isDeepStrictEqual(managed, legacy)) {
+      throw new Error('fluid 代理接入配置发生变化，请检查 model_provider、代理地址与本地令牌；未覆盖你的修改');
+    }
+
+    // Model preferences, project settings, and comments belong to the user.
+    return { apply() {
+      if (fs.readFileSync(file, 'utf8') !== original) throw new Error('安装期间配置被修改，停止写入');
+      const additions = [
+        !managed.model_catalog_url && `model_catalog_url = "http://127.0.0.1:${port}/v1/models"`,
+        !managed.experimental_bearer_token && `experimental_bearer_token = "${token}"`,
+        !managed.capabilities && 'capabilities = { remote_compaction = "unsupported" }',
+      ].filter(Boolean).join('\n');
+      let installed = additions ? original.replace(/^(\s*\[model_providers\.fluid\][^\r\n]*\r?\n)/m, `$1${additions}\n`) : original;
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parse(installed).model_providers?.[providerName])), expected)) throw new Error('无法安全升级模型目录配置；未写入配置');
+      installed = setting(installed, 'features', 'api_key_model_discovery', true);
+      if (installed !== original) {
+        // Preserve the original strict restore check after unrelated user edits.
+        atomic(recordFile, { ...record, installedHash: digest(original) === record.installedHash ? digest(installed) : record.installedHash });
+        writeText(file, installed);
+      }
+    } };
+  }
+  const installed = patchedConfig(original, port, token);
+  return { apply() {
+    if ((fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '') !== original) throw new Error('安装期间配置被修改，停止写入');
+    atomic(recordFile, { file, port, exists, original, installedHash: digest(installed) });
+    writeText(file, installed);
+  } };
+}
+export function restoreConfig(root) {
+  const recordFile = path.join(root, 'installation.json');
+  if (!fs.existsSync(recordFile)) return;
+  const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  const current = fs.readFileSync(record.file, 'utf8');
+  if (digest(current) !== record.installedHash) throw new Error('config.toml 已被修改，拒绝覆盖；请根据 installation.json 中的原配置手动恢复');
+  if (record.exists) writeText(record.file, record.original);
+  else fs.unlinkSync(record.file);
+  fs.unlinkSync(recordFile);
+}
+function quote(value, exec = false) {
+  if (/[\r\n\0]/.test(value)) throw new Error('服务路径不能包含换行或 NUL');
+  const escaped = value.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  return '"' + (exec ? escaped.replaceAll('$', '$$') : escaped) + '"';
+}
+export function unitText(root, port, node, worker, codex = 'codex', searchPath = process.env.PATH || '/usr/bin:/bin') {
+  const gateway = fileURLToPath(new URL('../bin/fluid', import.meta.url));
+  return `[Unit]\nDescription=fluid routing gateway\n\n[Service]\nType=exec\nExecStart=${quote(gateway, true)} --service\nEnvironment=${quote('FLUID_NODE=' + node)}\nEnvironment=${quote('FLUID_WORKER=' + worker)}\nEnvironment=${quote('SWITCH_HOME=' + root)}\nEnvironment="SWITCH_PORT=${port}"\nEnvironment=${quote('SWITCH_CODEX_BIN=' + codex)}\nEnvironment=${quote('CODEX_HOME=' + path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')))}\nEnvironment=${quote('PATH=' + searchPath)}\nKillMode=mixed\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+}
+function command(binary, args) {
+  const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 15000 });
+  if (result.error || result.status !== 0) throw new Error(`${binary} ${args.join(' ')} 失败：${result.stderr?.trim() || result.error?.message || result.status}`);
+  return result.stdout.trim();
+}
+function linux() {
+  if (process.platform !== 'linux') throw new Error('后台安装目前支持采用 systemd 的 Linux 服务器；请在服务器上安装，本机不会注册服务');
+}
+function unitFile() { return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user', unitName); }
+export async function install(root, port) {
+  linux();
+  const executable = codexBinary();
+  const { token } = init(root);
+  const codexHome = path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
+  const plan = prepareConfig(root, codexHome, port, token);
+  command('systemctl', ['--user', 'show-environment']);
+  try {
+    command('loginctl', ['enable-linger', os.userInfo().username]);
+    if (command('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger', '--value']) !== 'yes') throw new Error('linger 未启用');
+  } catch { throw new Error(`无法启用开机自启。请管理员运行 sudo loginctl enable-linger ${os.userInfo().username}，然后重新运行 ./install.sh`); }
+  if (fs.existsSync(unitFile()) && !fs.readFileSync(unitFile(), 'utf8').includes(`Environment=${quote('SWITCH_HOME=' + root)}\n`)) throw new Error('服务已绑定其他 SWITCH_HOME，拒绝覆盖');
+  saveNetwork(root);
+  writeText(unitFile(), unitText(root, port, process.execPath, fileURLToPath(new URL('./service-worker.js', import.meta.url)), executable));
+  command('systemctl', ['--user', 'daemon-reload']);
+  command('systemctl', ['--user', 'enable', unitName]);
+  command('systemctl', ['--user', 'restart', unitName]);
+  let healthy = false;
+  for (let i = 0; i < 20; i++) {
+    try {
+      const result = await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) });
+      if (result.ok && (await result.json()).service === 'fluid') { healthy = true; break; }
+    } catch { /* systemd may still be starting the process */ }
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  if (!healthy) throw new Error('服务未就绪，尚未修改 Codex 配置；运行 journalctl --user -u fluid 查看日志');
+  if (command('systemctl', ['--user', 'is-active', unitName]) !== 'active' || command('systemctl', ['--user', 'is-enabled', unitName]) !== 'enabled') throw new Error('服务未处于 active/enabled 状态，尚未修改 Codex 配置');
+  plan.apply();
+  console.log(`已启动后台服务并启用开机自启；已配置 ${path.join(codexHome, 'config.toml')}。首次请重启 Codex/重载远程 VS Code 窗口，以后正常使用 codex 或插件即可。`);
+}
+export function service(action, root, { execute = command, userHome = os.homedir(), zshHome = process.env.ZDOTDIR || userHome } = {}) {
+  linux();
+  if (fs.existsSync(unitFile()) && !fs.readFileSync(unitFile(), 'utf8').includes(`Environment=${quote('SWITCH_HOME=' + root)}\n`)) throw new Error('服务属于其他 SWITCH_HOME，拒绝操作');
+  if (action === 'uninstall') {
+    if (path.resolve(root) === path.resolve(userHome) || path.resolve(root) === path.parse(path.resolve(root)).root || fs.lstatSync(root).isSymbolicLink()) throw new Error('Unsafe application data directory.');
+    for (const name of ['installation.json', 'claude-session.json', 'claude-desktop-session.json']) {
+      const file = path.join(root, name);
+      if (!fs.existsSync(file)) continue;
+      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if ([record.file, ...(record.files || []).map(entry => entry.file)].filter(Boolean).some(target => path.resolve(target).startsWith(path.resolve(root) + path.sep)))
+        throw new Error('Client data is inside the application data directory. Move it before uninstalling.');
+    }
+    restoreConfig(root);
+    restoreClaude(path.join(root, 'claude-session.json'));
+    restoreClaudeDesktop(path.join(root, 'claude-desktop-session.json'));
+    if (fs.existsSync(unitFile())) execute('systemctl', ['--user', 'disable', '--now', unitName]);
+    fs.rmSync(unitFile(), { force: true });
+    execute('systemctl', ['--user', 'daemon-reload']);
+    removeCompletion(userHome, zshHome);
+    fs.rmSync(root, { recursive: true, force: true });
+    removeLauncher(userHome);
+    const prefix = userPrefix(userHome);
+    if (fs.existsSync(path.join(prefix, 'node_modules', 'fluid', 'package.json'))) fs.rmSync(prefix, { recursive: true, force: true });
+    else execute('npm', ['uninstall', '--global', '--ignore-scripts', 'fluid']);
+    console.log('已恢复客户端配置并删除服务、工具、服务商凭据、缓存和补全；保留原客户端会话及用户 linger 设置。');
+  } else if (action === 'restart') command('systemctl', ['--user', 'restart', unitName]);
+  else if (action === 'status') console.log(command('systemctl', ['--user', 'status', unitName, '--no-pager']));
+  else throw new Error('不支持的内部服务操作');
+}

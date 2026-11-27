@@ -1,0 +1,114 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { claudeRouteId } from './claude-desktop.js';
+import { atomic, type Provider } from './store.js';
+
+const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+const managed = (port, token) => ({ ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude`, ANTHROPIC_AUTH_TOKEN: token,
+  ANTHROPIC_API_KEY: '', CLAUDE_CODE_OAUTH_TOKEN: '' });
+export function claudeCompactWindows(provider?: Provider): Record<string, number> {
+  const entries: [string, number][] = [];
+  for (const [id, { compact }] of Object.entries(provider?.modelContexts || {})) {
+    if (compact === undefined) continue;
+    const canonical = id.replace(/-\d{8}$/, '');
+    entries.push([id, compact], [canonical, compact], [claudeRouteId(id), compact]);
+  }
+  if (provider?.type === 'api') for (const [family, id] of Object.entries(provider.claudeModels || {})) {
+    const compact = provider.modelContexts?.[id]?.compact;
+    if (compact !== undefined && ['fable', 'opus', 'sonnet', 'haiku'].includes(family)) entries.push([family, compact]);
+  }
+  return Object.fromEntries(entries);
+}
+
+interface ManagedWindow { value: number; original?: unknown; }
+type ManagedWindows = Record<string, ManagedWindow>;
+
+function restoreWindows(settings, managed: ManagedWindows = {}, pending: ManagedWindows = {}) {
+  for (const id of new Set([...Object.keys(managed), ...Object.keys(pending)])) {
+    const entry = settings.modelSettings?.[id];
+    const owner = [managed, pending].find(rows => Object.hasOwn(rows, id) && entry?.autoCompactWindow === rows[id].value)?.[id];
+    if (!owner) continue;
+    if (owner.original === undefined) delete entry.autoCompactWindow;
+    else entry.autoCompactWindow = owner.original;
+    if (!Object.keys(entry).length) delete settings.modelSettings[id];
+  }
+}
+
+function installWindows(settings, windows: Record<string, number>): ManagedWindows {
+  if (!Object.keys(windows).length) return {};
+  if (settings.modelSettings === undefined) settings.modelSettings = {};
+  if (!settings.modelSettings || typeof settings.modelSettings !== 'object' || Array.isArray(settings.modelSettings))
+    throw new Error('Invalid Claude Code modelSettings.');
+  return Object.fromEntries(Object.entries(windows).map(([id, value]) => {
+    const entry = Object.hasOwn(settings.modelSettings, id) ? settings.modelSettings[id] : {};
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Invalid Claude Code modelSettings.');
+    const original = entry.autoCompactWindow;
+    Object.defineProperty(settings.modelSettings, id, { value: { ...entry, autoCompactWindow: value }, enumerable: true, configurable: true, writable: true });
+    return [id, { value, ...(original === undefined ? {} : { original }) }];
+  }));
+}
+
+export function activateClaude(root, directory, port, token, modelEnv = {}, windows: Record<string, number> = {}) {
+  const recordFile = path.join(root, 'claude-session.json');
+  if (fs.existsSync(recordFile)) {
+    const record = JSON.parse(read(recordFile)), current = read(record.file);
+    const settings = current ? JSON.parse(current) : {}, before = record.original ? JSON.parse(record.original) : {};
+    const next = { ...record.env };
+    for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', 'CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS']) {
+      if (Object.hasOwn(record.env, key) && settings.env?.[key] !== record.env[key]) continue;
+      if (!Object.hasOwn(modelEnv, key) && !Object.hasOwn(record.env, key)) continue;
+      settings.env ??= {};
+      next[key] = modelEnv[key] ?? before.env?.[key] ?? '';
+      settings.env[key] = next[key];
+    }
+    const edited = new Set(Object.keys(record.windows || {}).filter(id =>
+      settings.modelSettings?.[id]?.autoCompactWindow !== record.windows[id].value &&
+      (!Object.hasOwn(record.pendingWindows || {}, id) ||
+        settings.modelSettings?.[id]?.autoCompactWindow !== record.pendingWindows[id].value)));
+    restoreWindows(settings, record.windows, record.pendingWindows);
+    const nextWindows = installWindows(settings, Object.fromEntries(Object.entries(windows).filter(([id]) => !edited.has(id))));
+    for (const id of edited) {
+      if (Object.hasOwn(windows, id)) nextWindows[id] = record.windows[id];
+    }
+    if (!Object.keys(nextWindows).length && before.modelSettings === undefined && settings.modelSettings && !Object.keys(settings.modelSettings).length) delete settings.modelSettings;
+    if (read(record.file) !== current) throw new Error('Claude Code settings changed during startup. Retry.');
+    if (!record.pendingWindows && isDeepStrictEqual(next, record.env) &&
+        isDeepStrictEqual(nextWindows, record.windows || {}) && isDeepStrictEqual(settings, current ? JSON.parse(current) : {})) return;
+    // Recovery recognizes either side of a model-menu update interrupted by a crash.
+    atomic(recordFile, { ...record, pendingEnv: next, pendingWindows: nextWindows });
+    atomic(record.file, settings);
+    const { pendingEnv, pendingWindows, ...rest } = record;
+    atomic(recordFile, { ...rest, env: next, windows: nextWindows });
+    return;
+  }
+  const file = path.join(directory, 'settings.json'), original = read(file);
+  const settings = original ? JSON.parse(original) : {};
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid Claude Code settings.');
+  if (settings.env && (typeof settings.env !== 'object' || Array.isArray(settings.env))) throw new Error('Invalid Claude Code env settings.');
+  const env = { ...managed(port, token), ...modelEnv };
+  const installedWindows = installWindows(settings, windows);
+  atomic(recordFile, { file, exists: fs.existsSync(file), original, env, windows: installedWindows });
+  if (read(file) !== original) { fs.rmSync(recordFile); throw new Error('Claude Code settings changed during startup. Retry.'); }
+  atomic(file, { ...settings, env: { ...settings.env, ...env } });
+}
+export function restoreClaude(recordFile) {
+  if (!fs.existsSync(recordFile)) return false;
+  const record = JSON.parse(read(recordFile)), current = read(record.file);
+  const settings = current ? JSON.parse(current) : {}, before = record.original ? JSON.parse(record.original) : {};
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid Claude Code settings; the recovery record was retained.');
+  for (const key of new Set([...Object.keys(record.env), ...Object.keys(record.pendingEnv || {})])) {
+    if (settings.env?.[key] !== record.env[key] && (!Object.hasOwn(record.pendingEnv || {}, key) || settings.env?.[key] !== record.pendingEnv[key])) continue; // Preserve the user's concurrent edits.
+    if (Object.hasOwn(before.env || {}, key)) settings.env[key] = before.env[key]; else delete settings.env[key];
+  }
+  if (!before.env && !Object.keys(settings.env || {}).length) delete settings.env;
+  restoreWindows(settings, record.windows, record.pendingWindows);
+  if (before.modelSettings === undefined && settings.modelSettings && !Object.keys(settings.modelSettings).length) delete settings.modelSettings;
+  if (read(record.file) !== current) throw new Error('Claude Code settings changed during restoration. Retry.');
+  if (isDeepStrictEqual(settings, before)) {
+    if (record.exists) { fs.writeFileSync(record.file, record.original, { mode: 0o600 }); }
+    else fs.rmSync(record.file, { force: true });
+  } else atomic(record.file, settings);
+  fs.rmSync(recordFile);
+  return true;
+}

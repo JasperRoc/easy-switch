@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fluid</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-brand" data-tauri-drag-region="deep"><img src="assets/icon.png" alt="" width="30" height="30"><strong>fluid</strong></div>
+    <div class="client-picker" role="group" aria-label="Clients">
+      <div class="client-item" data-client-item="codex"><button class="client-select" data-client="codex" aria-label="Codex" title="Codex" aria-pressed="true"><span class="client-logo codex-logo" aria-hidden="true"></span><span class="client-provider" data-client-provider="codex">—</span></button><button id="routing-toggle" class="route-switch" data-routing-client="codex" type="button" role="switch" aria-checked="false" aria-label="Codex"><span class="route-switch-thumb" aria-hidden="true"></span></button></div>
+      <div class="client-item" data-client-item="claude"><button class="client-select" data-client="claude" aria-label="Claude Code / Claude Desktop" title="Claude Code / Claude Desktop" aria-pressed="false"><span class="client-logo claude-logo" aria-hidden="true"></span><span class="client-provider" data-client-provider="claude">—</span></button><button id="claude-routing-toggle" class="route-switch" data-routing-client="claude" type="button" role="switch" aria-checked="false" aria-label="Claude"><span class="route-switch-thumb" aria-hidden="true"></span></button></div>
+    </div>
+    <button id="settings" class="settings-nav" aria-pressed="false"><svg aria-hidden="true"><use href="assets/ui.svg#settings"/></svg><span data-i18n="settings">Settings</span></button>
+  </aside>
+  <div class="workspace">
+  <header data-tauri-drag-region></header>
+  <div class="workspace-notices"><div id="tray-hint" class="notice" data-i18n="trayHidden" hidden></div><div id="preferences-warning" class="notice" role="status" hidden></div><div id="error" class="notice error" role="alert" hidden></div></div>
+  <main id="providers-page">
+    <section id="providers" class="panel glass">
+      <div class="provider-actions"><button id="import-existing" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#download"/></svg><span data-i18n="importExisting">Import current setup</span></button><button id="add-subscription" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#plus"/></svg><span data-i18n="addSubscription">Add subscription</span></button><button id="add-api" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#plus"/></svg><span data-i18n="addAPI">Add API provider</span></button></div>
+      <div id="provider-list"></div>
+      <p id="native-images" class="notice" data-i18n="nativeImagesHelp" hidden></p>
+      <div id="empty" class="empty" hidden><img src="assets/icon.png" width="68" height="68" alt=""><p data-i18n="empty">Add your first account or API.</p></div>
+    </section>
+  </main>
+  <section id="settings-page" hidden>
+    <div id="settings-overview">
+    <div class="settings-card glass"><button id="open-usage" class="setting-link"><span data-i18n="usageTitle">Usage statistics</span><svg aria-hidden="true"><use href="assets/ui.svg#chart"/></svg></button></div>
+    <div class="settings-card glass">
+      <button id="open-task-sync" class="setting-link"><span data-i18n="taskSync">Cross-device session sync</span><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button>
+    </div>
+    <div class="settings-card glass">
+      <button id="open-skills" class="setting-link" data-extensions="skill"><span>Skills</span><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button>
+      <button id="open-mcp" class="setting-link" data-extensions="mcp"><span>MCP</span><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button>
+    </div>
+    <div class="settings-card glass"><div class="setting-row"><span id="autostart-label" data-i18n="autoStart">Start at login</span><div class="setting-control"><button id="autostart" class="route-switch" type="button" role="switch" aria-checked="false" aria-labelledby="autostart-label"><span class="route-switch-thumb" aria-hidden="true"></span></button></div></div></div>
+    <div class="settings-card glass"><div class="setting-row"><span data-i18n="uninstall">Uninstall fluid</span><button id="uninstall" class="icon-button" data-i18n-aria="uninstall"><svg aria-hidden="true"><use href="assets/ui.svg#trash"/></svg></button></div></div>
+    </div>
+    <section id="usage-page" aria-labelledby="usage-title" hidden>
+      <div class="sync-heading"><div class="sync-page-title"><button id="close-usage" class="icon-button" data-i18n-aria="syncBack"><svg aria-hidden="true"><use href="assets/ui.svg#arrow-left"/></svg></button><h2 id="usage-title" data-i18n="usageTitle">Usage statistics</h2></div><div class="extension-actions"><span id="usage-updated" class="help"></span><button id="usage-refresh" class="icon-button" data-i18n-aria="extensionsRefresh"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg></button></div></div>
+      <div class="usage-filters"><label class="context-select"><select id="usage-range" data-i18n-aria="usageRange"><option value="1" data-i18n="usageToday">Today</option><option value="7" data-i18n="usage7Days" selected>Last 7 days</option><option value="30" data-i18n="usage30Days">Last 30 days</option></select><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></label><div class="usage-segments" role="group" data-i18n-aria="usageClient"><button data-usage-client="all" aria-pressed="true" data-i18n="usageAll">All</button><button data-usage-client="claude" aria-pressed="false" aria-label="Claude Code"><span class="client-logo claude-logo" aria-hidden="true"></span></button><button data-usage-client="codex" aria-pressed="false" aria-label="Codex"><span class="client-logo codex-logo" aria-hidden="true"></span></button></div></div>
+      <section class="usage-card glass"><div class="usage-metrics"><div class="usage-metric"><button data-usage-metric="cost" aria-pressed="false"><span data-i18n="usageCost"></span><span class="usage-value"><strong id="usage-cost">—</strong></span></button><button class="usage-help" data-usage-help="cost" data-i18n-aria="usageCostHelpTitle"><svg aria-hidden="true"><use href="assets/ui.svg#help"/></svg></button></div><div class="usage-metric"><button data-usage-metric="requests" aria-pressed="true"><span data-i18n="usageRequests"></span><span class="usage-value"><strong id="usage-requests">0</strong></span></button><button class="usage-help" data-usage-help="requests" data-i18n-aria="usageRequestsHelpTitle"><svg aria-hidden="true"><use href="assets/ui.svg#help"/></svg></button></div><div class="usage-metric"><button data-usage-metric="tokens" aria-pressed="false"><span data-i18n="usageTokens"></span><span class="usage-value"><strong id="usage-tokens">—</strong></span></button><button class="usage-help" data-usage-help="tokens" data-i18n-aria="usageTokensHelpTitle"><svg aria-hidden="true"><use href="assets/ui.svg#help"/></svg></button></div><div class="usage-metric"><button data-usage-metric="cache" aria-pressed="false"><span data-i18n="usageCache"></span><span class="usage-value"><strong id="usage-cache">—</strong></span></button><button class="usage-help" data-usage-help="cache" data-i18n-aria="usageCacheHelpTitle"><svg aria-hidden="true"><use href="assets/ui.svg#help"/></svg></button></div></div><div id="usage-chart"></div></section>
+      <section class="usage-card glass"><div class="usage-table-toolbar"><div class="usage-tabs" role="tablist" data-i18n-aria="usageGroup"><button data-usage-group="requests" role="tab" aria-selected="true"><span data-i18n="usageLogs"></span><span class="usage-count" data-usage-count="requests">0</span></button><button data-usage-group="providers" role="tab" aria-selected="false"><span data-i18n="usageProviders"></span><span class="usage-count" data-usage-count="providers">0</span></button><button data-usage-group="models" role="tab" aria-selected="false"><span data-i18n="usageModels"></span><span class="usage-count" data-usage-count="models">0</span></button></div><div class="usage-table-tools"><label class="context-select"><select id="usage-status" data-i18n-aria="usageStatusFilter"><option value="" data-i18n="usageAllStatuses">All statuses</option><option value="200">HTTP 200</option><option value="400">HTTP 400</option><option value="401">HTTP 401</option><option value="403">HTTP 403</option><option value="404">HTTP 404</option><option value="429">HTTP 429</option><option value="500">HTTP 500</option><option value="502">HTTP 502</option><option value="503">HTTP 503</option><option value="504">HTTP 504</option></select><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></label><button id="usage-columns-button" class="icon-button" popovertarget="usage-columns" data-i18n-aria="usageColumns"><svg aria-hidden="true"><use href="assets/ui.svg#columns"/></svg></button><div id="usage-columns" class="usage-column-menu" popover><strong data-i18n="usageColumns">Columns</strong><div id="usage-column-options"></div></div></div></div><div class="usage-table-scroll"><table class="usage-table"><thead><tr id="usage-table-head"></tr></thead><tbody id="usage-table-body"></tbody></table></div><p id="usage-empty" class="help" data-i18n="usageEmpty" hidden>No recorded requests in this period.</p><div id="usage-pagination" hidden><button id="usage-prev" class="icon-button" data-i18n-aria="usagePrevious"><svg aria-hidden="true"><use href="assets/ui.svg#arrow-left"/></svg></button><span id="usage-page-number" class="help"></span><button id="usage-next" class="icon-button" data-i18n-aria="usageNext"><svg aria-hidden="true"><use href="assets/ui.svg#chevron"/></svg></button></div></section>
+      <div id="usage-tooltip" class="usage-tooltip" role="tooltip" hidden><strong id="usage-tooltip-title"></strong><p id="usage-tooltip-text"></p></div>
+      <p id="usage-error" class="notice error" role="alert" hidden></p>
+    </section>
+    <section id="sync-page" aria-labelledby="sync-title" hidden>
+      <div class="sync-heading"><div class="sync-page-title"><button id="close-sync" class="icon-button" data-i18n-aria="syncBack"><svg aria-hidden="true"><use href="assets/ui.svg#arrow-left"/></svg></button><h2 id="sync-title" data-i18n="taskSync">Cross-device session sync</h2></div><button id="sync-guide" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#book"/></svg><span data-i18n="syncGuide">Setup guide</span></button></div>
+      <div class="sync-navigation" role="tablist" data-i18n-aria="taskSync"><button id="sync-tasks-tab" type="button" role="tab" aria-controls="sync-library" aria-selected="false" data-i18n="syncTasksTab">Tasks</button><button id="sync-storage-tab" type="button" role="tab" aria-controls="sync-connection" aria-selected="true" data-i18n="syncStorageTab">Storage</button></div>
+      <div class="sync-status-line"><span class="sync-status-dot" aria-hidden="true"></span><p id="sync-status" class="help" role="status" aria-live="polite"></p></div><p id="sync-error" class="notice error" role="alert" hidden></p>
+      <section id="sync-connection" class="sync-card glass" role="tabpanel" aria-labelledby="sync-storage-tab">
+        <h3 data-i18n="syncConnectionTitle">Connect your storage</h3>
+        <form id="sync-form">
+          <input id="sync-kind" type="hidden" value="ssh">
+          <div class="sync-backends" role="group" data-i18n-aria="syncBackend">
+            <button type="button" data-sync-kind="ssh" aria-pressed="true"><svg aria-hidden="true"><use href="assets/ui.svg#server"/></svg><span data-i18n="syncSSH">SSH server</span></button>
+            <button type="button" data-sync-kind="webdav" aria-pressed="false"><svg aria-hidden="true"><use href="assets/ui.svg#cloud"/></svg><span>WebDAV</span></button>
+          </div>
+          <div class="sync-fields">
+            <label id="sync-ssh-field" class="sync-full" hidden><span data-i18n="syncSSHHost">SSH host</span><input id="sync-ssh" placeholder="my-server / user@203.0.113.10" spellcheck="false" autocapitalize="off" maxlength="320"></label>
+            <label id="sync-url-field" class="sync-full" hidden>
+              <span id="sync-url-label" data-i18n="syncAddress">WebDAV URL</span>
+              <span class="sync-url-entry"><input id="sync-url" type="url" placeholder="https://dav.example.com/dav" spellcheck="false" autocapitalize="off" aria-labelledby="sync-url-label" aria-describedby="sync-url-suffix"><span id="sync-url-suffix">/fluid/</span></span>
+            </label>
+            <label id="sync-user-field" hidden><span data-i18n="syncUsername">Username</span><input id="sync-username" autocomplete="username" spellcheck="false"></label>
+            <label id="sync-secret-field" hidden><span data-i18n="syncWebDAVPassword">WebDAV app password</span><input id="sync-secret" type="password" autocomplete="new-password"></label>
+            <label class="sync-full"><span data-i18n="syncPassphrase">Shared encryption passphrase</span><input id="sync-passphrase" type="password" minlength="12" autocomplete="new-password"><small class="help" data-i18n="syncPassphraseHelp">At least 12 characters. Leave saved passwords blank to keep them.</small></label>
+          </div>
+          <div class="sync-controls"><div class="sync-auto"><span id="sync-auto-label" data-i18n="syncAutomatic">Automatic sync</span><button id="sync-enabled" class="route-switch" type="button" role="switch" aria-checked="true" aria-labelledby="sync-auto-label"><span class="route-switch-thumb" aria-hidden="true"></span></button></div><button id="sync-save" type="submit" data-i18n="syncVerify">Verify & save</button></div>
+        </form>
+      </section>
+      <section id="sync-library" class="sync-card glass" role="tabpanel" aria-labelledby="sync-tasks-tab" hidden>
+        <div class="sync-library-heading">
+          <div><h3 data-i18n="syncTasksTitle">Selected conversations</h3><p class="help" data-i18n="syncHelp">Select sessions to sync. Projects are restored automatically on each computer.</p></div>
+          <div class="sync-library-actions">
+            <div class="sync-client-control">
+              <button id="sync-client" type="button" class="secondary sync-client-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="sync-client-menu" data-i18n-aria="syncClient"><span id="sync-client-label">Codex</span><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></button>
+              <div id="sync-client-menu" class="control-popover" role="menu" data-i18n-aria="syncClient" hidden><button type="button" role="menuitemradio" data-sync-client="codex" tabindex="-1">Codex</button><button type="button" role="menuitemradio" data-sync-client="claude" tabindex="-1">Claude Code</button></div>
+            </div>
+            <button id="sync-refresh" class="icon-button" data-i18n-aria="syncRefresh"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg></button>
+            <button id="sync-now" class="icon-button" data-i18n-aria="syncNow"><svg aria-hidden="true"><use href="assets/ui.svg#cloud"/></svg></button>
+          </div>
+        </div>
+        <div class="sync-search-field"><svg aria-hidden="true"><use href="assets/ui.svg#search"/></svg><input id="sync-search" type="search" data-i18n-placeholder="syncSearch" data-i18n-aria="syncSearch"></div>
+        <div id="sync-tasks"></div><div id="sync-empty" class="sync-empty" hidden><svg aria-hidden="true"><use href="assets/ui.svg#cloud"/></svg><p id="sync-empty-text" data-i18n="syncEmpty">No saved sessions.</p></div>
+        <p class="sync-footnote help" data-i18n="syncTaskHelp">Uncheck to pause on this computer. Use the trash icon to remove a shared copy.</p>
+      </section>
+    </section>
+    <section id="extensions-page" aria-labelledby="extensions-title" hidden>
+      <div class="sync-heading"><div class="sync-page-title"><button id="close-extensions" class="icon-button" data-i18n-aria="syncBack"><svg aria-hidden="true"><use href="assets/ui.svg#arrow-left"/></svg></button><h2 id="extensions-title"></h2></div>
+        <div class="extension-actions">
+          <button id="extensions-refresh" class="icon-button" data-i18n-aria="extensionsRefresh"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg></button>
+          <button id="skills-update" type="button" class="secondary" hidden><svg aria-hidden="true"><use href="assets/ui.svg#download"/></svg><span></span></button>
+          <button id="extensions-add" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#plus"/></svg><span></span></button>
+        </div></div>
+      <section class="extension-card glass">
+        <div class="extension-columns"><div class="sync-search-field"><svg aria-hidden="true"><use href="assets/ui.svg#search"/></svg><input id="extensions-search" type="search" data-i18n-placeholder="extensionsSearch" data-i18n-aria="extensionsSearch"></div><span>Codex</span><span>Claude Code</span></div>
+        <div id="extensions-list"></div>
+        <p id="extensions-empty" class="help" role="status"></p>
+        <p id="skills-update-result" class="help" role="status" hidden></p>
+        <p id="extensions-error" class="notice error" role="alert" hidden></p>
+      </section>
+    </section>
+  </section>
+  <footer class="workspace-footer"><span id="version"></span>
+    <div class="icon-control"><button id="language-button" class="footer-control" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="language"><svg aria-hidden="true"><use href="assets/ui.svg#languages"/></svg></button><div id="language-menu" class="control-popover" role="menu" hidden><button role="menuitemradio" data-language="en">English</button><button role="menuitemradio" data-language="zh-CN">简体中文</button></div></div>
+    <div class="icon-control"><button id="theme-button" class="footer-control" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="appearance"><svg aria-hidden="true"><use id="theme-symbol" href="assets/ui.svg#appearance"/></svg></button><div id="theme-menu" class="control-popover" role="menu" hidden><button role="menuitemradio" data-theme="system" data-i18n="systemTheme">System</button><button role="menuitemradio" data-theme="light" data-i18n="lightTheme">Light</button><button role="menuitemradio" data-theme="dark" data-i18n="darkTheme">Dark</button></div></div>
+    <button id="updates" class="footer-control" data-i18n-aria="updates"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span id="update-dot" hidden></span></button><button id="star" class="footer-control" data-i18n-aria="star"><svg aria-hidden="true"><use href="assets/ui.svg#star"/></svg></button>
+  </footer>
+  </div>
+  <dialog id="extension-dialog" aria-labelledby="extension-dialog-title">
+    <div class="extension-dialog-heading"><h2 id="extension-dialog-title" tabindex="-1"></h2><button id="close-extension-dialog" type="button" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <form id="mcp-form" hidden>
+      <div class="extension-dialog-body">
+        <div class="extension-form-row">
+          <label><span data-i18n="mcpName">Server name</span><input id="mcp-name" maxlength="80" spellcheck="false" placeholder="my-server" autocomplete="off"></label>
+          <label><span data-i18n="extensionsClient">Client</span><select id="mcp-client"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
+        </div>
+        <div id="mcp-fields" class="extension-field-stack">
+          <div class="extension-form-row">
+            <label id="mcp-endpoint-field"><span data-i18n="mcpURL">Server URL</span><input id="mcp-url" type="url" placeholder="https://example.com/mcp" spellcheck="false"></label>
+            <label id="mcp-command-field" hidden><span data-i18n="mcpCommand">Command</span><input id="mcp-command" placeholder="npx" spellcheck="false"></label>
+            <label><span data-i18n="mcpTransport">Transport</span><select id="mcp-transport"><option value="http">HTTP</option><option value="stdio">stdio</option><option value="sse">SSE</option></select></label>
+          </div>
+          <label id="mcp-args-field" hidden><span data-i18n="mcpArgs">Arguments, one per line</span><textarea id="mcp-args" rows="3" spellcheck="false"></textarea></label>
+          <details id="mcp-options"><summary><span id="mcp-vars-title"></span><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></summary>
+            <textarea id="mcp-vars" rows="3" placeholder="{}" aria-labelledby="mcp-vars-title" spellcheck="false"></textarea>
+          </details>
+        </div>
+        <label id="mcp-source" hidden><span data-i18n="mcpConfig">Configuration (JSON or TOML)</span><textarea id="mcp-config" rows="9" maxlength="131072" spellcheck="false" wrap="off" required></textarea></label>
+      </div>
+      <p id="mcp-dialog-error" class="notice error extension-dialog-error" role="alert" hidden></p>
+      <div class="extension-dialog-footer">
+        <button id="mcp-entry-mode" class="extension-quiet" type="button"></button>
+        <button id="mcp-remove" type="button" class="extension-quiet extension-danger" data-i18n="extensionsRemove" hidden>Remove</button>
+        <div class="extension-actions"><button type="button" class="secondary" data-close-extension data-i18n="cancel">Cancel</button><button id="mcp-save" type="submit"></button></div>
+      </div>
+    </form>
+    <form id="skill-form" hidden>
+      <div class="extension-dialog-body">
+        <div id="skill-source-modes" class="skill-source-modes" role="group" data-i18n-aria="skillSource"><button type="button" data-skill-mode="github" aria-pressed="true">GitHub</button><button type="button" data-skill-mode="local" aria-pressed="false" data-i18n="skillLocal">Local file</button></div>
+        <div id="skill-github" class="extension-input-action">
+          <label><span data-i18n="skillRepo">GitHub repository</span><input id="skill-repo" type="url" placeholder="https://github.com/owner/repo" spellcheck="false" autocomplete="off"></label>
+          <button id="skill-browse" type="submit" class="secondary" data-i18n="skillBrowse">Browse skills</button>
+        </div>
+        <div id="skill-local" class="extension-actions" hidden>
+          <button type="button" class="secondary" data-skill-source="folder" data-i18n="skillFolder">Choose folder</button><button type="button" class="secondary" data-skill-source="zip" data-i18n="skillZip">Choose ZIP</button>
+        </div>
+        <p id="skill-loading" class="help" role="status" data-i18n="skillLoading" hidden>Downloading skills…</p>
+        <section id="skill-results" hidden>
+          <div class="extension-form-row"><label><span>Skill</span><select id="skill-choice"></select></label><label id="skill-client-field"><span data-i18n="extensionsClient">Client</span><select id="skill-client"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label></div>
+          <details id="skill-preview" hidden><summary><span data-i18n="skillDescription">Description</span><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></summary><p id="skill-description" class="help"></p></details>
+        </section>
+      </div>
+      <p id="skill-dialog-error" class="notice error extension-dialog-error" role="alert" hidden></p>
+      <div class="extension-dialog-footer"><div class="extension-actions"><button type="button" class="secondary" data-close-extension data-i18n="cancel">Cancel</button><button id="skill-install" type="button" disabled>Install skill</button></div></div>
+    </form>
+  </dialog>
+  <dialog id="add-dialog"><form id="provider-form"><div class="section-heading"><h2 id="provider-dialog-title"></h2><button type="button" id="close-dialog" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div><label><span data-i18n="alias">Alias</span><input id="provider-alias" required maxlength="64" data-i18n-placeholder="aliasHint"></label><div id="api-fields" hidden><label><span data-i18n="baseURL">Base URL</span><input id="base-url" data-i18n-placeholder="baseHint"></label><label><span data-i18n="apiKey">API key</span><input id="api-key" type="password" autocomplete="off"></label><p id="edit-key-help" class="help" data-i18n="keepKey" hidden></p><details id="claude-mapping" hidden><summary data-i18n="claudeMapping">Claude model mapping</summary><p class="help" data-i18n="claudeMappingHelp"></p><div class="family-mappings"><label><span>Fable →</span><input id="claude-fable-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="familyMappingHint"></label><label><span>Opus →</span><input id="claude-opus-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="familyMappingHint"></label><label><span>Sonnet →</span><input id="claude-sonnet-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="familyMappingHint"></label><label><span>Haiku →</span><input id="claude-haiku-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="familyMappingHint"></label></div><datalist id="claude-model-options"></datalist><details><summary data-i18n="legacyMapping">Default and subagent fallback</summary><label><span data-i18n="claudeMainModel">Main model ID</span><input id="claude-main-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="mappingHint"></label><label><span data-i18n="claudeAgentModel">Subagent model ID</span><input id="claude-agent-model" list="claude-model-options" autocomplete="off" data-i18n-placeholder="agentMappingHint"></label></details><button type="button" id="claude-choose-model" class="secondary" data-i18n="chooseMappingModel" hidden>Choose from provider catalog</button></details></div><p id="account-help" class="help"></p><div id="import-preview" class="notice" hidden></div><div id="login-status" class="notice login-status" hidden><strong id="login-alias"></strong><p id="login-message"></p><div class="login-code"><code id="login-code"></code><button type="button" id="open-login" data-i18n="openLogin">Open official sign-in</button></div><label id="claude-code-field" hidden><span data-i18n="authorizationCode">Authorization code</span><input id="authorization-code" autocomplete="off"></label></div><p id="dialog-error" class="notice error" role="alert" hidden></p><div class="actions"><button type="submit" id="save-provider"></button></div></form></dialog>
+  <dialog id="models-dialog" aria-labelledby="models-title">
+    <div class="section-heading"><div><span id="models-provider" class="eyebrow"></span><h2 id="models-title" data-i18n="availableModels">Available models</h2></div><button id="close-models" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <p id="models-status" class="catalog-status" role="status" aria-live="polite"></p>
+    <div class="catalog-toolbar"><span id="models-mode" class="help"></span><button id="models-reset" class="link" data-i18n="resetModels">Use automatic catalog</button><button id="models-refresh" class="secondary"><svg aria-hidden="true"><use href="assets/ui.svg#refresh"/></svg><span data-i18n="fetchModels">Fetch available models</span></button></div>
+    <input id="models-search" type="search" data-i18n-placeholder="searchModels" data-i18n-aria="searchModels">
+    <div id="models-columns" class="catalog-columns"><span data-i18n="modelID">Model ID</span><span data-i18n="modelDisplayName">Display name</span><span data-i18n="catalogContext">Context</span></div>
+    <div id="models-list" class="model-catalog" role="list"></div>
+    <button id="models-add" class="secondary" data-i18n="addModel">Add model</button>
+    <details id="catalog-mappings" hidden><summary data-i18n="claudeMapping">Claude model mapping</summary><p class="help" data-i18n="claudeMappingHelp"></p><div id="catalog-family-fields" class="family-mappings"></div><datalist id="catalog-model-options"></datalist></details>
+    <p id="models-empty" class="help" hidden></p><p id="models-notice" class="help"></p>
+    <div class="actions"><button id="models-cancel" class="secondary" data-i18n="cancel">Cancel</button><button id="models-save" data-i18n="saveChanges">Save changes</button></div>
+  </dialog>
+  <dialog id="model-context-dialog" aria-labelledby="model-context-title">
+    <form id="model-context-form">
+      <div class="section-heading"><div><span id="model-context-id" class="eyebrow"></span><h2 id="model-context-title" data-i18n="catalogContext">Context</h2></div><button type="button" id="close-model-context" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+      <label id="model-window-field"><span data-i18n="codexContextWindow">Context window (tokens)</span><span class="context-select"><select id="model-window-size"></select><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></span><input id="model-window-custom" type="number" min="1" step="1" inputmode="numeric" data-i18n-aria="codexContextWindow" hidden></label>
+      <label><span data-i18n="codexCompactThreshold">Auto-compaction threshold (tokens)</span><span class="context-select"><select id="model-compact-size"></select><svg aria-hidden="true"><use href="assets/ui.svg#chevron-down"/></svg></span><input id="model-compact-custom" type="number" min="1" step="1" inputmode="numeric" data-i18n-aria="codexCompactThreshold" hidden></label>
+      <p id="model-context-help" class="help"></p>
+      <p id="model-context-error" class="notice error" role="alert" hidden></p>
+      <div class="actions"><button type="submit" data-i18n="done">Done</button></div>
+    </form>
+  </dialog>
+  <dialog id="update-dialog" aria-labelledby="update-title">
+    <div class="update-top"><span class="eyebrow" id="update-current"></span><button id="close-update" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <div class="update-hero"><span id="update-emblem" class="update-emblem"><svg aria-hidden="true"><use id="update-symbol" href="assets/ui.svg#refresh"/></svg></span><div><h2 id="update-title"></h2><p id="update-status" class="help" role="status" aria-live="polite"></p></div></div>
+    <div id="update-metadata" class="update-metadata" hidden></div>
+    <section id="update-changes" hidden><h3 data-i18n="whatsNew">What’s new</h3><div id="update-notes" class="release-notes"></div></section>
+    <div id="update-transfer" hidden><progress id="update-progress" max="100"></progress><span id="update-bytes" class="help"></span></div>
+    <p id="update-error" class="notice error" role="alert" hidden></p>
+    <div class="update-bottom">
+      <p id="update-warning" class="help" hidden></p>
+      <div class="actions">
+        <button id="update-retry" class="secondary" data-i18n="checkAgain">Check again</button>
+        <button id="update-reveal" class="secondary" data-i18n="updateReveal" hidden>Show installer in folder</button>
+        <button id="update-action"></button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="reset-dialog" aria-labelledby="reset-title">
+    <div class="section-heading"><h2 id="reset-title"></h2><button id="close-reset" class="icon-button" data-i18n-aria="close"><svg aria-hidden="true"><use href="assets/ui.svg#close"/></svg></button></div>
+    <p id="reset-status" class="help" role="status" aria-live="polite"></p>
+    <div id="reset-card-list" role="radiogroup" data-i18n-aria="resetChoose"></div>
+    <p id="reset-card-help" class="help"></p>
+    <p id="reset-result" class="notice" role="status" hidden></p>
+    <p id="reset-error" class="notice error" role="alert" hidden></p>
+    <div class="actions"><button id="reset-reload" class="secondary" data-i18n="resetReload">Refresh cards</button><button id="reset-confirm" data-i18n="resetConfirm" disabled>Use selected reset card</button></div>
+  </dialog>
+  <script type="module" src="native-bridge.js"></script>
+</body>
+</html>

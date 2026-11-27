@@ -1,0 +1,223 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { parse } from 'smol-toml';
+import { createHash } from 'node:crypto';
+import { atomic, readState, providerOrder, accountAuth } from '../src/store.js';
+import { patchedConfig, setting, writeText } from '../src/install.js';
+
+const provider = 'fluid';
+const normalized = value => JSON.parse(JSON.stringify(value));
+const same = (a, b) => isDeepStrictEqual(normalized(a), normalized(b));
+const rootSelector = /^[ \t]*(?:model_provider|"model_provider"|'model_provider')[ \t]*=[^\r\n]*(?:\r?\n|$)/m;
+const nativeSettings = [['', 'cli_auth_credentials_store', 'ephemeral'], ['', 'forced_login_method', 'api'], ['features', 'image_generation', true]] as const;
+const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+const hash = text => createHash('sha256').update(text).digest('hex');
+
+export interface CodexContext {
+  window: number | null;
+  compact: number | null;
+}
+
+export function codexContext(codexHome: string, update?: CodexContext): CodexContext {
+  const file = path.join(codexHome, 'config.toml');
+  const original = read(file);
+  const config = parse(original);
+  if (update === undefined) return {
+    window: config.model_context_window as number ?? null,
+    compact: config.model_auto_compact_token_limit as number ?? null,
+  };
+
+  const { window, compact } = update;
+  if ([window, compact].some(value => value !== null && (!Number.isSafeInteger(value) || value < 1))) {
+    throw new Error('Enter a positive whole number of tokens, or leave the field blank.');
+  }
+  if (window !== null && compact !== null && compact >= window) {
+    throw new Error('The auto-compaction threshold must be lower than the context window.');
+  }
+  let next = original;
+  for (const [key, value] of [['model_context_window', window], ['model_auto_compact_token_limit', compact]] as const) {
+    if ((config[key] ?? null) !== value) next = setting(next, '', key, value ?? undefined);
+  }
+  if (next !== original) {
+    if (read(file) !== original) throw new Error('Codex settings changed while saving. Reopen the settings and try again.');
+    writeText(file, next);
+  }
+  return { window, compact };
+}
+
+function subject(auth) {
+  try { return JSON.parse(Buffer.from(auth.tokens.id_token.split('.')[1], 'base64url').toString()).sub; } catch { return null; }
+}
+
+
+function sessionConfig(original, port, token, nativeAuth = false) {
+  // Desktop rollout defaults must not disable our explicitly configured catalog.
+  return patchedConfig(original, port, token, nativeAuth);
+}
+
+function withNativeSettings(text) {
+  for (const [table, key, value] of nativeSettings) text = setting(text, table, key, value);
+  return text;
+}
+
+export function restoredText(current, record) {
+  if (current === record.installed) return record.original;
+  if (current === record.original) return current;
+  if (record.previous && same(parse(current).model_providers?.[provider] ?? null,
+    parse(record.previous.installed).model_providers?.[provider] ?? null))
+    return restoredText(current, { ...record, ...record.previous, previous: null });
+  if (record.nativeTools || record.modelDiscovery) {
+    const before = parse(record.original), installed = parse(record.installed);
+    const managed: readonly (readonly [string, string, ...unknown[]])[] = [...(record.modelDiscovery ? [['features', 'api_key_model_discovery']] as const : []), ...(record.nativeTools ? nativeSettings : [])];
+    for (const [table, key] of managed) {
+      const now = parse(current), value = table ? now[table]?.[key] : now[key];
+      if (same(value ?? null, (table ? installed[table]?.[key] : installed[key]) ?? null))
+        current = setting(current, table, key, table ? before[table]?.[key] : before[key]);
+    }
+    if (!before.features && !Object.keys(parse(current).features || {}).length)
+      current = current.replace(/^[ \t]*\[features\][ \t]*(?:\r?\n|$)/m, '');
+  }
+  const before = parse(record.original), active = parse(record.installed), now = parse(current);
+  if (!same(now.model_providers?.[provider] ?? null, active.model_providers[provider])) {
+    throw new Error('The fluid provider was edited. Restore it before exiting; the backup is in desktop-session.json.');
+  }
+  const expected = normalized(now);
+  delete expected.model_providers[provider];
+  if (!Object.keys(expected.model_providers).length) delete expected.model_providers;
+  if (now.model_provider === provider) {
+    if (Object.hasOwn(before, 'model_provider')) expected.model_provider = before.model_provider;
+    else delete expected.model_provider;
+  }
+  // Only remove sections belonging to our provider. Verify the resulting TOML
+  // so header-like text inside multiline strings can never silently corrupt it.
+  const headers = [...current.matchAll(/^[ \t]*\[[^\r\n]*\][ \t]*(?:#[^\r\n]*)?$/gm)];
+  let result = current;
+  for (let i = headers.length - 1; i >= 0; i--) {
+    if (/^\s*\[model_providers\.(?:fluid|"fluid"|'fluid')(?:\]|\.)/.test(headers[i][0])) {
+      let end = headers[i + 1]?.index ?? current.length;
+      const lines = current.slice(headers[i].index, end).match(/[^\n]*\n|[^\n]+$/g) || [];
+      for (const line of lines.reverse()) {
+        if (!/^[ \t]*(?:#[^\r\n]*)?(?:\r?\n)?$/.test(line)) break;
+        end -= line.length;
+      }
+      result = result.slice(0, headers[i].index) + result.slice(end);
+    }
+  }
+  if (now.model_provider === provider) {
+    result = result.replace(rootSelector, '');
+    const originalLine = record.original.match(rootSelector)?.[0];
+    if (originalLine) result = originalLine.replace(/\r?\n?$/, '\n') + result;
+  }
+  if (!same(parse(result), expected)) throw new Error('Cannot safely restore this TOML layout. The original backup has been retained.');
+  return result;
+}
+
+export function restoreSession(recordFile) {
+  if (!fs.existsSync(recordFile)) return false;
+  const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  const current = fs.existsSync(record.file) ? fs.readFileSync(record.file, 'utf8') : '';
+  const result = restoredText(current, record);
+  if ((fs.existsSync(record.file) ? fs.readFileSync(record.file, 'utf8') : '') !== current) throw new Error('Codex configuration changed during restoration. Retry.');
+  restoreAuth(record.auth);
+  if (!record.exists && !result.trim()) fs.rmSync(record.file, { force: true });
+  else writeText(record.file, result);
+  fs.rmSync(recordFile, { force: true });
+  return true;
+}
+
+function restoreAuth(auth) {
+  if (!auth) return;
+  const current = read(auth.file);
+  let managed = current === auth.installed;
+  try {
+    const now = JSON.parse(current), installed = JSON.parse(auth.installed);
+    const samePerson = subject(installed) ? subject(now) === subject(installed) :
+      installed.tokens.id_token ? now.tokens?.id_token === installed.tokens.id_token : now.tokens?.access_token === installed.tokens.access_token;
+    managed ||= now.auth_mode !== 'apikey' && now.tokens?.account_id === installed.tokens.account_id && samePerson;
+    // Preserve a native refresh in our account cache without reverting a concurrent login.
+    if (managed && auth.sourceFile !== auth.file && hash(read(auth.sourceFile)) === auth.sourceHash && current !== auth.installed)
+      atomic(auth.sourceFile, now);
+  } catch {}
+  if (!managed) return; // A separate Codex sign-in belongs to the user.
+  if (auth.exists) writeText(auth.file, auth.original); else fs.rmSync(auth.file, { force: true });
+}
+
+function hasImageProvider(root) {
+  const state = readState(root);
+  for (const alias of [state.active, ...providerOrder(state)]) {
+    const provider = state.providers[alias];
+    if (provider?.enabled === false) continue;
+    if (provider?.type === 'api') return true;
+    if (provider?.type !== 'account') continue;
+    try {
+      accountAuth(provider);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+function nativeSubscription(codexHome) {
+  try {
+    const auth = JSON.parse(read(path.join(codexHome, 'auth.json')));
+    return auth.auth_mode !== 'apikey' && !auth.OPENAI_API_KEY && !!(auth.tokens?.access_token && auth.tokens?.account_id);
+  } catch { return false; }
+}
+
+// Reuse a native refresh only for the same account and subject, and only when newer.
+export function syncNativeCredentials(root, codexHome) {
+  let native;
+  try { native = JSON.parse(read(path.join(codexHome, 'auth.json'))); } catch { return; }
+  if (native.auth_mode === 'apikey' || native.OPENAI_API_KEY || !native.tokens?.access_token || !native.tokens.account_id || !subject(native)) return;
+  const refreshedAt = Date.parse(native.last_refresh);
+  if (!Number.isFinite(refreshedAt)) return;
+  for (const provider of Object.values(readState(root).providers)) {
+    if (provider.type !== 'account') continue;
+    try {
+      const file = path.join(provider.accountHome, 'auth.json'), original = read(file), saved = JSON.parse(original);
+      if (saved.tokens?.account_id !== native.tokens.account_id || subject(saved) !== subject(native) ||
+          refreshedAt <= (Date.parse(saved.last_refresh) || 0) || native.tokens.access_token === saved.tokens.access_token) continue;
+      if (read(file) === original) atomic(file, native);
+    } catch { /* Incomplete and concurrently removed account copies remain untouched. */ }
+  }
+}
+
+// Adding an account or API enables client tools; provider switching
+// continues to happen inside the proxy and never replaces a running turn.
+export function syncSession(root, codexHome, externalImages = false) {
+  const recordFile = path.join(root, 'desktop-session.json');
+  if (!fs.existsSync(recordFile)) return false;
+  const record = JSON.parse(read(recordFile));
+  const enabled = externalImages || nativeSubscription(codexHome) || hasImageProvider(root);
+  if (enabled === !!record.nativeTools) return enabled;
+  const current = read(record.file);
+  const config = (parse(record.installed).model_providers as Record<string, { base_url: string }>).fluid;
+  const port = Number(new URL(config.base_url).port), token = readState(root).token;
+  const configure = text => enabled ? withNativeSettings(sessionConfig(text, port, token, true)) : sessionConfig(text, port, token);
+  const installed = configure(record.original), next = configure(restoredText(current, record));
+  atomic(recordFile, { ...record, installed, nativeTools: enabled,
+    previous: { installed: record.installed, nativeTools: record.nativeTools } });
+  if (read(record.file) !== current) throw new Error('Codex settings changed while configuring native images. Retry.');
+  writeText(record.file, next);
+  return enabled;
+}
+
+export function activateSession(root, codexHome, port, token) {
+  const recordFile = path.join(root, 'desktop-session.json');
+  if (fs.existsSync(recordFile)) throw new Error('A desktop configuration session is already active.');
+  const file = path.join(codexHome, 'config.toml');
+  const exists = fs.existsSync(file);
+  const original = exists ? fs.readFileSync(file, 'utf8') : '';
+  // Local actor authentication enables tools without loading a native account's
+  // plan gate. The proxy uses the real account credentials for image requests.
+  const nativeAuth = nativeSubscription(codexHome);
+  const installed = nativeAuth ? withNativeSettings(sessionConfig(original, port, token, true)) : sessionConfig(original, port, token);
+  atomic(recordFile, { file, exists, original, installed, nativeTools: nativeAuth, modelDiscovery: true });
+  if ((fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '') !== original) {
+    fs.rmSync(recordFile, { force: true });
+    throw new Error('Codex configuration changed during startup. Retry.');
+  }
+  writeText(file, installed);
+  syncSession(root, codexHome);
+}

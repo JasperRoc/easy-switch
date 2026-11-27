@@ -1,0 +1,1195 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { once } from 'node:events';
+import { init, addProvider, editProvider, activate, readState, atomic, aliasName, baseURL, update } from '../src/store.js';
+import { createProxy } from './reference/proxy.js';
+
+async function listen(t, server) {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  return `http://127.0.0.1:${server.address().port}`;
+}
+function fixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return { root, token: init(root).token };
+}
+const payload = { model: 'test', input: [{ role: 'user', content: 'hello' }] };
+function send(url, token, data = payload, headers = {}) {
+  return fetch(url + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers }, body: JSON.stringify(data) });
+}
+
+test('switch routes next request; old stream remains on old upstream; history and tool outputs survive', async t => {
+  const { root, token } = fixture(t);
+  const received = [];
+  let finishA;
+  let signalA;
+  const startedA = new Promise(resolve => { signalA = resolve; });
+  const makeUpstream = label => http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    received.push({ label, headers: req.headers, body: JSON.parse(raw) });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: {"source":"${label}","part":1}\n\n`);
+    if (label === 'A') { finishA = () => res.end('data: {"source":"A","part":2}\n\n'); signalA(); }
+    else res.end('data: [DONE]\n\n');
+  });
+  const a = await listen(t, makeUpstream('A'));
+  const b = await listen(t, makeUpstream('B'));
+  addProvider('first', { type: 'api', baseUrl: a, apiKey: 'key-a' }, root);
+  addProvider('second', { type: 'api', baseUrl: b, apiKey: 'key-b', model: 'model-b' }, root);
+  const proxy = await listen(t, createProxy({ root }));
+  const first = await send(proxy, token);
+  await startedA;
+  activate('second', root);
+  const history = [
+    ...payload.input,
+    { type: 'function_call', name: 'shell', call_id: 'call_1', arguments: '{"command":"pwd"}' },
+    { type: 'function_call_output', call_id: 'call_1', output: '/project' },
+    { role: 'user', content: 'continue' },
+  ];
+  const second = await send(proxy, token, { ...payload, input: history });
+  assert.equal(second.headers.get('x-switch-alias'), 'second');
+  assert.match(await second.text(), /"B"/);
+  finishA();
+  assert.match(await first.text(), /"A","part":2/);
+  assert.equal(received[0].headers.authorization, 'Bearer key-a');
+  assert.equal(received[1].headers.authorization, 'Bearer key-b');
+  assert.deepEqual(received[1].body.input, history);
+  assert.equal(received[1].body.model, payload.model);
+  assert.equal(received[1].body.store, false);
+});
+
+test('account adapter isolates credentials and rereads updated login', async t => {
+  const { root, token } = fixture(t);
+  const accountHome = path.join(root, 'accounts', 'personal');
+  const authFile = path.join(accountHome, 'auth.json');
+  atomic(authFile, { tokens: { access_token: 'account-token', account_id: 'account-id' } });
+  addProvider('personal', { type: 'account', accountHome }, root);
+  const requests = [];
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    requests.push({ url, ...options });
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  await (await send(proxy, token)).text();
+  atomic(authFile, { tokens: { access_token: 'renewed-token', account_id: 'account-id' } });
+  await (await send(proxy, token)).text();
+  assert.equal(requests[0].url, 'https://chatgpt.com/backend-api/codex/responses');
+  assert.equal(requests[0].headers.authorization, 'Bearer account-token');
+  assert.equal(requests[1].headers.authorization, 'Bearer renewed-token');
+  assert.equal(requests[0].headers['ChatGPT-Account-ID'], 'account-id');
+  assert.equal(JSON.parse(requests[0].body).instructions, '');
+});
+
+test('rejects unauthorized and incomplete server-side history without contacting an upstream', async t => {
+  const { root, token } = fixture(t);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; throw Error('should not reach'); } }));
+  assert.equal((await send(proxy, 'wrong')).status, 401);
+  for (const data of [
+    { ...payload, previous_response_id: 'resp_old' },
+    { ...payload, conversation: 'conv_old' },
+  ]) assert.equal((await send(proxy, token, data)).status, 400);
+  assert.equal(calls, 0);
+});
+
+test('redacts upstream errors and never follows authentication redirects', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'SECRET' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    assert.equal(options.redirect, 'error');
+    return new Response('echoed SECRET', { status: 401 });
+  } }));
+  const response = await send(proxy, token);
+  assert.equal(response.status, 401);
+  assert.doesNotMatch(await response.text(), /SECRET/);
+});
+
+test('disconnect aborts upstream request', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'key' }, root);
+  let signal;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    signal = options.signal;
+    return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {}\n\n')); } }), { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const controller = new AbortController();
+  const response = await fetch(proxy + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: controller.signal });
+  await response.body.getReader().read();
+  const aborted = once(signal, 'abort');
+  controller.abort();
+  await aborted;
+  assert.equal(signal.aborted, true);
+});
+
+test('store validates names, duplicates and URL schemes; secrets use private files', t => {
+  const { root } = fixture(t);
+  for (const name of ['../bad', 'rm', '__proto__', '']) assert.throws(() => aliasName(name));
+  for (const url of ['http://example.com', 'https://u:p@example.com', 'file:///tmp/test']) assert.throws(() => baseURL(url));
+  assert.equal(baseURL(''), 'https://api.openai.com/v1');
+  assert.equal(baseURL('   '), 'https://api.openai.com/v1');
+  assert.equal(baseURL(' https://example.com/v1/ '), 'https://example.com/v1');
+  assert.equal(baseURL('https://example.com/v1/'), 'https://example.com/v1');
+  addProvider('personal', { type: 'api', apiKey: 'secret' }, root);
+  assert.throws(() => addProvider('personal', {}, root));
+  assert.throws(() => activate('missing', root));
+  assert.equal(readState(root).active, 'personal');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(root, 'state.json')).mode & 0o777, 0o600);
+});
+
+test('subscription 401 starts reauthentication; later request uses new credentials', async t => {
+  const { root, token } = fixture(t);
+  const accountHome = path.join(root, 'accounts', 'personal');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'expired', account_id: 'id' } });
+  addProvider('personal', { type: 'account', accountHome }, root);
+  let logins = 0;
+  const proxy = await listen(t, createProxy({ root,
+    reauth: { async prompt() { logins++; return 'Open https://auth.openai.com/codex/device and enter ABCD-12345'; }, close() {} },
+    fetchImpl: async (_url, options) => options.headers.authorization === 'Bearer expired'
+      ? new Response('unauthorized', { status: 401 })
+      : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }),
+  }));
+  const first = await send(proxy, token);
+  assert.equal(first.status, 401);
+  assert.match(await first.text(), /ABCD-12345/);
+  assert.equal(logins, 1);
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'renewed', account_id: 'id' } });
+  const second = await send(proxy, token);
+  assert.equal(second.status, 200);
+  await second.text();
+  assert.equal(logins, 1);
+});
+
+test('quota rejection transparently retries subscription, preserves input, isolates model/credentials', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'API_SECRET', model: 'api-model' }, root);
+  const accountHome = path.join(root, 'accounts', 'sub');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'SUB_SECRET', account_id: 'sub-id' } });
+  addProvider('sub', { type: 'account', accountHome }, root);
+  const calls = [];
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, ...options, payload: JSON.parse(options.body) });
+    if (url.startsWith('https://api.example')) return new Response('{"error":{"message":"团队 今日额度不足"}}', { status: 403 });
+    return new Response('data: subscription\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const history = [...payload.input, { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: 'done' }];
+  const response = await send(proxy, token, { ...payload, input: history });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /subscription/);
+  assert.equal(response.headers.get('x-switch-alias'), 'sub');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].headers.authorization, 'Bearer API_SECRET');
+  assert.equal(calls[0].headers['ChatGPT-Account-ID'], undefined);
+  assert.equal(calls[1].headers.authorization, 'Bearer SUB_SECRET');
+  assert.equal(calls[1].payload.model, 'test');
+  assert.deepEqual(calls[1].payload.input, history);
+  assert.equal(readState(root).active, 'sub');
+  assert.equal(readState(root).reason, 'failover');
+  await (await send(proxy, token)).text();
+  assert.equal(calls.length, 3);
+  assert.match(calls[2].url, /chatgpt.com/);
+});
+
+test('selected API is tried first and exhausted subscription SSE or billing errors continue on that API', async t => {
+  for (const [status, code] of [[200, 'usage_limit_reached'], [200, 'insufficient_quota'], [400, 'insufficient_quota'], [422, 'billing_hard_limit_reached']]) {
+    const { root, token } = fixture(t), requests = [];
+    addProvider('aos', { type: 'api', baseUrl: 'https://aos.example/v1', apiKey: 'api-fixture' }, root);
+    const accountHome = path.join(root, 'accounts', 'elias');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'subscription-fixture', account_id: 'fixture' } });
+    addProvider('elias', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      requests.push({ url, ...options });
+      assert.equal(options.headers['x-openai-actor-authorization'], undefined, 'local actor authentication must never reach upstreams');
+      if (url.includes('chatgpt.com')) return status === 200
+        ? new Response(`data: {"type":"response.created","response":{"output":[]}}\n\ndata: ${JSON.stringify({ type: 'response.failed', response: { error: { code } } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+        : Response.json({ error: { code } }, { status });
+      return new Response('data: API completed\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const selected = await send(proxy, token); assert.equal(await selected.text(), 'data: API completed\n\n');
+    assert.equal(selected.headers.get('x-switch-alias'), 'aos'); assert.equal(requests.length, 1);
+    activate('elias', root);
+    const response = await send(proxy, token, payload, { 'x-openai-actor-authorization': `Bearer ${token}` });
+    assert.equal(response.status, 200); assert.equal(await response.text(), 'data: API completed\n\n');
+    assert.equal(response.headers.get('x-switch-alias'), 'aos'); assert.equal(readState(root).active, 'aos');
+    assert.equal(requests[1].headers.authorization, 'Bearer subscription-fixture');
+    assert.equal(requests[2].headers.authorization, 'Bearer api-fixture');
+    assert.deepEqual(JSON.parse(requests[1].body).input, JSON.parse(requests[2].body).input);
+    await (await send(proxy, token)).text();
+    assert.match(requests.at(-1).url, /aos\.example/);
+  }
+});
+
+test('validation errors never switch', async t => {
+  for (const status of [400, 422]) {
+    const { root, token } = fixture(t);
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    let calls = 0;
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+      calls++;
+      if (!status) throw Error('network');
+      return new Response('Forbidden: access denied', { status });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(calls, 1);
+    assert.equal(readState(root).active, 'a');
+  }
+});
+test('transient HTTP and connection failures reach Codex without proxy retries or provider changes', async t => {
+  for (const status of [500, 502, 503, 504, 529, 0]) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      if (calls.length <= 5) {
+        if (!status) throw new TypeError('fetch failed');
+        return new Response('Service Unavailable', { status });
+      }
+      return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    // Each retry is a new client request; one local request makes one upstream attempt.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const response = await send(proxy, token); await response.text();
+      assert.equal(response.status, status || 502);
+      assert.equal(calls.length, attempt + 1);
+      assert.equal(readState(root).active, 'aos');
+    }
+    const recovered = await send(proxy, token);
+    assert.equal(recovered.status, 200); assert.match(await recovered.text(), /continued/);
+    assert.equal(recovered.headers.get('x-switch-alias'), 'aos');
+    assert.equal(calls.length, 6);
+    assert.ok(calls.every(call => call.url === calls[0].url));
+    assert.ok(calls.every(call => call.body.model === payload.model));
+    assert.deepEqual(calls[5].body.input, payload.input);
+    assert.equal(readState(root).active, 'aos');
+    await (await send(proxy, token)).text();
+    assert.equal(calls.at(-1).url, calls[0].url);
+  }
+});
+
+test('persistent Codex server failures do not multiply client retries by walking the backup queue', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['aos', 'elias', 'last']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const data = { ...payload, reasoning: { effort: 'high' }, input: [...payload.input, { type: 'function_call_output', call_id: 'tool-1', output: 'already done' }] };
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ alias: new URL(url).hostname.split('.')[0], payload: JSON.parse(options.body) });
+    return new Response('Service Unavailable', { status: 503 });
+  } }));
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const response = await send(proxy, token, data);
+    assert.equal(response.status, 503); await response.text();
+    assert.equal(calls.length, attempt + 1);
+  }
+  assert.deepEqual(calls.map(call => call.alias), Array(5).fill('aos'));
+  assert.equal(readState(root).active, 'aos'); assert.equal(readState(root).lastFailover, undefined);
+  for (const call of calls) {
+    assert.equal(call.payload.model, data.model); assert.deepEqual(call.payload.reasoning, data.reasoning); assert.deepEqual(call.payload.input, data.input);
+  }
+});
+
+test('explicit quota, authentication, model and policy errors do not wait for transient retries', async t => {
+  for (const [status, detail, expected] of [
+    [401, { code: 'invalid_api_key' }, 'backup'], [429, { code: 'insufficient_quota' }, 'backup'],
+    [503, { code: 'insufficient_quota' }, 'backup'], [403, { message: 'Forbidden' }, 'backup'],
+    [400, { code: 'model_not_found' }, 'backup'], [503, { code: 'content_policy_violation' }, null],
+  ]) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['aos', 'backup']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
+      calls.push(new URL(url).hostname.split('.')[0]);
+      return calls.length === 1 ? Response.json({ error: detail }, { status }) : new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, expected ? 200 : status); assert.deepEqual(calls, expected ? ['aos', 'backup'] : ['aos']);
+  }
+});
+
+test('a manual switch during an HTTP 503 applies to the next client request without proxy replay', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['aos', 'second', 'elias']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
+    const alias = new URL(url).hostname.split('.')[0]; calls.push(alias);
+    if (alias === 'aos') { activate('elias', root); return new Response('Service Unavailable', { status: 503 }); }
+    return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const response = await send(proxy, token); await response.text();
+  assert.equal(response.status, 503); assert.deepEqual(calls, ['aos']);
+  const next = await send(proxy, token); assert.equal(next.status, 200); await next.text();
+  assert.deepEqual(calls, ['aos', 'elias']);
+  assert.equal(readState(root).active, 'elias');
+  assert.equal(readState(root).reason, 'manual');
+});
+
+test('startup disconnections and server-error events leave retries to Codex', async t => {
+  for (const failure of ['disconnect', 'server-error', 'status']) {
+    const { root, token } = fixture(t); let calls = 0;
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+      if (++calls > 1) return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      const created = 'data: {"type":"response.created"}\n\n';
+      const stream = failure === 'disconnect' ? new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(created)); }, pull(controller) { controller.error(new TypeError('connection closed')); } })
+        : created + 'data: ' + JSON.stringify({ type: 'error', error: failure === 'status' ? { status_code: 503 } : { type: 'server_error' } }) + '\n\n';
+      return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, failure === 'server-error' ? 500 : failure === 'status' ? 503 : 502); assert.equal(calls, 1);
+    assert.equal(readState(root).active, 'a');
+    const next = await send(proxy, token); assert.equal(next.status, 200); assert.match(await next.text(), /continued/);
+    assert.equal(calls, 2); assert.equal(next.headers.get('x-switch-alias'), 'a');
+  }
+});
+
+test('Codex discovers the real provider union and routes exact model IDs only to matching catalogs', async t => {
+  const { root, token } = fixture(t), requests = [], discoveries = [];
+  addProvider('aos', { type: 'api', baseUrl: 'https://aos.example/v1', apiKey: 'private-aos' }, root);
+  const accountHome = path.join(root, 'accounts', 'elias');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-elias', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  addProvider('backup', { type: 'api', baseUrl: 'https://backup.example/v1', apiKey: 'private-backup' }, root);
+  const metadata = { slug: 'common-model', display_name: 'Common model', base_instructions: 'Native coding instructions', context_window: 120000,
+    supported_reasoning_levels: [{ effort: 'high', description: 'High' }], visibility: 'list' };
+  let reject = false;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    if (!options.method) {
+      discoveries.push({ url, headers: options.headers });
+      if (url.startsWith('https://chatgpt.com')) return Response.json({ models: [metadata, { ...metadata, slug: 'subscription-only' }] });
+      return Response.json({ data: [{ id: 'common-model' }, ...(url.includes('aos') ? [{ id: 'api-only' }] : [])] });
+    }
+    requests.push({ url, payload: JSON.parse(options.body), headers: options.headers });
+    if (reject && url.includes('aos')) return new Response('Quota exhausted', { status: 429 });
+    return new Response('data: complete\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const codex = { 'user-agent': 'codex_cli_rs/0.165.0' };
+  const getModels = () => fetch(proxy + '/v1/models?client_version=0.165.0', { headers: { authorization: `Bearer ${token}`, ...codex } });
+  const unauthorized = await fetch(proxy + '/v1/models'); assert.equal(unauthorized.status, 401);
+  const union = await (await getModels()).json();
+  assert.deepEqual(union.models.map(model => model.slug), ['api-only', 'common-model', 'subscription-only']);
+  const common = union.models.find(model => model.slug === 'common-model');
+  assert.equal(common.context_window, 120000); assert.equal(common.base_instructions, metadata.base_instructions);
+  assert.deepEqual(common.supported_reasoning_levels, metadata.supported_reasoning_levels);
+  assert.doesNotMatch(JSON.stringify(union), /gpt-5.5|private-/);
+  await (await getModels()).text(); assert.equal(discoveries.length, 3, 'discovery is cached without polling or generation requests');
+  assert.equal(discoveries.find(item => item.url.includes('chatgpt.com')).headers['ChatGPT-Account-ID'], 'elias-id');
+  const sub = await send(proxy, token, { ...payload, model: 'subscription-only' }, codex); await sub.text();
+  assert.equal(sub.headers.get('x-switch-alias'), 'elias'); assert.equal(requests.length, 1); assert.equal(readState(root).active, 'aos');
+  assert.deepEqual(requests[0].payload.input, payload.input);
+  reject = true;
+  const fallback = await send(proxy, token, { ...payload, model: 'common-model' }, codex); await fallback.text();
+  assert.equal(fallback.headers.get('x-switch-alias'), 'elias'); assert.equal(requests.at(-1).payload.model, 'common-model');
+  const before = requests.length;
+  const unknown = await send(proxy, token, { ...payload, model: 'gpt-5.5' }, codex);
+  assert.equal(unknown.status, 400); assert.match(await unknown.text(), /gpt-5.5/); assert.equal(requests.length, before);
+  editProvider('backup', { modelCatalog: [{ id: 'explicit-model', label: 'Explicit model' }] }, root);
+  const changed = await (await getModels()).json(); assert.ok(changed.models.some(model => model.slug === 'explicit-model' && model.display_name === 'Explicit model'));
+  const explicit = await send(proxy, token, { ...payload, model: 'explicit-model' }, codex); await explicit.text();
+  assert.equal(explicit.headers.get('x-switch-alias'), 'backup'); assert.equal(requests.at(-1).payload.model, 'explicit-model');
+  assert.equal(requests.at(-1).headers.authorization, 'Bearer private-backup');
+});
+
+test('an old Codex catalog does not block a newer client from falling back after HTTP 403', async t => {
+  const { root, token } = fixture(t), discoveries = [], requests = [];
+  const model = 'gpt-6.2-sol', accountHome = path.join(root, 'accounts', 'elias');
+  addProvider('aos', { type: 'api', baseUrl: 'https://aos.example/v1', apiKey: 'fixture-api' }, root);
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture-account', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  const server = createProxy({ root, fetchImpl: async (url, options) => {
+    if (!options.method) {
+      discoveries.push(url);
+      if (!url.startsWith('https://chatgpt.com')) return Response.json({ data: [{ id: model }] });
+      const version = new URL(url).searchParams.get('client_version');
+      const slug = version === '0.171.0' ? model : 'gpt-6.1-sol';
+      return Response.json({ models: [{ slug, supported_reasoning_levels: [{ effort: 'high' }] }] });
+    }
+    requests.push({ url, payload: JSON.parse(options.body) });
+    if (url.startsWith('https://aos.example')) return new Response('Forbidden', { status: 403 });
+    return new Response('data: complete\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const proxy = await listen(t, server);
+  const older = { 'user-agent': 'codex_cli_rs/0.165.0' };
+  const newer = { originator: 'Codex Desktop', 'user-agent': 'Codex Desktop/0.171.0-alpha.13 (Mac OS; arm64)' };
+  const models = async (headers, query = '') => (await fetch(proxy + '/v1/models' + query, {
+    headers: { authorization: `Bearer ${token}`, ...headers },
+  })).json();
+  const oldCatalog = await models(newer, '?client_version=0.165.0');
+  assert.ok(oldCatalog.models.some(item => item.slug === 'gpt-6.1-sol'), 'the explicit catalog version takes priority');
+
+  const turn = { model, reasoning: { effort: 'high' }, input: [...payload.input, { role: 'assistant', content: 'Previous answer' }, { role: 'user', content: 'Continue' }] };
+  const old = await send(proxy, token, turn, older);
+  assert.equal(old.status, 403); await old.text();
+  assert.equal(requests.length, 1, 'a live catalog for the same version can exclude a provider');
+
+  const fallback = await send(proxy, token, turn, newer);
+  assert.equal(fallback.status, 200, await fallback.text());
+  assert.equal(fallback.headers.get('x-switch-alias'), 'elias');
+  assert.deepEqual(requests.slice(1).map(request => request.url), ['https://aos.example/v1/responses', 'https://chatgpt.com/backend-api/codex/responses']);
+  assert.deepEqual(requests.at(-1).payload, { ...turn, store: false, stream: true, instructions: '' });
+  assert.equal(server.codexVersion(), '0.171.0');
+
+  const newCatalog = await models(newer);
+  assert.deepEqual(newCatalog.models.map(item => item.slug), [model]);
+  assert.deepEqual(newCatalog.models[0].supported_reasoning_levels, [{ effort: 'high', description: 'high' }]);
+  await models(older);
+  assert.deepEqual(discoveries, [
+    'https://aos.example/v1/models',
+    'https://chatgpt.com/backend-api/codex/models?client_version=0.165.0',
+    'https://chatgpt.com/backend-api/codex/models?client_version=0.171.0',
+  ]);
+});
+
+test('unavailable discovery does not claim bundled availability or block an unverified provider', async t => {
+  const { root, token } = fixture(t); let generations = 0;
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-key' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    if (!options.method) return new Response('', { status: 403 });
+    generations++; return new Response('data: complete\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const models = await fetch(proxy + '/v1/models', { headers: { authorization: `Bearer ${token}` } });
+  assert.deepEqual((await models.json()).models, []);
+  assert.equal((await send(proxy, token)).status, 200); assert.equal(generations, 1);
+});
+test('generic provider 403 tries a subscription with the same history; policy restrictions and accepted output are not replayed', async t => {
+  for (const style of ['http', 'sse', 'policy', 'region', 'accepted']) {
+    const { root, token } = fixture(t), calls = [];
+    addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-api' }, root);
+    const accountHome = path.join(root, 'accounts', 'backup');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-account', account_id: 'backup-id' } });
+    addProvider('backup', { type: 'account', accountHome }, root);
+    const accepted = 'data: {"type":"response.output_text.delta","delta":"accepted"}\n\n';
+    const event = 'data: {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}\n\n';
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      calls.push({ url, ...options });
+      if (calls.length > 1) return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      if (style === 'sse' || style === 'accepted') return new Response((style === 'accepted' ? accepted : '') + event, { headers: { 'content-type': 'text/event-stream' } });
+      return Response.json({ error: { message: style === 'policy' ? 'content_policy_violation' : style === 'region' ? 'unsupported_country_region_territory' : 'Forbidden private-api' } }, { status: 403 });
+    } }));
+    const response = await send(proxy, token), output = await response.text();
+    const retry = ['http', 'sse'].includes(style);
+    assert.equal(response.status, retry || style === 'accepted' ? 200 : 403);
+    assert.equal(calls.length, retry ? 2 : 1);
+    assert.equal(readState(root).active, retry ? 'backup' : 'aos');
+    if (retry) {
+      assert.equal(calls[1].headers.authorization, 'Bearer private-account');
+      assert.deepEqual(JSON.parse(calls[1].body).input, payload.input);
+      assert.equal(JSON.parse(calls[1].body).model, payload.model);
+    }
+    assert.doesNotMatch(output, /private-api|private-account/);
+  }
+});
+test('an expired or unreadable preferred subscription uses its backup before asking for sign-in', async t => {
+  for (const unavailable of ['expired', 'missing']) {
+    const { root, token } = fixture(t), accountHome = path.join(root, 'accounts', 'first');
+    if (unavailable === 'expired') atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'fixture.' + Buffer.from('{"exp":1}').toString('base64url') + '.fixture', account_id: 'id' } });
+    addProvider('first', { type: 'account', accountHome }, root);
+    addProvider('backup', { type: 'api', baseUrl: 'https://backup.example/v1', apiKey: 'backup-key' }, root);
+    let logins = 0, calls = 0;
+    const proxy = await listen(t, createProxy({ root, reauth: { prompt() { logins++; return 'sign in'; }, close() {} }, fetchImpl: async (url, options) => {
+      calls++; assert.equal(url, 'https://backup.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer backup-key');
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal(logins, 0); assert.equal(readState(root).active, 'backup');
+  }
+});
+
+test('cooldown prevents ping pong, expires after 60 seconds, manual selection resets it', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  let clock = 0; const calls = [];
+  const proxy = await listen(t, createProxy({ root, now: () => clock, fetchImpl: async url => {
+    calls.push(url); return new Response('quota', { status: 429 });
+  } }));
+  await (await send(proxy, token)).text();
+  assert.equal(calls.length, 2); // a -> b; never a third attempt
+  await (await send(proxy, token)).text();
+  assert.equal(calls.length, 3); // b; a still cooling
+  clock = 60001;
+  await (await send(proxy, token)).text();
+  assert.equal(calls.length, 5); // b -> a
+  activate('a', root);
+  await (await send(proxy, token)).text();
+  assert.equal(calls.length, 7); // manual a -> b despite previous cooldown
+});
+
+test('late rejection cannot override a newer manual choice, even the same alias', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  let reject; let began;
+  const started = new Promise(resolve => { began = resolve; });
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    calls++; began(); return new Promise(resolve => { reject = resolve; });
+  } }));
+  const pending = send(proxy, token);
+  await started;
+  activate('a', root);
+  reject(new Response('quota', { status: 402 }));
+  const response = await pending;
+  assert.equal(response.status, 402); await response.text();
+  assert.equal(calls, 1);
+  assert.equal(readState(root).reason, 'manual');
+});
+
+test('HTTP 200 startup quota errors retry the backup without exposing the exhausted subscription error', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    calls++; return new Response(calls === 1 ? 'data: {"type":"response.failed","error":{"code":"insufficient_quota"}}\n\n' : 'data: backup completed\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const response = await send(proxy, token);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'data: backup completed\n\n');
+  assert.equal(calls, 2);
+  assert.equal(readState(root).active, 'b');
+});
+
+test('quota failover exhausts the available queue without revisiting aliases', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b', 'c']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const calls = [];
+  let allFail = false;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
+    calls.push(new URL(url).hostname[0]);
+    return !allFail && calls.at(-1) === 'c'
+      ? new Response('data: complete\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      : new Response('quota', { status: 429 });
+  } }));
+  assert.equal((await send(proxy, token)).status, 200);
+  assert.deepEqual(calls, ['a', 'b', 'c']);
+  assert.equal(readState(root).active, 'c');
+  allFail = true; calls.length = 0; activate('a', root);
+  const response = await send(proxy, token); await response.text();
+  assert.equal(response.status, 429);
+  assert.deepEqual(calls, ['a', 'b', 'c']);
+});
+
+test('manual selection during a rejected request continues on the selected upstream', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b', 'c']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const calls = [];
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
+    const alias = new URL(url).hostname[0]; calls.push(alias);
+    if (alias === 'a') {
+      activate('c', root);
+      return new Response('quota', { status: 402 });
+    }
+    return new Response('data: continued\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const response = await send(proxy, token);
+  assert.equal(response.status, 200); assert.match(await response.text(), /continued/);
+  assert.deepEqual(calls, ['a', 'c']);
+  assert.equal(readState(root).reason, 'manual');
+});
+
+test('missing Content-Type accepts split SSE prefixes without losing response bytes', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  const chunks = ['\uFEFF', 'ev', 'ent: response.created\n', 'data: {"type":"response.created"}\n\n', 'data: {"type":"response.completed"}\n\n'];
+  const expected = chunks.join('');
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    const pending = [...chunks];
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (pending.length) controller.enqueue(new TextEncoder().encode(pending.shift()));
+        else controller.close();
+      },
+    }));
+  } }));
+  const response = await send(proxy, token);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), expected);
+});
+
+test('missing Content-Type still rejects HTML, JSON, empty and oversized preambles', async t => {
+  for (const body of ['<html><title>Login</title></html>', '{"error":{"message":"mock"}}', '', ' '.repeat(16384) + 'data: too late\n\n']) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+    let cancelled = false;
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) { if (body) controller.enqueue(new TextEncoder().encode(body)); else controller.close(); },
+      cancel() { cancelled = true; },
+    })) }));
+    const response = await send(proxy, token);
+    assert.equal(response.status, 502);
+    assert.match(await response.text(), /上游未返回 Responses SSE 流/);
+    if (body) assert.equal(cancelled, true);
+  }
+});
+
+test('Content-Type comparison is case insensitive but does not override explicit JSON', async t => {
+  for (const [type, status] of [['Text/Event-Stream; charset=utf-8', 200], ['application/json', 502], ['text/event-stream-invalid', 502]]) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response('data: {}\n\n', { headers: { 'content-type': type } }) }));
+    const response = await send(proxy, token); await response.text();
+    assert.equal(response.status, status);
+  }
+});
+
+test('disconnect cancels an upstream SSE body accepted without Content-Type', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  let cancelled;
+  const cancellation = new Promise(resolve => { cancelled = resolve; });
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('event: response.created\n\n')); },
+    cancel() { cancelled(); },
+  })) }));
+  const abort = new AbortController();
+  const response = await fetch(proxy + '/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: abort.signal });
+  await response.body.getReader().read();
+  abort.abort();
+  await cancellation;
+});
+
+
+test('legacy overrides are ignored while client models, effort, streams and tool history survive', async t => {
+  const { root, token } = fixture(t);
+  addProvider('api', { type: 'api', baseUrl: 'https://example.com/v1', apiKey: 'mock' }, root);
+  const requests = []; let finish;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: first\n\n'));
+      finish = () => { controller.enqueue(new TextEncoder().encode('data: done\n\n')); controller.close(); };
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+    return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const first = await send(proxy, token, { ...payload, reasoning: { effort: 'low', summary: 'auto' } });
+  update(state => { state.modelSelection = { model: 'ignored', effort: 'high' }; state.sessionModels = { fixture: { model: 'ignored-session', effort: 'low' } }; state.providers.api.model = 'legacy-ignored'; }, root);
+  const input = [...payload.input, { type: 'function_call', name: 'shell', call_id: 'c1', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: 'done' }];
+  await (await send(proxy, token, { ...payload, model: 'client-next', input, reasoning: { effort: 'high', summary: 'auto' } }, { 'session-id': 'fixture' })).text();
+  finish(); assert.match(await first.text(), /first/);
+  assert.equal(requests[0].model, 'test'); assert.equal(requests[0].reasoning.effort, 'low');
+  assert.equal(requests[1].model, 'client-next'); assert.deepEqual(requests[1].reasoning, { effort: 'high', summary: 'auto' });
+  assert.deepEqual(requests[1].input, input);
+  await (await send(proxy, token, { ...payload, reasoning: { effort: 'medium' } })).text();
+  assert.equal(requests[2].model, 'test'); assert.equal(requests[2].reasoning.effort, 'medium');
+});
+
+test('failover preserves the client model even with legacy overrides and concurrent state writes', async t => {
+  const { root, token } = fixture(t);
+  for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias, model: 'legacy-model' }, root);
+  update(state => { state.modelSelection = { model: 'ignored', effort: 'high' }; }, root);
+  const requests = [];
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) { update(state => { state.modelSelection = { model: 'still-ignored', effort: 'low' }; }, root); return new Response('quota', { status: 429 }); }
+    return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  await (await send(proxy, token)).text();
+  assert.equal(requests.length, 2);
+  for (const request of requests) { assert.equal(request.model, payload.model); assert.equal(request.reasoning, undefined); }
+  await (await send(proxy, token)).text();
+  assert.equal(requests[2].model, payload.model);
+});
+
+test('native image generation and edits borrow subscriptions in priority order without changing text routing or model settings', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'API_SECRET', model: 'text-model' }, root);
+  for (const alias of ['sub-a', 'sub-b']) {
+    const accountHome = path.join(root, 'accounts', alias);
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, ...options });
+    if (options.headers.authorization === 'Bearer sub-a') return new Response('quota exhausted', { status: 429 });
+    if (url.endsWith('/responses')) return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    return Response.json({ created: 1, data: [{ b64_json: 'fixture-image' }] });
+  } }));
+  const image = { model: 'gpt-image-2', prompt: 'A blue square', size: 'auto' };
+  const first = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: 'Bearer native-client-auth', 'x-fluid-token': token, 'content-type': 'application/json' }, body: JSON.stringify(image) });
+  assert.equal(first.status, 200); assert.equal(first.headers.get('x-switch-alias'), 'sub-b');
+  assert.equal((await first.json()).data[0].b64_json, 'fixture-image');
+  assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer sub-a', 'Bearer sub-b']);
+  assert.ok(calls.every(call => call.url === 'https://chatgpt.com/backend-api/codex/images/generations'));
+  assert.ok(calls.every(call => Buffer.from(call.body).toString() === JSON.stringify(image)));
+  assert.ok(calls.every(call => call.headers['x-fluid-token'] === undefined));
+  assert.equal(readState(root).active, 'api'); assert.equal(readState(root).lastFailover, undefined);
+  const multipart = Buffer.from('--fixture\r\nContent-Disposition: form-data; name="image"; filename="test.png"\r\n\r\n\x00\xff\r\n--fixture--\r\n', 'latin1');
+  const edited = await fetch(proxy + '/v1/images/edits', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'multipart/form-data; boundary=fixture' }, body: multipart });
+  assert.equal(edited.status, 200); await edited.text();
+  assert.equal(calls.at(-1).url, 'https://chatgpt.com/backend-api/codex/images/edits');
+  assert.deepEqual(calls.at(-1).body, multipart); assert.equal(calls.at(-1).headers['content-type'], 'multipart/form-data; boundary=fixture');
+  await (await send(proxy, token)).text();
+  assert.equal(calls.at(-1).url, 'https://api.example/v1/responses');
+  assert.equal(JSON.parse(calls.at(-1).body).model, payload.model);
+});
+
+test('images use an API when no subscription exists and do not retry policy or validation errors', async t => {
+  const { root, token } = fixture(t); let calls = 0;
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async url => {
+    calls++; assert.equal(url, 'https://api.example/v1/images/generations');
+    return new Response('{"error":{"message":"image policy denied"}}', { status: 400 });
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  assert.equal(response.status, 400); await response.text(); assert.equal(calls, 1);
+  const unauthorized = await fetch(proxy + '/v1/images/edits', { method: 'POST', body: '{}' });
+  assert.equal(unauthorized.status, 401); assert.equal(calls, 1);
+});
+
+test('Free accounts are tried for image generation and edits in priority order without changing text selection', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const [alias, plan] of [['free', 'free'], ['paid', 'plus']]) {
+    const accountHome = path.join(root, 'accounts', alias);
+    const id = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })).toString('base64url') + '.fixture';
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, id_token: id, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, ...options }); return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+  } }));
+  for (const route of ['generations', 'edits']) {
+    const response = await fetch(proxy + '/v1/images/' + route, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'fixture' }) });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'free'); await response.text();
+  }
+  assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer free', 'Bearer free']);
+  assert.equal(readState(root).active, 'free'); assert.equal(readState(root).lastFailover, undefined);
+});
+
+test('an API text provider without image support routes images to its only Free account', async t => {
+  const { root, token } = fixture(t); let calls = 0, logins = 0;
+  const accountHome = path.join(root, 'accounts', 'free');
+  const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: jwt, account_id: 'free' } });
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
+  addProvider('free', { type: 'account', accountHome }, root);
+  const proxy = await listen(t, createProxy({ root, reauth: { prompt() { logins++; return 'sign in'; }, close() {} }, fetchImpl: async (url, options) => {
+    if (url.endsWith('/responses')) { assert.equal(url, 'https://api.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer api'); return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }); }
+    calls++; assert.equal(url, 'https://chatgpt.com/backend-api/codex/images/generations'); assert.equal(options.headers.authorization, `Bearer ${jwt}`);
+    return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+  } }));
+  const sendImage = () => fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  const response = await sendImage(); assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'free'); await response.text();
+  assert.equal(calls, 1); assert.equal(logins, 0); assert.equal(readState(root).active, 'api');
+  assert.equal(await (await send(proxy, token)).text(), 'data: [DONE]\n\n');
+});
+
+test('image entitlement rejections try an account endpoint or backup before output; safety refusals do not', async t => {
+  for (const style of ['http', 'sse', 'policy']) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['first', 'second']) {
+      const accountHome = path.join(root, 'accounts', alias);
+      const jwt = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'free' } })).toString('base64url') + '.fixture';
+      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, id_token: jwt, account_id: alias } });
+      addProvider(alias, { type: 'account', accountHome }, root);
+    }
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+      calls.push(options.headers.authorization);
+      if (calls.length === 1) {
+        if (style === 'policy') return Response.json({ error: { code: 'content_policy_violation', message: 'Image generation is not available for this prompt due to safety policy.' } }, { status: 403 });
+        const failure = { code: 'image_generation_not_supported', message: 'Image generation is not available for your plan.' };
+        return style === 'http' ? Response.json({ error: failure }, { status: 403 })
+          : new Response('data: ' + JSON.stringify({ type: 'error', error: failure }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return Response.json({ data: [{ b64_json: 'fixture-image' }] });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.status, style === 'policy' ? 403 : 200); await response.text();
+    assert.deepEqual(calls, style === 'policy' ? ['Bearer first'] : style === 'http' ? ['Bearer first', 'Bearer first'] : ['Bearer first', 'Bearer second']);
+    assert.equal(readState(root).active, 'first');
+  }
+});
+
+test('model access fallback preserves the chosen model and history, caches only that model, and keeps the preferred Free route', async t => {
+  for (const style of ['http', 'sse']) {
+    const { root, token } = fixture(t), calls = []; let clock = 0;
+    const accountHome = path.join(root, 'accounts', 'free');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'free', account_id: 'free' } });
+    addProvider('free', { type: 'account', accountHome }, root);
+    addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api', model: 'legacy-model' }, root);
+    const proxy = await listen(t, createProxy({ root, now: () => clock, fetchImpl: async (url, options) => {
+      const input = JSON.parse(options.body); calls.push({ url, input, headers: options.headers });
+      if (url.startsWith('https://chatgpt.com') && input.model === 'paid-model') {
+        const failure = { code: 'model_not_supported', message: 'The paid-model model is not supported when using Codex with a ChatGPT account.' };
+        return style === 'http' ? Response.json({ error: failure }, { status: 400 })
+          : new Response('data: ' + JSON.stringify({ type: 'response.failed', response: { error: failure } }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const input = [...payload.input, { type: 'function_call_output', call_id: 'done', output: 'already done' }];
+    const sendModel = model => send(proxy, token, { ...payload, input, model });
+    const first = await sendModel('paid-model'); assert.equal(first.status, 200); assert.equal(first.headers.get('x-switch-alias'), 'api'); await first.text();
+    assert.equal(calls.length, 2); assert.ok(calls.every(call => call.input.model === 'paid-model')); assert.ok(calls.every(call => JSON.stringify(call.input.input) === JSON.stringify(input)));
+    assert.equal(calls[1].headers.authorization, 'Bearer api'); assert.equal(calls[1].headers['ChatGPT-Account-ID'], undefined);
+    assert.equal(readState(root).active, 'free'); assert.equal(readState(root).lastFailover, undefined);
+    await (await sendModel('paid-model')).text(); assert.equal(calls.length, 3); assert.ok(calls.at(-1).url.startsWith('https://api.example')); assert.equal(calls.at(-1).input.model, 'paid-model');
+    await (await sendModel('free-model')).text(); assert.ok(calls.at(-1).url.startsWith('https://chatgpt.com'));
+    clock = 61000; await (await sendModel('paid-model')).text(); assert.equal(calls.length, 6);
+    activate('free', root); await (await sendModel('paid-model')).text(); assert.equal(calls.length, 8);
+  }
+});
+
+test('model failures exhaust the queue without substitution or replay, and a manual choice wins over a late model rejection', async t => {
+  const { root, token } = fixture(t); let calls = 0;
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    calls++; assert.equal(JSON.parse(options.body).model, 'same-model');
+    return Response.json({ error: { code: 'model_not_found' } }, { status: 404 });
+  } }));
+  const denied = await send(proxy, token, { ...payload, model: 'same-model' }); assert.equal(denied.status, 404); await denied.text(); assert.equal(calls, 2); assert.equal(readState(root).active, 'first');
+  const late = await listen(t, createProxy({ root, fetchImpl: async url => {
+    if (url.includes('first.example')) { activate('second', root); return Response.json({ error: { code: 'model_not_found' } }, { status: 404 }); }
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const selected = await send(late, token); assert.equal(selected.status, 200); await selected.text(); assert.equal(readState(root).active, 'second'); assert.equal(readState(root).reason, 'manual');
+  activate('first', root); let accepted = 0;
+  const stream = 'data: {"type":"response.output_text.delta","delta":"accepted"}\n\ndata: {"type":"response.failed","response":{"error":{"code":"model_not_found"}}}\n\n';
+  const output = await listen(t, createProxy({ root, fetchImpl: async () => { accepted++; return new Response(stream, { headers: { 'content-type': 'text/event-stream' } }); } }));
+  assert.equal(await (await send(output, token)).text(), stream); assert.equal(accepted, 1);
+});
+
+const capacityEvent = 'data: {"type":"response.failed","response":{"error":{"code":"server_overloaded","message":"Selected model is at capacity. Please try a different model."}}}\n\n';
+const createdEvent = 'event: response.created\ndata: {"type":"response.created","response":{"id":"failed-response","output":[]}}\n\n';
+test('HTTP and split startup SSE capacity errors preserve the selected provider for client retry handling', async t => {
+  for (const style of ['http', 'sse']) {
+    const { root, token } = fixture(t), calls = [];
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const history = [...payload.input, { type: 'function_call_output', call_id: 'completed-tool', output: 'already done' }];
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      calls.push({ url, payload: JSON.parse(options.body) });
+      if (style === 'http') return new Response('Selected model is at capacity.', { status: 503, headers: { 'retry-after': '3' } });
+      const chunks = [createdEvent, 'data: {"type":"response.failed",', '"response":{"error":{"code":"server_overloaded"}}}\n\n'];
+      return new Response(new ReadableStream({ pull(controller) { if (chunks.length) controller.enqueue(new TextEncoder().encode(chunks.shift())); else controller.close(); } }), { headers: { 'content-type': 'text/event-stream', 'retry-after': '3' } });
+    } }));
+    const response = await send(proxy, token, { ...payload, input: history });
+    const text = await response.text();
+    assert.equal(response.status, style === 'http' ? 503 : 200);
+    assert.equal(response.headers.get('retry-after'), '3');
+    if (style === 'sse') { assert.match(text, /server_overloaded/); assert.match(text, /failed-response/); }
+    assert.equal(calls.length, 1); assert.deepEqual(calls[0].payload.input, history);
+    assert.equal(readState(root).active, 'a'); assert.equal(readState(root).lastFailover, undefined);
+  }
+});
+
+test('capacity after output or tool events is forwarded without replaying accepted work', async t => {
+  for (const event of [
+    'data: {"type":"response.output_text.delta","delta":"already visible"}\n\n',
+    'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"c1"}}\n\n',
+    'data: {"type":"response.created","response":{"output":[{"type":"function_call"}]}}\n\n',
+  ]) {
+    const { root, token } = fixture(t); let calls = 0;
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const original = createdEvent + event + capacityEvent;
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; return new Response(original, { headers: { 'content-type': 'text/event-stream' } }); } }));
+    assert.equal(await (await send(proxy, token)).text(), original); assert.equal(calls, 1);
+  }
+});
+
+test('Retry-After is passed to Codex unchanged and capacity errors are redacted', async t => {
+  const { root, token } = fixture(t); let calls = 0;
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'SECRET' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
+    calls++; return new Response('Selected model is at capacity. SECRET', { status: 503, headers: { 'retry-after': '120' } });
+  } }));
+  const response = await send(proxy, token); assert.equal(response.status, 503); assert.doesNotMatch(await response.text(), /SECRET/); assert.equal(calls, 1); assert.equal(response.headers.get('retry-after'), '120');
+});
+
+test('startup SSE inspection handles event names, CRLF, multiline data and bounded preambles', async t => {
+  for (const body of [
+    ': heartbeat\r\n\r\nevent: error\r\ndata: {"error":\r\ndata: {"code":"server_overloaded"}}\r\n\r\n',
+    'event: response.failed\ndata: {"response":{"error":{"message":"Selected model is at capacity."}}}\n\n',
+  ]) {
+    const { root, token } = fixture(t); let calls = 0;
+    addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; return new Response(body, { headers: { 'content-type': 'text/event-stream' } }); } }));
+    assert.equal(await (await send(proxy, token)).text(), body); assert.equal(calls, 1);
+  }
+  const { root, token } = fixture(t); let calls = 0;
+  addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture' }, root);
+  const original = ': ' + 'x'.repeat(65536) + '\n\n' + capacityEvent;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async () => { calls++; return new Response(original, { headers: { 'content-type': 'text/event-stream' } }); } }));
+  assert.equal(await (await send(proxy, token)).text(), original); assert.equal(calls, 1);
+});
+
+
+test('native image metadata reaches the selected subscription without leaking local or API credentials', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-aos' }, root);
+  const accountHome = path.join(root, 'accounts', 'elias');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-elias', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    return Response.json({ data: [{ b64_json: 'fixture-image' }] }, { headers: { 'x-codex-imagegen-request-id': 'image-request-id' } });
+  } }));
+  const metadata = JSON.stringify({ display_name: 'Draw a cat', turn_trigger: 'page_prompt' });
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: {
+    authorization: 'Bearer native-login', 'x-fluid-token': token, 'content-type': 'application/json',
+    originator: 'codex_vscode', 'user-agent': 'codex_vscode/0.165.0', 'x-codex-image-turn-id': 'turn-1', 'x-codex-turn-metadata': metadata,
+    cookie: 'private-cookie', 'x-unrelated-private': 'private-header',
+  }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A cat chasing a mouse' }) });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(response.headers.get('x-switch-alias'), 'elias');
+  assert.equal(response.headers.get('x-codex-imagegen-request-id'), 'image-request-id');
+  assert.equal(calls.length, 1); assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/images/generations');
+  assert.equal(calls[0].headers.originator, 'codex_vscode');
+  assert.equal(calls[0].headers['user-agent'], 'codex_vscode/0.165.0');
+  assert.equal(calls[0].headers['x-codex-image-turn-id'], 'turn-1');
+  assert.equal(calls[0].headers['x-codex-turn-metadata'], metadata);
+  assert.equal(calls[0].headers.authorization, 'Bearer private-elias');
+  assert.equal(calls[0].headers['ChatGPT-Account-ID'], 'elias-id');
+  assert.equal(calls[0].headers.cookie, undefined); assert.equal(calls[0].headers['x-fluid-token'], undefined);
+  assert.equal(calls[0].headers['x-unrelated-private'], undefined);
+  assert.equal(readState(root).active, 'aos');
+});
+
+test('exhausted subscription image rejection names the actual image route without blaming the text API', async t => {
+  const { root, token } = fixture(t);
+  addProvider('aos', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'private-aos' }, root);
+  const accountHome = path.join(root, 'accounts', 'elias');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'private-elias', account_id: 'elias-id' } });
+  addProvider('elias', { type: 'account', accountHome }, root);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls++;
+    assert.equal(options.headers.authorization, url.includes('chatgpt.com') ? 'Bearer private-elias' : 'Bearer private-aos');
+    return Response.json({ detail: 'Forbidden private-elias' }, { status: 403 });
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A cat chasing a mouse' }) });
+  assert.equal(response.status, 403); assert.equal(response.headers.get('x-switch-alias'), 'aos');
+  const text = await response.text(); assert.match(text, /图片.*aos.*403/);
+  assert.match(text, /已尝试：elias → aos/); assert.doesNotMatch(text, /private-|API_KEY|冷却/);
+  assert.equal(calls, 3); assert.equal(readState(root).active, 'aos');
+});
+
+test('an image-capable API is tried after a Free subscription image rejection without changing the text selection', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('text', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text-key' }, root);
+  const accountHome = path.join(root, 'accounts', 'free');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'free-key', account_id: 'free' } });
+  addProvider('free', { type: 'account', accountHome }, root);
+  addProvider('images', { type: 'api', baseUrl: 'https://images.example/v1', apiKey: 'images-key' }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push({url,token:options.headers.authorization});
+    return url.includes('images.example') ? Response.json({data:[{b64_json:'image'}]})
+      : url.includes('text.example') ? Response.json({error:{message:'Endpoint not found'}},{status:404}) : Response.json({detail:'Forbidden'},{status:403});
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({model:'gpt-image-2',prompt:'fixture'})});
+  assert.equal(response.status,200);await response.text();
+  assert.deepEqual(calls.map(item=>item.token),['Bearer free-key','Bearer free-key','Bearer text-key','Bearer images-key']);
+  assert.equal(readState(root).active,'text');
+});
+
+test('saved account page images preserve API text selection after success and image quota exhaustion', async t => {
+  for (const status of [200, 429]) {
+    const { root, token } = fixture(t);
+    addProvider('api', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'private-text' }, root);
+    const accountHome = path.join(root, 'account');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-account', account_id: 'account' } });
+    addProvider('account', { type: 'account', accountHome }, root);
+    let images = 0, texts = 0;
+    const proxy = await listen(t, createProxy({ root, imageHandler: async ({ provider, raw, signal, route, turnId }) => {
+      images++; assert.equal(provider.accountHome, accountHome); assert.ok(signal);
+      assert.equal(route, '/v1/images/generations'); assert.equal(JSON.parse(raw).prompt, 'fixture'); assert.equal(turnId, 'image-turn');
+      return Response.json(status === 200 ? { data: [{ b64_json: 'fixture' }] } : { error: { message: 'Image quota exhausted' } }, { status });
+    }, fetchImpl: async (url, options) => {
+      if (url.endsWith('/images/generations')) return url.includes('text.example') && status === 429
+        ? Response.json({ error: { code: 'insufficient_quota' } }, { status: 429 })
+        : Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 404 });
+      texts++; assert.equal(url, 'https://text.example/v1/responses'); assert.equal(options.headers.authorization, 'Bearer private-text');
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const result = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-codex-image-turn-id': 'image-turn' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(result.status, status); if (status === 200) assert.equal(result.headers.get('x-switch-image-route'), 'chatgpt-account'); await result.text();
+    await (await send(proxy, token)).text(); assert.equal(readState(root).active, 'api'); assert.equal(images, 1); assert.equal(texts, 1);
+  }
+});
+
+test('standalone compaction uses a readable summary and continues on another upstream after restart', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const summary = 'Goal: preserve test constraints. Completed: first change. Next: verify second change.';
+  const mock = async (url, options) => {
+    const data = JSON.parse(options.body); calls.push({ url, data });
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: summary }] }] } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const first = await listen(t, createProxy({ root, fetchImpl: mock }));
+  const compacted = await fetch(first + '/v1/responses/compact', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ ...payload, tools: [{ type: 'function', name: 'shell' }] }) });
+  assert.equal(compacted.status, 200);
+  const compactedBody = await compacted.json();
+  assert.equal(calls[0].url, 'https://first.example/v1/responses');
+  assert.match(JSON.stringify(calls[0].data.input), /hello/);
+  assert.equal(calls[0].data.tools, undefined);
+  assert.equal(compactedBody.output[0].type, 'compaction');
+  assert.ok(!JSON.stringify(compactedBody).includes(summary), 'checkpoint is encrypted at rest in Codex history');
+  activate('second', root);
+  const second = await listen(t, createProxy({ root, fetchImpl: mock }));
+  const response = await send(second, token, { ...payload, input: [...compactedBody.output, { role: 'user', content: 'continue' }] });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(calls[1].url, 'https://second.example/v1/responses');
+  assert.equal(calls[1].data.input[0].content[0].text, summary);
+  assert.equal(calls[1].data.input[1].content, 'continue');
+});
+
+test('legacy opaque checkpoints remain intact and can retry a compatible fallback', async t => {
+  const { root, token } = fixture(t), inputs = [];
+  for (const alias of ['first', 'second']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    inputs.push(JSON.parse(options.body).input);
+    return url.includes('first') ? Response.json({ error: { code: 'invalid_encrypted_content' } }, { status: 400 })
+      : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const input = [{ type: 'compaction', encrypted_content: 'upstream-checkpoint' }, { role: 'user', content: 'continue' }];
+  const response = await send(proxy, token, { ...payload, input });
+  assert.equal(response.status, 200); await response.text();
+  assert.deepEqual(inputs, [input, input]);
+  assert.equal(readState(root).active, 'first', 'a checkpoint rejection must not globally disable a healthy preferred provider');
+});
+
+test('local checkpoints are authenticated and matching item references resolve without duplicate tool calls', async t => {
+  const { checkpoint } = await import('../src/compaction.js');
+  const { root, token } = fixture(t); addProvider('api', { type: 'api', apiKey: 'fixture' }, root);
+  let calls = 0;
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (_url, options) => {
+    calls++;
+    const input = JSON.parse(options.body).input;
+    assert.equal(input.length, 2); assert.equal(input[0].call_id, 'call'); assert.equal(input[1].output, 'done');
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  const invalid = await send(proxy, token, { ...payload, input: [checkpoint('summary', 'wrong-token')] });
+  assert.equal(invalid.status, 400); assert.equal(calls, 0);
+  const call = { type: 'function_call', id: 'fc', call_id: 'call', name: 'shell', arguments: '{}' };
+  const response = await send(proxy, token, { ...payload, input: [call, { type: 'item_reference', id: 'fc' }, { type: 'function_call_output', call_id: 'call', output: 'done' }] });
+  assert.equal(response.status, 200); await response.text(); assert.equal(calls, 1);
+});
+
+test('account page fallback never intercepts successful saved subscriptions or APIs, regardless of plan label', async t => {
+  for (const type of ['api', 'account']) {
+    const { root, token } = fixture(t), calls = [];
+    if (type === 'account') {
+      const accountHome = path.join(root, 'account');
+      atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'existing-oauth', account_id: 'existing-account' } });
+      addProvider('direct', { type, accountHome }, root);
+    } else addProvider('direct', { type, baseUrl: 'https://images.example/v1', apiKey: 'existing-api-key' }, root);
+    let web = 0;
+    const proxy = await listen(t, createProxy({ root, imageHandler: async () => { web++; return Response.json({ data: [] }); }, fetchImpl: async (url, options) => {
+      calls.push({ url, options }); return Response.json({ created: 1, data: [{ b64_json: 'native-image' }] });
+    } }));
+    const result = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'fixture' }) });
+    assert.equal(result.status, 200); assert.equal((await result.json()).data[0].b64_json, 'native-image');
+    assert.equal(result.headers.get('x-switch-alias'), 'direct'); assert.equal(web, 0); assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.authorization, type === 'account' ? 'Bearer existing-oauth' : 'Bearer existing-api-key');
+  }
+});
+
+test('an account page fallback follows its own direct endpoints and never receives policy refusals', async t => {
+  for (const policy of [false, true]) {
+    const { root, token } = fixture(t), calls = [];
+    addProvider('api', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'api' }, root);
+    const accountHome = path.join(root, 'accounts', 'free');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-free', account_id: 'free' } });
+    addProvider('free', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, imageHandler: async () => { calls.push('web'); return Response.json({ data: [{ b64_json: 'web-image' }] }); }, fetchImpl: async url => {
+      calls.push(url.includes('chatgpt.com') ? 'free' : 'api');
+      return policy ? Response.json({ error: { code: 'content_policy_violation' } }, { status: 403 }) : Response.json({ error: { code: 'image_generation_not_supported' } }, { status: 403 });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.status, policy ? 403 : 200); await response.text();
+    assert.deepEqual(calls, policy ? ['free'] : ['free', 'free', 'web']);
+    assert.equal(readState(root).active, 'api');
+  }
+});
+
+test('desktop account image endpoints reuse saved OAuth for generation and editing without changing text identity', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('api', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text-key' }, root);
+  const accountHome = path.join(root, 'account');
+  atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-oauth', account_id: 'saved-account' } });
+  addProvider('account', { type: 'account', accountHome }, root);
+  let web = 0;
+  const proxy = await listen(t, createProxy({ root, imageHandler: async () => { web++; throw Error('No webpage needed'); }, fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('/codex/images/')) return Response.json({ detail: 'Forbidden' }, { status: 403 });
+    if (url.includes('/wham/images/')) return Response.json({ created: 1, data: [{ b64_json: 'account-image' }], size: '1024x1024' });
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } }));
+  for (const route of ['generations', 'edits']) {
+    const image = { model: 'gpt-image-2', prompt: 'fixture', n: 1, quality: 'low', background: 'transparent', size: 'auto',
+      ...(route === 'edits' ? { images: [{ image_url: 'data:image/png;base64,ZmFrZQ==' }] } : {}) };
+    const raw = JSON.stringify(image);
+    const response = await fetch(proxy + '/v1/images/' + route, { method: 'POST', headers: {
+      authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-codex-image-turn-id': 'fixture-turn',
+    }, body: raw });
+    assert.equal(response.status, 200); assert.equal((await response.json()).data[0].b64_json, 'account-image');
+    assert.equal(response.headers.get('x-switch-alias'), 'account');
+    assert.equal(response.headers.get('x-switch-image-route'), 'chatgpt-account');
+    const last = calls.at(-1);
+    assert.equal(last.url, 'https://chatgpt.com/backend-api/wham/images/' + route);
+    assert.equal(Buffer.from(last.options.body).toString(), raw);
+    assert.equal(last.options.headers.authorization, 'Bearer saved-oauth');
+    assert.equal(last.options.headers['ChatGPT-Account-ID'], 'saved-account');
+    assert.equal(last.options.headers['x-codex-image-turn-id'], 'fixture-turn');
+    assert.equal(last.options.headers.cookie, undefined); assert.equal(last.options.headers['x-fluid-token'], undefined);
+  }
+  await (await send(proxy, token)).text();
+  assert.equal(calls.at(-1).url, 'https://text.example/v1/responses');
+  assert.equal(calls.at(-1).options.headers.authorization, 'Bearer text-key');
+  assert.equal(calls.length, 5); assert.equal(web, 0);
+  assert.equal(readState(root).active, 'api'); assert.equal(readState(root).lastFailover, undefined);
+});
+
+test('account image adapter does not resubmit quota, safety, authentication, validation or uncertain failures', async t => {
+  for (const [status, body] of [
+    [429, { error: { code: 'rate_limit_exceeded' } }], [402, { error: { code: 'insufficient_quota' } }],
+    [403, { error: { code: 'image_generation_limit_reached', message: 'quota exhausted' } }],
+    [403, { error: { code: 'image_generation_limit_reached' } }],
+    [403, { error: { code: 'content_policy_violation' } }], [403, { error: { code: 'unsupported_country' } }],
+    [401, { error: { code: 'authentication_error' } }], [400, { error: { message: 'Invalid image size' } }], [502, {}],
+  ]) {
+    const { root, token } = fixture(t), calls = [];
+    const accountHome = path.join(root, 'account');
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: 'saved-oauth', account_id: 'account' } });
+    addProvider('account', { type: 'account', accountHome }, root);
+    const proxy = await listen(t, createProxy({ root, reauth: { prompt: async () => 'Sign in again', close() {} }, fetchImpl: async url => {
+      calls.push(url); return Response.json(body, { status });
+    } }));
+    const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+    assert.equal(response.ok, false); await response.text();
+    assert.deepEqual(calls, ['https://chatgpt.com/backend-api/codex/images/generations']);
+  }
+});
+
+test('a rejected desktop image endpoint continues to the next account without a page adapter', async t => {
+  const { root, token } = fixture(t), calls = [];
+  addProvider('text', { type: 'api', baseUrl: 'https://text.example/v1', apiKey: 'text' }, root);
+  for (const alias of ['first', 'second']) {
+    const accountHome = path.join(root, alias);
+    atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+    calls.push([url, options.headers.authorization]);
+    return options.headers.authorization === 'Bearer first' ? Response.json({ detail: 'Forbidden' }, { status: 403 }) : Response.json({ data: [{ b64_json: 'second-image' }] });
+  } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  assert.equal(response.status, 200); assert.equal((await response.json()).data[0].b64_json, 'second-image');
+  assert.deepEqual(calls, [
+    ['https://chatgpt.com/backend-api/codex/images/generations', 'Bearer first'],
+    ['https://chatgpt.com/backend-api/wham/images/generations', 'Bearer first'],
+    ['https://chatgpt.com/backend-api/codex/images/generations', 'Bearer second'],
+  ]);
+  assert.equal(readState(root).active, 'text');
+});
+
+test('an uncertain submitted account image request is not replayed on another provider', async t => {
+  const { root, token } = fixture(t), calls = [];
+  for (const alias of ['first', 'second']) {
+    const accountHome = path.join(root, alias); atomic(path.join(accountHome, 'auth.json'), { tokens: { access_token: alias, account_id: alias } });
+    addProvider(alias, { type: 'account', accountHome }, root);
+  }
+  const proxy = await listen(t, createProxy({ root, imageHandler: async ({ provider }) => {
+    assert.equal(provider.accountHome, path.join(root, 'first')); calls.push('submitted');
+    return Response.json({ error: { message: 'Image result timed out after submission' } }, { status: 503, headers: { 'x-switch-image-submitted': '1' } });
+  }, fetchImpl: async (_url, options) => { calls.push(options.headers.authorization); return Response.json({ detail: 'Forbidden' }, { status: 403 }); } }));
+  const response = await fetch(proxy + '/v1/images/generations', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'fixture' }) });
+  assert.equal(response.status, 503); await response.text(); assert.deepEqual(calls, ['Bearer first', 'Bearer first', 'submitted']);
+  assert.equal(readState(root).active, 'first');
+});

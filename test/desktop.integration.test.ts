@@ -1,0 +1,1431 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { once } from 'node:events';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { parse } from 'smol-toml';
+import { addProvider, init } from '../src/store.js';
+import { webdavFixture } from './fixtures/webdav.js';
+import { SyncJournal } from '../src/sync-journal.js';
+import { SyncStorage, seal, syncKey, digest } from '../src/sync-storage.js';
+
+const enabled = process.env.SWITCH_TEST_RENDERER === '1';
+const project = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
+async function providersPage(page) { const client = await page.evaluate(async () => (await window.fluid.call('state')).client || 'codex'); await page.click(`[data-client="${client}"]`); }
+async function launch(t, extraEnv = {}, initialConfig, prepare) {
+  const { launchRenderer } = await import('./fixtures/desktop-renderer.js');
+  return launchRenderer(t, project, extraEnv, initialConfig, prepare);
+}
+test('task sync shows one active store and distinguishes pausing from removing shared data', { skip: !enabled, timeout: 45000 }, async t => {
+  const { base, config, objects } = await webdavFixture(t);
+  const { app, page, root } = await launch(t);
+  await app.evaluate(({ shell }) => { globalThis.syncGuideURLs = []; shell.openExternal = async url => { globalThis.syncGuideURLs.push(url); }; });
+  page.on('pageerror', error => t.diagnostic(error.message));
+  await page.click('#settings'); await page.click('#open-task-sync');
+  assert.equal(await page.locator('#sync-title').textContent(), 'Cross-device session sync');
+  assert.equal(await page.locator('dialog[open]').count(), 0);
+  assert.equal(await page.locator('[data-sync-kind]').count(), 2);
+  assert.equal(await page.locator('[data-sync-kind="ssh"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#sync-ssh').isVisible(), true);
+  assert.equal(await page.locator('#sync-url, #sync-username, #sync-secret').evaluateAll(fields => fields.every(field => !field.offsetWidth)), true);
+  assert.equal(await page.locator('#sync-backend-help').count(), 0);
+  await page.click('[data-sync-kind="webdav"]');
+  await page.fill('#sync-url', base);
+  await page.fill('#sync-username', config.username);
+  assert.equal(await page.locator('#sync-url').inputValue(), base.slice(0, -1));
+  assert.equal(await page.locator('#sync-url-suffix').textContent(), '/fluid/');
+  assert.equal(await page.locator('#sync-url-suffix').isVisible(), true);
+  const isToTheRight = await page.locator('.sync-url-entry').evaluate(field => {
+    const [input, suffix] = field.children;
+    const box = input.getBoundingClientRect(), tail = suffix.getBoundingClientRect();
+    return tail.left >= box.right && Math.abs((box.top + box.bottom) - (tail.top + tail.bottom)) < 2;
+  });
+  assert.equal(isToTheRight, true);
+  await page.fill('#sync-url', config.url);
+  assert.equal(await page.locator('#sync-url-suffix').isVisible(), false, 'pasting a full URL does not show a second suffix');
+  await page.fill('#sync-secret', config.secret); await page.fill('#sync-passphrase', config.passphrase);
+  assert.equal(await page.locator('#sync-url').inputValue(), base.slice(0, -1));
+  assert.equal(await page.locator('#sync-url-suffix').isVisible(), true);
+  await page.click('#sync-save');
+  await page.locator('#sync-library').waitFor();
+  await page.locator('#sync-status').filter({ hasText: 'Automatic sync on' }).waitFor();
+  assert.equal(await page.locator('#sync-error').isVisible(), false, await page.locator('#sync-error').textContent());
+  assert.match(await page.locator('#sync-status').textContent(), /WebDAV.*fluid/);
+  assert.equal(await page.locator('#sync-secret').inputValue(), ''); assert.equal(await page.locator('#sync-passphrase').inputValue(), '');
+  const snapshot = await page.evaluate(() => window.fluid.call('sync-state'));
+  assert.ok(snapshot.configured); assert.doesNotMatch(JSON.stringify(snapshot), /fixture-app-password|fixture shared passphrase/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'sync.json'))).kind, 'webdav');
+  assert.equal(await page.locator('#sync-connection').isVisible(), false);
+  assert.match(await page.locator('[data-i18n="syncHelp"]').textContent(), /restored automatically/);
+
+  const key = syncKey(config.passphrase), storage = new SyncStorage(config), journal = new SyncJournal(storage, key);
+  const bytes = seal({ fixture: true }, key), object = digest(bytes);
+  await storage.putImmutable('objects/' + object + '.bin', bytes);
+  const remote = await journal.publish({ id: 'shared', title: 'Shared task', projectKey: 'a'.repeat(64), revision: 'b'.repeat(64), object });
+  await page.click('#sync-now');
+  const row = page.locator('.sync-task').filter({ hasText: 'Shared task' });
+  await row.getByRole('checkbox').click();
+  await row.locator('.sync-task-status').filter({ hasText: 'Remote copy kept' }).waitFor();
+  assert.ok((await journal.read()).has('shared'));
+  const remove = row.getByRole('button', { name: 'Remove remote copy of Shared task' });
+  await page.evaluate(() => { window.confirm = message => (window.removeMessage = message, false); });
+  await remove.click();
+  assert.match(await page.evaluate(() => window.removeMessage), /Shared task.*WebDAV/);
+  assert.ok((await journal.read()).has('shared'));
+  await page.evaluate(() => { window.confirm = () => true; });
+  await remove.click(); await row.waitFor({ state: 'detached' });
+  assert.equal((await journal.read()).has('shared'), false);
+  assert.ok(![...objects.keys()].some(name => name.endsWith(remote.node + '.bin') || name.endsWith(object + '.bin')));
+  assert.ok([...objects.keys()].some(name => name.endsWith('.deleted')));
+  await page.click('#sync-guide');
+  assert.deepEqual(await app.evaluate(() => globalThis.syncGuideURLs), ['https://github.com/JasperRoc/fluid/blob/main/docs/task-sync.md']);
+  await page.click('#close-sync'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#open-task-sync'); await page.locator('#sync-title').filter({ hasText: 'session跨设备同步' }).waitFor();
+  await page.click('#sync-guide');
+  assert.equal((await app.evaluate(() => globalThis.syncGuideURLs)).at(-1), 'https://github.com/JasperRoc/fluid/blob/main/docs/task-sync.zh-CN.md');
+  await page.click('#sync-storage-tab');
+  assert.equal(await page.locator('[data-sync-kind="webdav"]').getAttribute('aria-pressed'), 'true');
+  assert.match(await page.locator('#sync-status').textContent(), /WebDAV.*自动同步已开启/);
+  assert.equal(await page.locator('#sync-user-field').isVisible(), true);
+  assert.equal(await page.locator('#sync-url').inputValue(), base.slice(0, -1));
+  assert.equal(await page.locator('#sync-url-suffix').isVisible(), true);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'session-sync-webdav-0.5.47-zh-light.png') });
+  await page.click('#sync-tasks-tab');
+  await page.locator('#sync-tasks-tab').press('ArrowRight');
+  assert.equal(await page.locator('#sync-connection').isVisible(), true);
+  const syncLayout = await page.evaluate(() => {
+    const page = document.getElementById('sync-page').getBoundingClientRect(), card = document.getElementById('sync-connection').getBoundingClientRect();
+    return { pageLeft: page.left, cardLeft: card.left, pageRight: page.right, cardRight: card.right, scrollWidth: document.body.scrollWidth, width: innerWidth };
+  });
+  assert.ok(Math.abs(syncLayout.cardLeft - syncLayout.pageLeft) < 1 && Math.abs(syncLayout.cardRight - syncLayout.pageRight) < 1, 'sync cards align with the settings workspace');
+  assert.equal(syncLayout.scrollWidth, syncLayout.width);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.locator('html[data-theme="dark"]').waitFor();
+  assert.equal(await page.locator('#sync-connection').isVisible(), true, 'theme changes keep the selected settings section open');
+  await page.click('[data-sync-kind="ssh"]');
+  assert.match(await page.locator('#sync-status').textContent(), /WebDAV.*自动同步已开启/, 'editing SSH does not activate it');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'session-sync-ssh-0.5.47-zh-dark.png') });
+  await page.click('[data-client="codex"]');
+  assert.equal(await page.locator('#sync-page').isVisible(), false);
+  await page.click('#settings'); assert.equal(await page.locator('#settings-overview').isVisible(), true);
+  await page.click('#open-task-sync');
+  await page.click('#close-sync');
+  await page.click('[data-client="claude"]'); await page.click('#settings'); await page.click('#open-task-sync');
+  assert.equal(await page.locator('#sync-client').evaluate(button => button.value), 'codex');
+  await page.click('#sync-client'); await page.click('[data-sync-client="claude"]');
+  await page.waitForFunction(() => document.getElementById('sync-client').value === 'claude');
+  assert.equal((await page.evaluate(() => window.fluid.call('sync-state'))).client, 'claude');
+  assert.equal(await page.locator('#sync-error').isVisible(), false);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'fluid-claude-session-sync.png') });
+  await page.click('#sync-client'); await page.click('[data-sync-client="codex"]');
+  await page.waitForFunction(() => document.getElementById('sync-client').value === 'codex');
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call'); ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', (event, action, payload) => {
+      if (action === 'sync-configure') throw new Error('Sync server returned HTTP 403 (PROPFIND /). Check the WebDAV app password, folder permissions and service access limits.');
+      return original(event, action, payload);
+    });
+  });
+  await page.click('#sync-storage-tab'); await page.click('#sync-save');
+  await page.locator('#sync-error').filter({ hasText: '同步服务返回 HTTP 403（PROPFIND /）' }).waitFor();
+  assert.doesNotMatch(await page.locator('#sync-error').textContent(), /Error invoking remote method|fluid:call/);
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call'); ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', async (event, action, payload) => {
+      const value = await original(event, action, payload);
+      if (['sync-state', 'sync-tasks'].includes(action)) return { ...value, tasks: [{ id: 'failed-folder', title: 'Folder task', cwd: '/project', enabled: true, local: true, status: 'error',
+        message: 'Git could not prepare this project. Check Git installation, repository state and file access.' },
+      { id: 'waiting-history', title: 'Waiting task', cwd: 'C:\\sync\\project', enabled: true, local: true, archived: true, status: 'waitingFile',
+        message: 'Windows could not replace the Codex history file (EPERM). Sync will retry automatically.' }] };
+      return value;
+    });
+  });
+  await page.click('#sync-tasks-tab'); await page.click('#sync-refresh');
+  const message = page.locator('.sync-task').filter({ hasText: 'Folder task' }).locator('.sync-task-message');
+  await message.waitFor();
+  assert.equal(await message.isVisible(), true); assert.match(await message.textContent(), /Git 无法准备此项目/);
+  assert.equal(await message.evaluate(element => getComputedStyle(element).whiteSpace), 'normal');
+  const waiting = page.locator('.sync-task').filter({ hasText: 'Waiting task' });
+  assert.equal(await waiting.locator('.sync-task-status').textContent(), '等待写入会话');
+  assert.equal(await waiting.locator('.sync-task-archived').textContent(), '已归档');
+  assert.match(await waiting.locator('.sync-task-message').textContent(), /EPERM.*自动重试/);
+  assert.equal(await page.getByRole('button', { name: '选择项目位置' }).count(), 0);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sync-error-details-zh.png') });
+  await page.click('#close-sync');
+});
+test('Skills and MCP settings configure the chosen local clients', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page, root, home, options } = await launch(t);
+  const preview = name => page.screenshot({ path: path.join(project, '.desktop-test', name + '.png'), animations: 'disabled' });
+  const switchFor = (row, client) => row.getByRole('switch', { name: new RegExp(client + '$') });
+  const existing = path.join(home, 'skills', 'existing-fixture');
+  fs.mkdirSync(existing, { recursive: true });
+  fs.writeFileSync(path.join(existing, 'SKILL.md'), '---\nname: existing-fixture\ndescription: A fixture already installed in Codex\n---\nUse the fixture.\n');
+  const fixture = path.join(root, 'fixture-skill');
+  fs.mkdirSync(fixture);
+  fs.writeFileSync(path.join(fixture, 'SKILL.md'), '---\nname: fixture-skill\ndescription: ' + 'Review project files and keep supporting references together. '.repeat(24) + '\n---\nUse the fixture.\n');
+  await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, fixture);
+  await page.click('#settings'); await page.click('#open-skills');
+  assert.equal(await page.locator('#extensions-client-help').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Update all' }).isDisabled(), true);
+  const nativeSkill = page.locator('.extension-row[data-name="existing-fixture"]');
+  const codexToggle = switchFor(nativeSkill, 'Codex'), claudeToggle = switchFor(nativeSkill, 'Claude Code');
+  assert.equal(await codexToggle.isEnabled(), true);
+  await codexToggle.press('Space');
+  await page.waitForFunction(() => document.querySelector('[data-name="existing-fixture"] [data-extension-client="codex"]')?.getAttribute('aria-checked') === 'false');
+  assert.equal(await codexToggle.evaluate(element => element === document.activeElement), true);
+  assert.ok(fs.existsSync(path.join(existing, 'SKILL.md')));
+  await claudeToggle.click();
+  await nativeSkill.locator('[data-extension-client="claude"][aria-checked="true"]').waitFor();
+  await preview('skills-settings-en-light');
+  await page.click('#extensions-add');
+  assert.equal(await page.locator('#extension-dialog-title').evaluate(element => element === document.activeElement), true);
+  await preview('skills-add-github-en-light');
+  await page.click('[data-skill-mode="local"]');
+  await page.click('[data-skill-source="folder"]');
+  await page.locator('#skill-choice option').filter({ hasText: 'fixture-skill' }).waitFor({ state: 'attached' });
+  assert.equal(await page.locator('#skill-description').isVisible(), false);
+  await preview('skills-add-local-en-light');
+  await page.selectOption('#skill-client', 'claude'); await page.click('#skill-install');
+  const skill = page.locator('.extension-row[data-name="fixture-skill"]');
+  await skill.locator('[data-extension-client="claude"][aria-checked="true"]').waitFor();
+  const installed = path.join(options.env.CLAUDE_CONFIG_DIR, 'skills', 'fixture-skill', 'SKILL.md');
+  assert.ok(fs.existsSync(installed));
+  await skill.locator('[data-extension-client="claude"]').click();
+  await skill.locator('[data-extension-client="claude"][aria-checked="false"]').waitFor();
+  assert.ok(fs.existsSync(installed));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json'))).skillOverrides['fixture-skill'], 'off');
+  assert.ok(fs.existsSync(path.join(fixture, 'SKILL.md')));
+  if (spawnSync('zip', ['-v']).status === 0) {
+    const repo = path.join(root, 'fixture-skills-HEAD'), skillFile = path.join(repo, 'fixture-skill', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+    fs.writeFileSync(skillFile, fs.readFileSync(path.join(fixture, 'SKILL.md'), 'utf8') + '\nUpdated references.\n');
+    const archive = path.join(root, 'fixture-skills.zip');
+    execFileSync('zip', ['-rq', archive, path.basename(repo)], { cwd: root });
+    await app.evaluate(({ apiFixtures }, bytes) => {
+      apiFixtures.set('https://codeload.github.com/example/fixture-skills/zip/HEAD', { base64: bytes });
+    }, fs.readFileSync(archive, 'base64'));
+    await skill.getByRole('button', { name: 'Link GitHub source for fixture-skill' }).click();
+    await page.fill('#skill-repo', 'https://github.com/example/fixture-skills');
+    await page.click('#skill-browse'); await page.locator('#skill-choice option').filter({ hasText: 'fixture-skill' }).waitFor({ state: 'attached' });
+    await page.getByRole('button', { name: 'Link source', exact: true }).click();
+    await page.locator('#extension-dialog').waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Update all' }).click();
+    await page.locator('#skills-update-result').filter({ hasText: 'Updated 1 of your Skills' }).waitFor();
+    assert.match(fs.readFileSync(installed, 'utf8'), /Updated references/);
+    assert.equal(await switchFor(skill, 'Claude Code').getAttribute('aria-checked'), 'false');
+    await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+    await page.locator('#skills-update').filter({ hasText: '一键更新' }).waitFor();
+    await preview('skills-update-0.5.47-zh-light');
+    await page.click('#language-button'); await page.click('[data-language="en"]');
+  }
+  await page.click('#close-extensions'); await page.click('#open-mcp');
+  assert.equal(await page.locator('#extensions-client-help').count(), 0);
+  assert.equal(await page.locator('#skills-update').isVisible(), false);
+  await page.click('#extensions-add');
+  await preview('mcp-add-en-light');
+  await page.click('#mcp-entry-mode');
+  await page.fill('#mcp-config', '{"mcpServers":{"fixture":{"type":"http","url":"https://example.test/mcp","headers":{"Authorization":"Bearer ${MCP_TOKEN}"}}}}');
+  await page.selectOption('#mcp-client', 'claude');
+  await page.click('#mcp-entry-mode');
+  await page.waitForFunction(() => document.getElementById('mcp-name').value === 'fixture');
+  assert.equal(await page.locator('#mcp-name').inputValue(), 'fixture');
+  await page.click('#mcp-save');
+  const mcp = page.locator('.extension-row[data-name="fixture"]');
+  await mcp.locator('[data-extension-client="claude"][aria-checked="true"]').waitFor();
+  await mcp.locator('[data-extension-client="codex"]').click();
+  await mcp.locator('[data-extension-client="codex"][aria-checked="true"]').waitFor();
+  const configFile = path.join(home, 'config.toml');
+  assert.equal(parse(fs.readFileSync(configFile, 'utf8')).mcp_servers.fixture.bearer_token_env_var, 'MCP_TOKEN');
+  await mcp.getByRole('button', { name: 'Edit MCP server' }).click();
+  assert.equal(await page.locator('#mcp-config').isVisible(), false);
+  await page.locator('#mcp-save:enabled').waitFor();
+  assert.match(await page.locator('#mcp-url').inputValue(), /example.test/);
+  await preview('mcp-edit-en-light');
+  await page.click('#mcp-entry-mode');
+  assert.match(await page.locator('#mcp-config').inputValue(), /bearer_token_env_var/);
+  await page.click('#mcp-entry-mode');
+  await page.click('#close-extension-dialog');
+  assert.equal(await page.locator('#mcp-config').inputValue(), '');
+  await page.click('#extensions-add'); await page.fill('#mcp-name', 'local-fixture');
+  await page.selectOption('#mcp-client', 'claude'); await page.selectOption('#mcp-transport', 'stdio');
+  await page.fill('#mcp-command', 'node'); await page.fill('#mcp-args', 'fixture.cjs\n--stdio');
+  await page.click('#mcp-save');
+  await page.locator('.extension-row[data-name="local-fixture"]').waitFor();
+  const claudeConfig = JSON.parse(fs.readFileSync(path.join(options.env.CLAUDE_CONFIG_DIR, '.claude.json'), 'utf8'));
+  assert.deepEqual(claudeConfig.mcpServers['local-fixture'].args, ['fixture.cjs', '--stdio']);
+  const args = [' fixture.cjs ', '', 'one\ntwo'];
+  await page.evaluate(async config => window.fluid.call('mcp-change', { name: 'custom', client: 'codex', operation: 'add', text: JSON.stringify(config) }),
+    { command: 'node', cwd: '.', args, startup_timeout_sec: 9 });
+  await page.click('#extensions-refresh');
+  const custom = page.locator('.extension-row[data-name="custom"]');
+  await custom.getByRole('button', { name: 'Edit MCP server' }).click();
+  await page.locator('#mcp-save:enabled').waitFor();
+  await page.fill('#mcp-command', 'node-custom');
+  await page.click('#mcp-entry-mode');
+  assert.deepEqual(JSON.parse(await page.locator('#mcp-config').inputValue()).args, args);
+  await page.click('#mcp-entry-mode'); await page.click('#mcp-save');
+  await page.locator('#extension-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual({ ...parse(fs.readFileSync(configFile, 'utf8')).mcp_servers.custom }, { command: 'node-custom', cwd: '.', args, startup_timeout_sec: 9 });
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.getByRole('button', { name: '添加 MCP 服务' }).waitFor();
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]');
+  await page.locator('html[data-theme="dark"]').waitFor();
+  await preview('mcp-settings-zh-dark');
+  await custom.getByRole('button', { name: '编辑 MCP 服务' }).click();
+  await page.locator('#mcp-save:enabled').waitFor();
+  await preview('mcp-edit-zh-dark');
+  await page.keyboard.press('Escape');
+  await page.click('#extensions-add');
+  await preview('mcp-add-zh-dark');
+  await page.keyboard.press('Escape');
+  await page.click('#close-extensions'); await page.click('#open-skills'); await page.click('#extensions-add');
+  await page.click('[data-skill-mode="local"]'); await page.click('[data-skill-source="folder"]');
+  await page.locator('#skill-results').waitFor();
+  await preview('skills-add-local-zh-dark');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.fluid.call('stop'));
+  const stopped = fs.readFileSync(configFile, 'utf8');
+  assert.match(stopped, /# Original user config/);
+  assert.equal(parse(stopped).mcp_servers.fixture.bearer_token_env_var, 'MCP_TOKEN');
+});
+test('a saved installer failure is visible on the first update review in both languages', { skip: !enabled, timeout: 45000 }, async t => {
+  const { page } = await launch(t, {}, undefined, root => {
+    fs.mkdirSync(path.join(root, 'updates')); fs.writeFileSync(path.join(root, 'updates', 'last-error.txt'), 'The Windows installer failed (exit code 2). Run the downloaded installer manually.');
+  });
+  await page.click('#updates');
+  await page.locator('#update-error').filter({ hasText: 'exit code 2' }).waitFor();
+  assert.equal(await page.locator('#update-dialog').getAttribute('data-phase'), 'error');
+  assert.equal(await page.locator('#update-action').isVisible(), false);
+  await page.click('#close-update'); await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.evaluate(() => document.getElementById('update-dialog').showModal());
+  await page.locator('#update-error').filter({ hasText: 'Windows 安装器失败（退出码 2）' }).waitFor();
+});
+test('Windows update review offers manual recovery after the helper fails', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  await assert.rejects(page.evaluate(() => window.fluid.call('update-reveal', 'C:\\other.exe')), /Download and verify the update first/);
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call');
+    const update = { phase: 'ready', version: '0.5.39', canRevealInstaller: true };
+    globalThis.updateActions = [];
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', async (event, action, payload) => {
+      if (action === 'state') return { ...await original(event, action, payload), platform: 'win32', update };
+      if (action === 'updates') return update;
+      if (action === 'update-install') {
+        globalThis.updateActions.push(action);
+        update.error = 'Unable to start the Windows update helper (EACCES).';
+        throw new Error(update.error);
+      }
+      if (action === 'update-reveal') {
+        globalThis.updateActions.push([action, payload ?? null]);
+        return null;
+      }
+      return original(event, action, payload);
+    });
+  });
+  await page.click('#updates');
+  await page.getByRole('button', { name: 'Show installer in folder' }).waitFor();
+  assert.equal(await page.locator('#update-retry').isVisible(), false);
+  await page.click('#update-action');
+  await page.locator('#update-error').filter({ hasText: 'Unable to start the Windows update helper (EACCES).' }).waitFor();
+  assert.match(await page.locator('#update-warning').textContent(), /select your existing installation folder/);
+  await page.click('#update-reveal');
+  assert.deepEqual(await app.evaluate(() => globalThis.updateActions), ['update-install', ['update-reveal', null]]);
+  await page.click('#close-update');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await page.click('#updates');
+  await page.getByRole('button', { name: '显示安装包' }).waitFor();
+  await page.locator('#update-error').filter({ hasText: '无法启动 Windows 更新助手（EACCES）。' }).waitFor();
+});
+test('an unreadable desktop.json cannot block startup; the warning clears when file access returns', { skip: !enabled || process.platform === 'win32', timeout: 45000 }, async t => {
+  const { app, page, root } = await launch(t, {}, undefined, directory => {
+    init(directory); addProvider('saved', { type: 'api', baseUrl: 'https://api.example/v1', apiKey: 'fixture-private' }, directory);
+    fs.chmodSync(path.join(directory, 'desktop.json'), 0);
+  });
+  const file = path.join(root, 'desktop.json');
+  await page.locator('#preferences-warning').filter({ hasText: 'EACCES' }).waitFor();
+  await page.locator('.provider strong').filter({ hasText: 'saved' }).waitFor();
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.locator('#error').filter({ hasText: 'desktop.json' }).waitFor();
+  assert.equal(fs.statSync(file).mode & 0o777, 0);
+  fs.chmodSync(file, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'en', theme: 'light' });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed'));
+  await page.locator('#preferences-warning').waitFor({ state: 'hidden' });
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  fs.chmodSync(file, 0);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed'));
+  await page.locator('#preferences-warning').filter({ hasText: 'Desktop preferences could not be read' }).waitFor();
+  fs.chmodSync(file, 0o600);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  fs.chmodSync(file, 0);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed'));
+  await page.locator('#preferences-warning').filter({ hasText: '无法读取界面设置' }).waitFor();
+  fs.chmodSync(file, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)), { language: 'zh-CN', theme: 'light' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.saved.apiKey, 'fixture-private');
+});
+test('desktop subscription lookup uses the connected Codex version instead of the sign-in helper', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t, {}, undefined, data => {
+    const accountHome = path.join(data, 'accounts', 'personal');
+    fs.mkdirSync(accountHome, { recursive: true });
+    fs.writeFileSync(path.join(accountHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'fixture-only', account_id: 'fixture-account' } }));
+    addProvider('personal', { type: 'account', accountHome }, data);
+  });
+  await app.evaluate(({ apiFixtures }) => {
+    apiFixtures.set('https://chatgpt.com/backend-api/codex/models?client_version=0.171.0', {
+      models: [{ slug: 'gpt-6.2-sol', display_name: 'GPT-6.2-Sol' }],
+    });
+  });
+  await app.evaluate(({ activeVersion }) => activeVersion('0.171.0'));
+  await page.locator('.provider[data-alias="personal"] .query-models').click();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 1 models' }).waitFor();
+  assert.equal(await page.locator('.catalog-id').inputValue(), 'gpt-6.2-sol');
+});
+
+test('desktop GUI, bundled catalog, tray lifetime and normal restoration', { skip: !enabled, timeout: 60000 }, async t => {
+  const upstream = http.createServer((req,res) => {
+    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ data: [{ id: 'gpt-image-2' }, { id: 'relay-only-model' }, { id: 'gpt-6-luna' }, { id: 'gpt-6.1-terra' }, { id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }] }));
+  }).listen(0,'127.0.0.1'); await once(upstream,'listening');
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const metadataEnv = {};
+  const { app,page,file,original,root } = await launch(t, metadataEnv, undefined, root => {
+    const helper = path.join(root, 'metadata-helper'); fs.writeFileSync(helper, 'fixture', { mode: 0o755 });
+    fs.writeFileSync(path.join(root, 'version.txt'), 'fixture');
+    const source = JSON.parse(fs.readFileSync(new URL('../src/codex-model-metadata.json', import.meta.url), 'utf8'));
+    fs.writeFileSync(path.join(root, 'model-metadata.json'), JSON.stringify({ version: 'fixture', models: source.models.map(metadata => ({
+      id: metadata.slug, label: metadata.display_name, metadata,
+      efforts: metadata.supported_reasoning_levels.map(level => level.effort), defaultEffort: metadata.default_reasoning_level,
+    })) }));
+    metadataEnv.SWITCH_CODEX_BIN = helper;
+  });
+  const uiErrors = []; page.on('pageerror', error => uiErrors.push(error.message));
+  assert.equal(await page.locator('.sidebar-brand').getAttribute('data-tauri-drag-region'), 'deep');
+  assert.equal(await page.locator('.workspace > header').getAttribute('data-tauri-drag-region'), '');
+  assert.equal(await page.locator('button[data-tauri-drag-region], input[data-tauri-drag-region], .provider[data-tauri-drag-region]').count(), 0);
+  await page.click('#add-api'); await page.fill('#provider-alias','personal');
+  await page.fill('#base-url',`http://127.0.0.1:${upstream.address().port}/v1`); await page.fill('#api-key','fixture-only'); await page.click('#save-provider');
+  await page.locator('.provider strong').filter({ hasText:'personal' }).waitFor();
+  const card = page.locator('#providers');
+  const cardHeight = () => card.evaluate(element => element.offsetHeight);
+  const oneRowHeight = await cardHeight();
+  assert.equal(await card.locator('.provider').count(), 1);
+  assert.ok(oneRowHeight < 210, `a one-provider card is compact (${oneRowHeight}px)`);
+  await card.screenshot({ path: path.join(project, '.desktop-test', 'providers-one-row.png'), animations: 'disabled' });
+  assert.equal(await page.locator('#routing-toggle').getAttribute('role'), 'switch');
+  assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'true');
+  const layout = await page.evaluate(() => {
+    const status = document.querySelector('[data-client-item=codex] .client-select').getBoundingClientRect(), control = document.getElementById('routing-toggle').getBoundingClientRect();
+    return { statusCenter: status.y + status.height / 2, controlCenter: control.y + control.height / 2 };
+  });
+  assert.ok(Math.abs(layout.statusCenter - layout.controlCenter) < 1, 'route status and switch share a center line');
+  assert.equal(await page.locator('[data-tab="model"], #model, #current-model').count(), 0);
+  await page.locator('.query-models').click();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 5 models' }).waitFor();
+  assert.equal(await page.locator('.catalog-id').first().inputValue(), 'gpt-6.1-sol');
+  const endpoint = parse(fs.readFileSync(file, 'utf8')).model_providers.fluid.model_catalog_url;
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const catalog = await (await fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).json();
+  assert.deepEqual(catalog.models.map(model => model.slug), ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'relay-only-model']);
+  assert.deepEqual(catalog.models[0].supported_reasoning_levels.map(level => level.effort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.equal(catalog.models[0].default_reasoning_level, 'low');
+  await page.fill('#models-search', 'relay-only'); assert.equal(await page.locator('.catalog-model').count(), 1);
+  assert.equal(await page.locator('.catalog-id').inputValue(), 'relay-only-model');
+  await page.click('#close-models');
+  await page.evaluate(url => window.fluid.call('add-api', { alias: 'inactive', url, key: 'fixture-inactive' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  await page.locator('.provider[data-alias="inactive"]').waitFor();
+  const rowHeight = await card.locator('.provider').first().evaluate(element => element.offsetHeight);
+  assert.ok(Math.abs(await cardHeight() - oneRowHeight - rowHeight - 10) <= 1, 'adding a provider expands the card by one row and its gap');
+  await page.locator('.provider[data-alias="inactive"] .query-models').click();
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 5 models' }).waitFor();
+  assert.equal((await page.evaluate(() => window.fluid.call('state'))).active, 'personal');
+  assert.match(await page.locator('#models-provider').innerText(), /inactive/);
+  await page.click('#close-models');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  await page.locator('.provider[data-alias="inactive"] .query-models').click();
+  await page.locator('#models-status').filter({ hasText: '目录已刷新 · 5 个模型' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-models-dark-zh.png') });
+  await page.click('#close-models');
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="light"]'); await providersPage(page);
+  const state = await page.evaluate(() => window.fluid.call('state'));
+  assert.equal(state.providers[0].apiKey, undefined); assert.equal(JSON.stringify(state).includes('fixture-only'), false);
+  assert.equal(await page.locator('nav, #network, #network-form').count(), 0);
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="false"]').waitFor();
+  assert.equal(await page.locator('#routing-toggle').getAttribute('aria-checked'), 'false');
+  assert.equal(fs.readFileSync(file,'utf8'),original);
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="true"]').waitFor();
+  const image = path.join(project,'.desktop-test','settings.png'); fs.mkdirSync(path.dirname(image),{recursive:true}); await page.screenshot({path:image});
+  await page.locator('[data-client="codex"]').focus();
+  await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.locator('[data-client="codex"]').evaluate(element => element.matches(':focus-visible')), true);
+  const keyboardFocus = await page.locator('[data-client="codex"]').evaluate(element => ({ innerOutline: getComputedStyle(element).outlineStyle, outerBorder: getComputedStyle(element.closest('.client-item')).borderColor, idleBorder: getComputedStyle(document.querySelector('[data-client-item="claude"]')).borderColor }));
+  assert.equal(keyboardFocus.innerOutline, 'none', 'keyboard focus uses the complete client row instead of an inner ring');
+  assert.notEqual(keyboardFocus.outerBorder, keyboardFocus.idleBorder, 'keyboard navigation keeps a visible row focus cue');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-keyboard-focus.png') });
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].close());
+  assert.equal(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].isVisible()), false);
+  assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,'fluid');
+  await app.evaluate(({ app }) => app.emit('activate'));
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true);
+  await page.waitForFunction(() => !document.activeElement?.closest('.sidebar'));
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-reopened-focus.png') });
+  await page.click('#add-api'); await page.fill('#provider-alias', 'unfinished');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await app.evaluate(({ app }) => app.emit('activate'));
+  await page.locator('#provider-alias').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#provider-alias').inputValue(), 'unfinished', 'reopening preserves an unfinished dialog');
+  await page.waitForFunction(() => document.activeElement?.id === 'provider-alias');
+  await page.click('#close-dialog');
+  await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
+    const window = BrowserWindow.getAllWindows()[0]; window.once('minimize', resolve); window.minimize();
+  }));
+  await app.evaluate(({ app, BrowserWindow }) => new Promise(resolve => {
+    const window = BrowserWindow.getAllWindows()[0]; window.once('restore', resolve); app.emit('activate');
+  }));
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()), false);
+  const changed = fs.readFileSync(file,'utf8').replace('model="gpt-6.1-sol"','model="user-changed"'); fs.writeFileSync(file,changed);
+  await app.close();
+  assert.equal(parse(fs.readFileSync(file,'utf8')).model,'user-changed');
+  assert.equal(parse(fs.readFileSync(file,'utf8')).model_provider,undefined);
+  assert.deepEqual(uiErrors,[]);
+});
+test('per-provider context presets save independently, preserve automatic catalogs and restore defaults', { skip: !enabled, timeout: 45000 }, async t => {
+  const { page, file, root, app } = await launch(t, {}, '# Keep this comment\nmodel="gpt-6.1-sol"\nmodel_context_window=192000\n');
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'gpt-6.1-sol', context_window: 272000 }, { id: 'second-model' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  await page.evaluate(url => window.fluid.call('add-api', { alias: 'primary', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  const saved = () => JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.primary;
+  await page.locator('.query-models').click();
+  await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-context-button').first().click();
+  assert.equal(await page.locator('#model-window-size').inputValue(), 'custom');
+  assert.equal(await page.locator('#model-window-custom').inputValue(), '192000');
+  await page.selectOption('#model-window-size', '128000');
+  await page.selectOption('#model-compact-size', '180000');
+  await page.locator('#model-context-form button[type=submit]').click();
+  await page.locator('#model-context-error').filter({ hasText: 'must be lower' }).waitFor();
+  await page.selectOption('#model-compact-size', '96000');
+  await page.locator('#model-context-form button[type=submit]').click();
+  assert.equal(saved().modelContexts, undefined);
+  await page.click('#models-cancel');
+  assert.equal(saved().modelContexts, undefined);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).model_context_window, 192000);
+
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-context-button').first().click();
+  await page.selectOption('#model-window-size', '128000'); await page.selectOption('#model-compact-size', 'custom');
+  await page.fill('#model-compact-custom', '95000');
+  await page.locator('#model-context-form button[type=submit]').click();
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual(saved().modelContexts, { 'gpt-6.1-sol': { window: 128000, compact: 95000 } });
+  assert.equal(saved().modelCatalog, undefined);
+  assert.equal(parse(fs.readFileSync(file, 'utf8')).model_context_window, undefined);
+  assert.match(fs.readFileSync(file, 'utf8'), /# Keep this comment/);
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  assert.equal(await page.locator('.catalog-context-button').first().textContent(), '128K / 95K');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-context-en.png') });
+  await page.locator('.catalog-context-button').first().click();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-context-dialog-en.png') });
+  await page.selectOption('#model-window-size', ''); await page.selectOption('#model-compact-size', '');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'provider-context-defaults-en.png') });
+  await page.locator('#model-context-form button[type=submit]').click();
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.equal(saved().modelContexts, undefined);
+  await app.close(); assert.equal(parse(fs.readFileSync(file, 'utf8')).model_provider, undefined);
+});
+
+test('provider editing and separate Claude model mappings work in the desktop UI', { skip: !enabled, timeout: 45000 }, async t => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(404); res.end(); }).listen(0, '127.0.0.1');
+  await once(upstream, 'listening'); t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { app, page, root, options } = await launch(t);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.click('#add-api'); await page.fill('#provider-alias', 'old'); await page.fill('#api-key', 'original-secret');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/v1`); await page.click('#save-provider');
+  await page.locator('.edit-provider').click(); assert.equal(await page.locator('#api-key').inputValue(), '');
+  await page.fill('#provider-alias', 'renamed'); await page.click('#save-provider');
+  await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  await page.locator('.provider strong').filter({ hasText: 'renamed' }).waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.renamed.apiKey, 'original-secret');
+  await page.click('[data-client="claude"]'); await page.locator('#empty').waitFor();
+  assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status, #failover, [data-i18n="priorityHelp"]').count(), 0);
+  await page.click('#add-api'); assert.match(await page.locator('#base-url').getAttribute('placeholder'), /Anthropic/);
+  assert.equal(await page.locator('#claude-mapping').isVisible(), false, 'adding a Claude API starts with the same simple fields as Codex');
+  assert.equal(await page.locator('#claude-fable-model').isVisible(), false);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-add-api-0.5.15-en.png') });
+  await page.fill('#provider-alias', 'renamed'); await page.fill('#api-key', 'claude-secret');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/anthropic`); await page.click('#save-provider');
+  await page.locator('.provider[data-alias="renamed"]').waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.renamed.claudeModels, undefined);
+  await page.locator('.query-models').click(); await page.locator('#models-status.failed').waitFor();
+  await page.click('#close-models'); await page.locator('.edit-provider').click();
+  assert.equal(await page.locator('#claude-mapping').getAttribute('open'), '');
+  await page.locator('#claude-mapping>details>summary').click();
+  await page.fill('#claude-main-model', 'deepseek-main'); await page.fill('#claude-agent-model', 'deepseek-agent'); await page.click('#save-provider');
+  await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.renamed.claudeModels, { default: 'deepseek-main', subagent: 'deepseek-agent' });
+  const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
+  assert.match(JSON.parse(fs.readFileSync(claudeFile)).env.ANTHROPIC_BASE_URL, /\/claude$/);
+  assert.equal(JSON.parse(fs.readFileSync(claudeFile)).env.ANTHROPIC_CUSTOM_MODEL_OPTION, 'deepseek-main');
+  await page.locator('.edit-provider').click(); await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-mapping.png') }); await page.click('#close-dialog');
+  await page.click('[data-client="codex"]'); await page.locator('.provider[data-alias="renamed"]').waitFor();
+  await page.evaluate(() => window.fluid.call('stop')); assert.equal(fs.existsSync(claudeFile), false);
+  assert.deepEqual(errors, []);
+});
+test('Claude Desktop setup and icon-only provider switches share the CLI route without rewriting its profile', { skip: !enabled, timeout: 45000 }, async t => {
+  const calls = [];
+  const upstream = http.createServer(async (req, res) => {
+    if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'deepseek-first' }, { id: 'deepseek-helper' }] })); return; }
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    calls.push({ body: JSON.parse(Buffer.concat(chunks).toString()), key: req.headers['x-api-key'] });
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'LOCAL_OK' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { page, root, options } = await launch(t);
+  await page.click('[data-client="claude"]');
+  await page.evaluate(async url => {
+    await window.fluid.call('add-api', { alias: 'first', key: 'first-key', url, claudeModels: { default: 'deepseek-first', subagent: 'deepseek-helper' } });
+    await window.fluid.call('add-api', { alias: 'second', key: 'second-key', url, claudeModels: { default: 'deepseek-second' } });
+  }, `http://127.0.0.1:${upstream.address().port}/anthropic`);
+  await page.locator('.provider[data-alias="second"]').waitFor();
+  assert.equal(await page.locator('#claude-desktop-hint').count(), 0);
+  const library = path.join(options.env.SWITCH_CLAUDE_DESKTOP_HOME, 'Claude-3p', 'configLibrary');
+  const meta = JSON.parse(fs.readFileSync(path.join(library, '_meta.json'))), file = path.join(library, `${meta.appliedId}.json`);
+  const original = fs.readFileSync(file, 'utf8'), profile = JSON.parse(original);
+  const send = async model => {
+    const response = await fetch(profile.inferenceGatewayBaseUrl + '/v1/messages', { method: 'POST', headers: { authorization: `Bearer ${profile.inferenceGatewayApiKey}` }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Continue this task' }] }) });
+    assert.equal(response.status, 200); await response.text();
+  };
+  await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-first');
+  assert.equal(await page.locator('.provider .tag').count(), 0);
+  const second = page.locator('.provider[data-alias="second"] .select-provider');
+  assert.equal(await second.innerText(), ''); assert.equal(await second.getAttribute('aria-pressed'), 'false');
+  await second.click(); await page.locator('[data-client-provider="claude"]').filter({ hasText: /^second$/ }).waitFor();
+  assert.equal(await second.getAttribute('aria-pressed'), 'true'); assert.equal(await second.locator('use').getAttribute('href'), 'assets/ui.svg#check');
+  await send('claude-sonnet-5'); assert.equal(calls.at(-1).body.model, 'deepseek-second'); assert.equal(calls.at(-1).key, 'second-key');
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+  assert.equal(profile.inferenceModels, undefined);
+  const catalog = await (await fetch(profile.inferenceGatewayBaseUrl + '/v1/models', { headers: { authorization: `Bearer ${profile.inferenceGatewayApiKey}` } })).json();
+  assert.deepEqual(catalog.data.map(item => item.display_name), ['deepseek-first', 'deepseek-helper', 'deepseek-second']);
+  assert.ok(catalog.data.every(item => item.description.startsWith('fluid · ')));
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.locator('html[lang="zh-CN"]').waitFor();
+  await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-light.png') });
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.screenshot({ path: path.join(folder, 'claude-desktop-zh-dark.png') });
+  await page.evaluate(() => window.fluid.call('stop'));
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(fs.existsSync(path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'claude-desktop-session.json')), false);
+});
+test('Claude provider catalog assigns independent Fable, Opus and Haiku mappings without exposing the API key', { skip: !enabled, timeout: 45000 }, async t => {
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-v4-1-flash' }, { id: 'deepseek-v4-flash' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { page, root, options } = await launch(t);
+  await page.click('[data-client="claude"]'); await page.click('#add-api');
+  await page.fill('#provider-alias', 'deepseek'); await page.fill('#api-key', 'private-catalog-key');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}`); await page.click('#save-provider');
+  await page.locator('.edit-provider').click(); await page.click('#claude-choose-model');
+  const rows = page.locator('.catalog-model'); await rows.first().waitFor();
+  await rows.first().locator('.catalog-label').fill('DeepSeek V4 Pro');
+  await rows.first().locator('.catalog-context-button').click();
+  assert.equal(await page.locator('#model-window-field').isVisible(), false);
+  assert.ok((await page.locator('#model-compact-size option').allTextContents()).includes('150K'));
+  await page.selectOption('#model-compact-size', '150000');
+  await page.locator('#model-context-form button[type=submit]').click();
+  await page.locator('#catalog-mappings summary').click();
+  await page.fill('#catalog-fable', 'deepseek-v4-pro');
+  await page.fill('#catalog-opus', 'deepseek-v4-1-flash');
+  await page.fill('#catalog-haiku', 'deepseek-v4-flash');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude/state.json'))).providers.deepseek.claudeModels, undefined, 'mapping is a draft until Save');
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
+  assert.equal(await page.locator('#claude-opus-model').inputValue(), 'deepseek-v4-1-flash');
+  assert.equal(await page.locator('#claude-haiku-model').inputValue(), 'deepseek-v4-flash');
+  assert.equal(await page.locator('#claude-sonnet-model').inputValue(), '');
+  assert.equal(await page.locator('#api-key').inputValue(), '');
+  await page.click('#save-provider'); await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude/state.json'))).providers.deepseek;
+  assert.deepEqual(saved.claudeModels, { fable: 'deepseek-v4-pro', opus: 'deepseek-v4-1-flash', haiku: 'deepseek-v4-flash' });
+  assert.deepEqual(saved.modelCatalog, [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }, { id: 'deepseek-v4-1-flash', label: 'deepseek-v4-1-flash' }, { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' }]);
+  assert.equal(saved.apiKey, 'private-catalog-key');
+  assert.deepEqual(saved.modelContexts, { 'deepseek-v4-pro': { compact: 150000 } });
+  const claudeSettings = JSON.parse(fs.readFileSync(path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json')));
+  assert.equal(claudeSettings.modelSettings['deepseek-v4-pro'].autoCompactWindow, 150000);
+  await page.locator('.edit-provider').click();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-en.png') });
+  await page.click('#close-dialog');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.locator('.edit-provider').click();
+  assert.equal(await page.locator('#claude-fable-model').inputValue(), 'deepseek-v4-pro');
+  assert.match(await page.locator('#claude-mapping [data-i18n="claudeMappingHelp"]').innerText(), /各系列独立设置/);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-family-mapping-zh.png') });
+  await page.click('#close-dialog');
+  await page.locator('.query-models').click();
+  await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-context-button').first().click();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-context-dialog-zh.png') });
+});
+
+test('model catalog edits support cancel, ordering, explicit IDs and returning to automatic discovery', { skip: !enabled, timeout: 45000 }, async t => {
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }] }));
+  }).listen(0, '127.0.0.1'); await once(upstream, 'listening'); t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { page, root } = await launch(t);
+  await page.click('#add-api'); await page.fill('#provider-alias', 'catalog'); await page.fill('#api-key', 'private-key');
+  await page.fill('#base-url', `http://127.0.0.1:${upstream.address().port}/v1`); await page.click('#save-provider');
+  const saved = () => JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).providers.catalog;
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-label').first().fill('Unsaved'); await page.click('#models-cancel');
+  assert.equal(saved().modelCatalog, undefined);
+  await page.locator('.query-models').click(); await page.locator('.catalog-id').first().waitFor();
+  await page.locator('.catalog-model .drag-handle').first().press('ArrowDown');
+  assert.equal(await page.locator('.catalog-id').first().inputValue(), 'model-b');
+  await page.locator('.catalog-label').first().fill('Model B');
+  await page.click('#models-add'); await page.locator('.catalog-id').last().fill('manual-model');
+  await page.locator('.catalog-label').last().fill('Manual model');
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.deepEqual(saved().modelCatalog, [{ id: 'model-b', label: 'Model B' }, { id: 'model-a', label: 'model-a' }, { id: 'manual-model', label: 'Manual model' }]);
+  assert.equal(saved().apiKey, 'private-key');
+  await page.locator('.query-models').click(); await page.locator('#models-status').filter({ hasText: 'Catalog refreshed' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'model-catalog-editor-en.png') });
+  await page.click('#models-reset'); assert.equal(await page.locator('.catalog-id').count(), 2);
+  await page.click('#models-save'); await page.locator('#models-dialog').waitFor({ state: 'hidden' });
+  assert.equal(saved().modelCatalog, undefined);
+});
+test('Claude subscription can be deleted and added again, with authorization codes confined to the dialog', { skip: !enabled || process.platform === 'win32', timeout: 45000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-fake-claude-')), binary = path.join(directory, 'claude');
+  fs.writeFileSync(binary, `#!${process.execPath}\nconst fs=require('fs'),path=require('path');
+process.stdout.write('https://claude.com/cai/oauth/authorize?code=true&state=fixture\\n');
+process.stdin.once('data',()=>{fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-oauth-secret',refreshToken:'fixture-refresh',expiresAt:Date.now()+3600000,scopes:['user:inference']}}),{mode:0o600});process.exit(0);});\n`, { mode: 0o700 });
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const { page, root } = await launch(t, { SWITCH_CLAUDE_BIN: binary });
+  await page.click('[data-client="claude"]'); await page.click('#add-subscription'); await page.fill('#provider-alias', 'personal');
+  // Invoke login without opening a real browser for this simulated OAuth page.
+  await page.evaluate(() => window.fluid.call('login', 'personal'));
+  await page.locator('#claude-code-field').waitFor(); await page.fill('#authorization-code', 'fixture-code#state'); await page.click('#save-provider');
+  await page.locator('#login-message').filter({ hasText: 'Signed in successfully.' }).waitFor();
+  assert.equal(await page.locator('#claude-code-field').isVisible(), false); assert.equal(await page.locator('#authorization-code').inputValue(), '');
+  const state = await page.evaluate(() => window.fluid.call('state')); assert.equal(state.providers[0].type, 'account');
+  assert.ok(!JSON.stringify(state).includes('fixture-oauth-secret'));
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.personal;
+  assert.equal(JSON.parse(fs.readFileSync(path.join(saved.accountHome, 'oauth.json'))).accessToken, 'fixture-oauth-secret');
+  await page.click('#save-provider'); await page.locator('#add-dialog').waitFor({ state: 'hidden' });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('.provider[data-alias="personal"] .delete-provider').click();
+  await page.locator('.provider[data-alias="personal"]').waitFor({ state: 'hidden' });
+  assert.equal(fs.existsSync(saved.accountHome), false);
+  await page.click('#add-subscription'); await page.fill('#provider-alias', 'personal');
+  await page.evaluate(() => window.fluid.call('login', 'personal'));
+  await page.locator('#claude-code-field').waitFor(); await page.fill('#authorization-code', 'fixture-second-code#state'); await page.click('#save-provider');
+  await page.locator('#login-message').filter({ hasText: 'Signed in successfully.' }).waitFor();
+  const renewed = JSON.parse(fs.readFileSync(path.join(root, 'claude', 'state.json'))).providers.personal;
+  assert.notEqual(renewed.accountHome, saved.accountHome);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(renewed.accountHome, 'oauth.json'))).accessToken, 'fixture-oauth-secret');
+});
+test('idle UI avoids DOM churn; hidden, locked and sleeping windows stop foreground work while routing remains usable', { skip: !enabled, timeout: 45000 }, async t => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }).listen(0, '127.0.0.1');
+  await once(upstream, 'listening'); t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const { app, page, root, home } = await launch(t);
+  await page.evaluate(url => window.fluid.call('add-api', { alias: 'idle-test', url, key: 'fixture' }), `http://127.0.0.1:${upstream.address().port}/v1`);
+  await page.locator('.provider strong').filter({ hasText: 'idle-test' }).waitFor();
+  await app.evaluate(({ app, BrowserWindow }) => {
+    globalThis.energySends = 0; globalThis.energyLoginReads = 0;
+    const web = BrowserWindow.getAllWindows()[0].webContents, send = web.send.bind(web), read = app.getLoginItemSettings.bind(app);
+    web.send = (channel, ...args) => { if (channel === 'fluid:changed') globalThis.energySends++; return send(channel, ...args); };
+    app.getLoginItemSettings = (...args) => { globalThis.energyLoginReads++; return read(...args); };
+  });
+  await page.evaluate(() => {
+    globalThis.energyMutations = 0;
+    new MutationObserver(records => globalThis.energyMutations += records.length).observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
+  });
+  for (let index = 0; index < 20; index++) await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed'));
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  assert.equal(await page.evaluate(() => globalThis.energyMutations), 0, 'unchanged state never rewrites the DOM');
+  assert.equal(await app.evaluate(() => globalThis.energyLoginReads), 0, 'idle polling does not call OS login-item services');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+  const sent = await app.evaluate(() => globalThis.energySends);
+  const endpoint = parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).model_providers.fluid.base_url;
+  const token = JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).token;
+  const response = await fetch(endpoint + '/responses', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'fixture', input: 'Keep routing while hidden' }) });
+  assert.equal(response.status, 200); await response.text();
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'hidden renderer receives no periodic refresh');
+  await app.evaluate(({ powerMonitor, BrowserWindow }) => { powerMonitor.emit('lock-screen'); powerMonitor.emit('suspend'); BrowserWindow.getAllWindows()[0].show(); });
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'sleep and lock suspend UI polling even if a window event arrives');
+  await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+  assert.equal(await app.evaluate(() => globalThis.energySends), sent, 'resuming does not bypass a screen lock');
+  await app.evaluate(({ powerMonitor }) => powerMonitor.emit('unlock-screen'));
+  assert.ok(await app.evaluate(() => globalThis.energySends) > sent, 'unlock refreshes the visible window immediately');
+});
+test('subscription quota rings, purchased credits, stale data and image access errors render in both languages and themes', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  const window = (remaining, hours) => ({ remaining, resetsAt: Date.now() + hours * 3600000 });
+  const account = (alias, plan, weekly) => ({ alias, type: 'account', active: false, usage: { status: 'ready', fetchedAt: Date.now(),
+    data: { plan, fiveHour: window(75, 5), weekly: window(weekly, 100), credits: 36.445, unlimited: false } } });
+  const uiState = { running: true, imageTools: true, active: 'api', providers: [account('plus', 'plus', 67), account('pro', 'pro', 20), account('credits', 'pro', 0), { alias: 'api', type: 'api', active: true, baseUrl: 'https://api.example.com/v1' }],
+    version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform, update: { phase: 'idle' } };
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, state) => {
+    powerMonitor.emit('lock-screen'); // Keep periodic real snapshots from replacing this fixture.
+    globalThis.fluidQuotaState = state; globalThis.fluidQuotaRefreshes = 0;
+    globalThis.fluidResetAttempts = [];
+    globalThis.fluidResetCards = { availableCount: 2, credits: [
+      { id: 'soon', title: 'Soon-expiring card', status: 'available', resetType: 'codexRateLimits', expiresAt: 1900000000000, expiryKnown: true },
+      { id: 'later', title: 'Later card', status: 'available', resetType: 'codexRateLimits', expiresAt: 2000000000000, expiryKnown: true },
+      { id: 'expired', title: 'Expired card', status: 'available', resetType: 'codexRateLimits', expiresAt: 1000000000000, expiryKnown: true },
+    ] };
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', (_event, action, payload) => {
+      if (action === 'preferences') { Object.assign(state, payload); state.dark = payload.theme ? payload.theme === 'dark' : state.dark; }
+      if (action === 'usage') globalThis.fluidQuotaRefreshes++;
+      if (action === 'reset-cards') return globalThis.fluidResetCards;
+      if (action === 'consume-reset') {
+        globalThis.fluidResetAttempts.push(payload);
+        if (globalThis.fluidResetAttempts.length === 1) throw new Error('Could not confirm the reset result. Retry the same card to avoid another redemption.');
+        globalThis.fluidResetCards = { availableCount: 0, credits: [] };
+        return { outcome: 'alreadyRedeemed', cards: globalThis.fluidResetCards };
+      }
+      return state;
+    });
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed');
+  }, uiState);
+  const plus = page.locator('.provider[data-alias="plus"]'), pro = page.locator('.provider[data-alias="pro"]'), credits = page.locator('.provider[data-alias="credits"]');
+  await plus.waitFor();
+  assert.equal(await plus.locator('.quota-ring').count(), 1); assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await pro.locator('.quota-segment').count(), 1);
+  const sizes = await page.locator('.provider').evaluateAll(rows => rows.map(row => ({ width: row.getBoundingClientRect().width, height: row.getBoundingClientRect().height })));
+  assert.ok(sizes.every(size => Math.abs(size.width - sizes[0].width) < 1 && Math.abs(size.height - sizes[0].height) < 1), 'API and subscription rows have identical dimensions: ' + JSON.stringify(sizes));
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 3 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: '5h: 75% remaining' }).waitFor();
+  assert.notEqual(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transform), 'none');
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 29 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
+  await pro.locator('.quota').hover(); await page.mouse.move(100, 100);
+  assert.equal(await plus.locator('.quota-tooltip').isVisible(), false);
+  assert.equal(await plus.locator('.quota-segment.weekly .quota-progress').getAttribute('stroke-dashoffset'), '33');
+  assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /67% remaining/);
+  assert.equal(await page.locator('.quota-credits, .quota-balance').count(), 0);
+  for (const row of [plus, pro, credits]) {
+    await row.locator('.quota-center').focus(); await row.locator('.quota-tooltip').filter({ hasText: '36.445' }).waitFor();
+    await row.locator('.quota-center').evaluate(element => element.blur());
+  }
+  assert.equal(await credits.locator('.quota-segment').count(), 1);
+  assert.equal(await plus.locator('.quota-center').count(), 1);
+  assert.equal(await page.locator('#native-images').isVisible(), false, 'normal image routing does not add an informational banner');
+  assert.equal(await page.locator('[data-i18n="lifetime"], .footnote').count(), 0); await page.mouse.move(100, 100);
+  assert.equal(await app.evaluate(() => globalThis.fluidQuotaRefreshes), 0);
+  assert.equal(await plus.locator('.quota-tooltip').isVisible(), false, 'clicking the quota does not expand all details');
+  await plus.locator('.quota-segment.weekly').focus();
+  await plus.locator('.quota-tooltip').filter({ hasText: 'Week: 67% remaining' }).waitFor();
+  await plus.locator('.quota-segment.weekly').evaluate(element => element.blur());
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await credits.locator('.quota-center').focus(); await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
+  await credits.locator('.quota-center').evaluate(element => element.blur());
+  await credits.locator('.quota-center').hover();
+  assert.equal(await credits.locator('.quota-center-hit').evaluate(element => getComputedStyle(element).cursor), 'default');
+  await credits.locator('.quota-tooltip').filter({ hasText: '剩余购买额度' }).waitFor();
+  await page.mouse.move(100, 100);
+  assert.match(await plus.locator('.quota-segment.weekly').getAttribute('aria-label'), /周额度：剩余 67%/);
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
+  await page.screenshot({ path: path.join(folder, 'quota-light.png') });
+  await plus.locator('.quota-ring').hover({ position: { x: 16, y: 3 } });
+  await plus.locator('.quota-tooltip').filter({ hasText: '5 小时：剩余 75%' }).waitFor();
+  await page.waitForFunction(() => {
+    const tooltip = document.querySelector('[data-alias="plus"] .quota-tooltip');
+    return tooltip && !tooltip.hidden && getComputedStyle(tooltip).opacity === '1';
+  });
+  await page.screenshot({ path: path.join(folder, 'quota-hover.png') });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await plus.locator('.quota-segment:not(.weekly)').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
+  await page.mouse.move(100, 100);
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.screenshot({ path: path.join(folder, 'quota-dark.png') });
+  await app.evaluate(({ BrowserWindow }) => {
+    const state = globalThis.fluidQuotaState; state.providers[0].usage.status = 'unavailable';
+    state.providers[1].usage = { status: 'unavailable', data: null }; state.imageTools = false;
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed');
+  });
+  await plus.locator('.quota.stale').waitFor(); await pro.locator('.quota-message').filter({ hasText: '额度暂不可用' }).waitFor();
+  assert.equal(await plus.locator('.quota-segment').count(), 2); assert.equal(await page.locator('#native-images').isVisible(), false);
+  await app.evaluate(({ BrowserWindow }) => {
+    globalThis.fluidQuotaState.imageToolsBlocked = true;
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed');
+  });
+  await page.locator('#native-images').filter({ hasText: '原生图片工具尚未配置' }).waitFor();
+  await page.click('#language-button'); await page.click('[data-language="en"]'); await providersPage(page);
+  await page.locator('#native-images').filter({ hasText: 'Native image tools are not configured' }).waitFor();
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await plus.locator('.reset-quota').click();
+  await page.locator('#reset-status').filter({ hasText: '共有 2 张可用重置卡' }).waitFor();
+  assert.equal(await page.locator('#reset-confirm').isDisabled(), true, 'a card must be chosen explicitly');
+  assert.equal(await page.locator('[data-credit-id="expired"]').isDisabled(), true);
+  assert.match(await page.locator('[data-credit-id="soon"]').innerText(), /过期时间/);
+  await page.locator('[data-credit-id="later"]').click();
+  await page.screenshot({ path: path.join(folder, 'reset-cards-zh.png') });
+  await page.click('#reset-confirm');
+  await page.locator('#reset-error').filter({ hasText: '无法确认重置结果' }).waitFor();
+  await page.click('#close-reset'); await plus.locator('.reset-quota').click();
+  await page.locator('#reset-confirm').filter({ hasText: '重试同一次重置' }).waitFor();
+  await page.click('#reset-confirm');
+  await page.locator('#reset-result').filter({ hasText: '这次重置已完成' }).waitFor();
+  const attempts = await app.evaluate(() => globalThis.fluidResetAttempts);
+  assert.equal(attempts.length, 2); assert.deepEqual(attempts[0], attempts[1]); assert.equal(attempts[0].creditId, 'later');
+  assert.equal(await page.locator('#reset-confirm').isDisabled(), true);
+  assert.match(await plus.locator('.quota-center').getAttribute('aria-label'), /36.445/);
+  assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'api');
+  await page.click('#close-reset');
+  await app.evaluate(({ BrowserWindow }) => {
+    const state = globalThis.fluidQuotaState;
+    const template = state.providers[0];
+    for (let index = 0; index < 20; index++) state.providers.push({ ...template, alias: 'extra-' + index });
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed');
+  });
+  const last = page.locator('.provider[data-alias="extra-19"]');
+  await last.waitFor(); await last.scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('.provider').count(), 24);
+  assert.equal(await page.locator('main').evaluate(element => element.scrollTop > 0), true, 'many accounts remain accessible by scrolling');
+  assert.equal(await page.locator('.provider .tag').count(), 0);
+  assert.equal(await page.locator('.provider[data-alias="api"] .select-provider').getAttribute('aria-pressed'), 'true');
+});
+test('desktop language and glass themes update live and persist across application restarts', { skip: !enabled, timeout: 60000 }, async t => {
+  const { app, page, root, options } = await launch(t);
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.locator('#add-subscription').filter({hasText:'添加订阅'}).waitFor();
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page);
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
+  await page.click('#add-subscription');
+  assert.equal(await page.locator('#save-provider').innerText(), '添加订阅');
+  await page.click('#close-dialog'); await page.click('#add-api');
+  assert.equal(await page.locator('#save-provider').innerText(), '添加 API 服务商');
+  await page.click('#close-dialog');
+  assert.equal(await page.locator('#quit').count(),0);
+  assert.match(await page.locator('#version').innerText(),/^fluid /);
+  assert.match(await page.locator('.glass').first().evaluate(element=>getComputedStyle(element).backdropFilter), /blur/);
+  const folder=path.join(project,'.desktop-test'); fs.mkdirSync(folder,{recursive:true});
+  await page.screenshot({path:path.join(folder,'ocean-dark-zh.png')});
+  await page.click('#theme-button'); await page.click('button[data-theme="light"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
+  await page.screenshot({path:path.join(folder,'ocean-light-zh.png')});
+  await page.click('#theme-button'); await page.click('button[data-theme="dark"]'); await providersPage(page); await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'desktop.json'))), {language:'zh-CN',theme:'dark'});
+  await app.close();
+  const reopened = await options.restart();
+  try {
+    const second=await reopened.firstWindow();
+    await second.locator('#routing-toggle[aria-checked="true"]').waitFor();
+    assert.equal(await second.locator('html').getAttribute('lang'),'zh-CN');
+    assert.equal(await second.locator('html').getAttribute('data-theme'),'dark');
+    await second.click('#language-button'); await second.click('[data-language="en"]'); await second.click('[data-client="codex"]'); await second.locator('#add-subscription').filter({hasText:'Add subscription'}).waitFor();
+  } finally {await reopened.close();}
+});
+test('grip dragging, deletion, explicit import and in-app release review work without opening Releases', {skip:!enabled,timeout:60000},async t=>{
+ const {app,page,root}=await launch(t);
+ for(const alias of ['alpha','beta','gamma']) await page.evaluate(alias=>window.fluid.call('add-api',{alias,key:'fixture-'+alias}),alias);
+ await page.locator('.provider').nth(2).waitFor();
+ await page.evaluate(() => Promise.all(document.getAnimations().filter(animation => Number.isFinite(animation.effect.getComputedTiming().endTime)).map(animation => animation.finished)));
+ const handle = page.locator('.provider[data-alias="gamma"] .drag-handle');
+ const origin = await handle.boundingBox(), target = await page.locator('.provider[data-alias="alpha"]').boundingBox();
+ await page.evaluate(() => { window.providerBefore = document.querySelector('[data-alias="alpha"]').getBoundingClientRect().top; });
+ const gripOffset = origin.y + origin.height / 2 - (await page.locator('.provider[data-alias="gamma"]').boundingBox()).y;
+ await page.mouse.move(origin.x + origin.width / 2, origin.y + origin.height / 2); await page.mouse.down();
+ for (const distance of [12, 28]) {
+   const y = origin.y + origin.height / 2 - distance;
+   await page.mouse.move(origin.x + origin.width / 2, y);
+   const row = await page.locator('.provider[data-alias="gamma"]').boundingBox();
+   assert.ok(Math.abs(row.y + gripOffset - y) < 1, 'the dragged card follows each pointer movement before reordering');
+ }
+ const middleRow = await page.locator('.provider[data-alias="beta"]').boundingBox();
+ const earlyY = middleRow.y + middleRow.height / 2 - 2 + gripOffset;
+ await page.mouse.move(origin.x + origin.width / 2, earlyY);
+ assert.deepEqual(await page.locator('#provider-list > .provider').evaluateAll(rows => rows.map(row => row.dataset.alias)), ['alpha','gamma','beta'], 'neighbours make room once the card edge crosses their midpoint');
+ await page.mouse.move(target.x + 60, target.y + 4);
+ const moving = await page.locator('.provider[data-alias="gamma"]').boundingBox();
+ assert.ok(Math.abs(moving.y + gripOffset - target.y - 4) < 1, 'reordering keeps the same grip offset');
+ const animation = await page.evaluate(() => {
+  const alpha = document.querySelector('[data-alias="alpha"]'), motion = alpha.getAnimations()[0];
+  motion.pause(); motion.currentTime = 0; const atStart = alpha.getBoundingClientRect().top;
+  motion.currentTime = 130; const atMiddle = alpha.getBoundingClientRect().top;
+  motion.finish(); return { before: window.providerBefore, atStart, atMiddle, atEnd: alpha.getBoundingClientRect().top };
+ });
+ assert.ok(Math.abs(animation.atStart - animation.before) < 1, 'the displaced provider starts at its previous visual position: '+JSON.stringify(animation));
+ assert.ok(animation.atMiddle > animation.atStart && animation.atMiddle < animation.atEnd, 'the provider slides through intermediate positions');
+ await page.mouse.up();
+ await page.waitForFunction(async()=>(await window.fluid.call('state')).providers[0].alias==='gamma');
+ assert.deepEqual((await page.evaluate(() => window.fluid.call('state'))).providers.map(provider => provider.alias), ['gamma','alpha','beta']);
+ await page.waitForFunction(() => !document.querySelector('.provider.dragging'));
+ await page.evaluate(() => Promise.all(document.getAnimations().map(animation => animation.finished)));
+ // Releasing without moving or cancelling a drag must preserve the saved order.
+ await handle.click();
+ await page.evaluate(() => document.querySelector('#provider-list').addEventListener('pointerdown', event => { window.providerPointer = event.pointerId; }, { once: true }));
+ const gripBox = await handle.boundingBox(), lastBox = await page.locator('.provider[data-alias="beta"]').boundingBox();
+ await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2); await page.mouse.down();
+ await page.mouse.move(lastBox.x + 60, lastBox.y + lastBox.height - 4);
+ await page.evaluate(() => document.querySelector('#provider-list').dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.providerPointer })));
+ await page.mouse.up();
+ await page.waitForFunction(() => !document.querySelector('.provider.dragging'));
+ assert.deepEqual((await page.evaluate(() => window.fluid.call('state'))).providers.map(provider => provider.alias), ['gamma','alpha','beta']);
+ await handle.focus(); await page.keyboard.press('ArrowDown');
+ await page.waitForFunction(async()=>(await window.fluid.call('state')).providers[1].alias==='gamma');
+ await page.locator('.provider[data-alias="gamma"] .drag-handle').press('ArrowUp');
+ await page.waitForFunction(async()=>(await window.fluid.call('state')).providers[0].alias==='gamma');
+ page.once('dialog',dialog=>dialog.accept());await page.locator('.provider[data-alias="gamma"] .delete-provider').click();
+ await page.waitForFunction(async()=>(await window.fluid.call('state')).providers.length===2);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).providers.gamma,undefined);
+ await page.click('#import-existing');assert.match(await page.locator('#provider-dialog-title').innerText(),/Import current/);assert.equal(await page.locator('#import-login').count(),0);await page.click('#close-dialog');
+
+ await page.click('#updates'); await page.locator('#update-dialog').waitFor({state:'visible'}); await page.locator('#update-title').waitFor(); assert.equal(await page.locator('#update-notes script').count(),0);
+ await page.click('#close-update'); await providersPage(page); await page.click('#star'); await providersPage(page);
+ const folder=path.join(project,'.desktop-test');await page.screenshot({path:path.join(folder,'liquid-light.png')});
+ await page.click('#theme-button');await page.click('button[data-theme="dark"]'); await providersPage(page);await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(folder,'liquid-dark.png')});
+});
+
+test('subscription verification stays in its dialog and disappears after approval', { skip: !enabled || process.platform === 'win32', timeout: 45000 }, async t => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-login-ui-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const binary = path.join(fixture, 'codex'), approval = path.join(fixture, 'approved');
+  fs.writeFileSync(binary, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+console.log('https://auth.openai.com/codex/device TEST-1234');
+const timer = setInterval(() => { if (!fs.existsSync(process.env.SWITCH_TEST_APPROVAL)) return;
+fs.writeFileSync(path.join(process.env.CODEX_HOME, 'auth.json'), JSON.stringify({tokens:{access_token:'fixture-only',account_id:'fixture-account'}}));
+clearInterval(timer); process.exit(0); }, 50);
+`, { mode: 0o700 });
+  const { page } = await launch(t, { SWITCH_CODEX_BIN: binary, SWITCH_TEST_APPROVAL: approval });
+  // Exercise the same IPC and authentication flow without opening a browser.
+  await page.click('#add-subscription'); await page.fill('#provider-alias', 'subscription');
+  await page.evaluate(() => window.fluid.call('login', 'subscription'));
+  await page.locator('#login-code').filter({ hasText: 'TEST-1234' }).waitFor();
+  assert.equal(await page.locator('#add-dialog #login-status').count(), 1);
+  assert.equal(await page.locator('#save-provider').isDisabled(), true);
+  await page.screenshot({path:path.join(project,'.desktop-test','subscription-pending.png')});
+  await page.click('#close-dialog'); await page.click('#add-api');
+  assert.equal(await page.locator('#login-status').isVisible(), false);
+  await page.click('#close-dialog'); await page.click('#add-subscription');
+  assert.equal(await page.locator('#provider-alias').inputValue(), 'subscription');
+  fs.writeFileSync(approval, 'approved');
+  await page.locator('#save-provider').filter({ hasText: 'Done' }).waitFor();
+  assert.equal(await page.locator('#login-code').innerText(), '');
+  assert.equal(await page.locator('#open-login').isVisible(), false);
+  assert.equal(await page.locator('#provider-alias').isDisabled(), false);
+  await page.screenshot({path:path.join(project,'.desktop-test','subscription-complete.png')});
+  await page.click('#save-provider'); assert.equal(await page.locator('#add-dialog').isVisible(), false);
+  await page.locator('.provider strong').filter({ hasText: 'subscription' }).waitFor();
+});
+
+test('API import previews its type, close icons center, and model refresh confirms success without network controls', {skip:!enabled,timeout:60000}, async t => {
+  const upstream = http.createServer((_req,res) => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({data:[{id:'gpt-6.1-sol'},{id:'relay-model'}]})); }).listen(0,'127.0.0.1'); await once(upstream,'listening');t.after(()=>upstream.close());
+  const original=`model_provider="relay"\n[model_providers.relay]\nbase_url="http://127.0.0.1:${upstream.address().port}/v1"\nexperimental_bearer_token="fixture-import-secret"\n`;
+  const {page}=await launch(t,{},original);
+  const centered=async id=>assert.equal(await page.locator('#'+id).evaluate(element=>{
+    const button=element.getBoundingClientRect(), glyph=element.querySelector('svg').getBoundingClientRect();
+    return Math.abs(button.x+button.width/2-glyph.x-glyph.width/2)<1 && Math.abs(button.y+button.height/2-glyph.y-glyph.height/2)<1;
+  }),true);
+  await page.click('#import-existing');await page.locator('#import-preview').filter({hasText:'Detected API provider'}).waitFor();
+  assert.equal(await page.locator('#provider-alias').inputValue(),'relay');await centered('close-dialog');
+  assert.equal((await page.locator('#import-preview').innerText()).includes('fixture-import-secret'),false);
+  await page.click('#save-provider');await page.locator('.provider strong').filter({hasText:'relay'}).waitFor();
+  await page.locator('.query-models').click(); await centered('close-models');
+  await page.locator('#models-status').filter({ hasText: 'Catalog refreshed · 2 models' }).waitFor();
+  await page.click('#models-refresh'); await page.locator('#models-refresh:not([disabled])').waitFor();
+  assert.match(await page.locator('#models-status').innerText(), /2 models/);
+  await page.fill('#models-search', 'relay-model'); assert.equal(await page.locator('.catalog-model').count(), 1);
+  const folder = path.join(project, '.desktop-test'); await page.screenshot({ path: path.join(folder, 'provider-models.png') });
+  await page.click('#close-models');
+  assert.equal(await page.locator('[data-tab="network"], #proxy-url, #no-proxy').count(), 0);
+  await page.click('#updates');await page.locator('#update-dialog').waitFor({state:'visible'});await centered('close-update');
+});
+
+test('desktop localizes structured update notes', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  const folder = path.join(project, '.desktop-test'); fs.mkdirSync(folder, { recursive: true });
+  // Replace only this isolated test app's update IPC response; no real release or install is changed.
+  await app.evaluate(({ ipcMain }) => {
+    const notes = '<!-- fluid:notes:en -->\n## Improvements\n- Switch a single **session**.\n<!-- fluid:notes:zh-CN -->\n## 功能改进\n- 为单条**会话**切换模型。\n';
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', (_event, action) => {
+      if (action === 'state') return globalThis.fluidTestState;
+      if (action === 'updates') return {};
+      if (action === 'preferences') { globalThis.fluidTestState.language = globalThis.fluidTestState.language === 'en' ? 'zh-CN' : 'en'; return {}; }
+    });
+    globalThis.fluidTestNotes = notes;
+  });
+  const uiState = { running: true, providers: [], active: 'demo', version: '0.5.4', language: 'en', dark: false, theme: 'light', platform: process.platform,
+    update: { phase: 'available', version: '0.4.4', date: '2026-10-31T00:00:00Z', size: 1024 ** 2 } };
+  await app.evaluate((_electron, state) => { globalThis.fluidTestState = { ...state, update: { ...state.update, notes: globalThis.fluidTestNotes } }; }, uiState);
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: 'Switch a single' }).waitFor();
+  assert.equal(await page.locator('#update-notes li strong').innerText(), 'session');
+  await page.screenshot({ path: path.join(folder, 'update-en.png') });
+  await page.click('#close-update'); await providersPage(page); await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#updates'); await page.locator('#update-notes').filter({ hasText: '为单条会话切换模型' }).waitFor();
+  assert.equal((await page.locator('#update-notes').innerText()).includes('Switch a single'), false);
+  assert.equal((await page.locator('#update-notes').innerText()).includes('<!--'), false);
+  await page.screenshot({ path: path.join(folder, 'update-zh.png') });
+  await app.evaluate(() => { globalThis.fluidTestState.update = { phase: 'current', checkedAt: Date.now() }; });
+  await page.click('#update-retry'); await page.locator('#update-title').filter({ hasText: '已经是最新版本' }).waitFor();
+  assert.equal(await page.locator('#update-warning').isVisible(), false); assert.equal(await page.locator('#update-changes').isVisible(), false);
+  assert.equal((await page.locator('#update-status').innerText()).includes('最新版本'), false);
+  await page.screenshot({ path: path.join(folder, 'update-current.png') });
+});
+
+
+test('sidebar switches each client independently, remembers routing choices and keeps only Settings at the bottom', { skip: !enabled, timeout: 60000 }, async t => {
+  const { app, page, root, home, options } = await launch(t);
+  await page.evaluate(() => window.fluid.call('add-api', { alias: 'codex-main', url: 'https://codex.example/v1', key: 'fixture' }));
+  await page.click('[data-client="claude"]');
+  await page.evaluate(() => window.fluid.call('add-api', { alias: 'claude-main', url: 'https://claude.example', key: 'fixture' }));
+  await page.locator('[data-client-provider="claude"]').filter({ hasText: 'claude-main' }).waitFor();
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call');
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', async (event, action, payload) => {
+      const result = await original(event, action, payload);
+      if (action === 'state') result.lastFailover = { from: 'aos', to: 'elias', status: 403, at: new Date().toISOString() };
+      return result;
+    });
+  });
+  assert.equal(await page.locator('[data-client-provider="codex"]').innerText(), 'codex-main');
+  assert.equal(await page.locator('[data-client="codex"]').innerText(), 'codex-main');
+  assert.equal(await page.locator('[data-client="claude"]').innerText(), 'claude-main');
+  assert.equal(await page.locator('.sidebar footer').count(), 0);
+  assert.equal(await page.locator('.workspace-footer .footer-control').count(), 4);
+  const claudeFile = path.join(options.env.CLAUDE_CONFIG_DIR, 'settings.json');
+  assert.ok(fs.existsSync(claudeFile));
+  await page.click('#routing-toggle');
+  await page.locator('#routing-toggle[aria-checked="false"]').waitFor();
+  assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'true');
+  assert.equal(parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).model_provider, undefined);
+  assert.ok(fs.existsSync(claudeFile));
+  await page.click('#claude-routing-toggle');
+  await page.locator('#claude-routing-toggle[aria-checked="false"]').waitFor();
+  assert.equal(fs.existsSync(claudeFile), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'desktop.json'))).routing, { codex: false, claude: false });
+  await page.click('#routing-toggle'); await page.locator('#routing-toggle[aria-checked="true"]').waitFor();
+  assert.equal(await page.locator('#claude-routing-toggle').getAttribute('aria-checked'), 'false');
+  await page.click('#settings'); await page.locator('#settings-page').waitFor();
+  assert.equal(await page.locator('#providers-page').isVisible(), false);
+  assert.equal(await page.locator('#settings-page .settings-card').count(), 5);
+  assert.equal(await page.locator('#settings-page .setting-row').count(), 2);
+  assert.equal(await page.locator('#open-task-sync').count(), 1);
+  assert.equal(await page.locator('#open-skills, #open-mcp').count(), 2);
+  assert.equal(await page.locator('#uninstall').count(), 1);
+  assert.equal(await page.locator('.workspace-footer .icon-control').count(), 2);
+  // Exercise startup UI through a local IPC fixture; never change OS login items.
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call');
+    globalThis.fluidStartupCalls = [];
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', async (event, action, payload) => {
+      if (action === 'autostart') { globalThis.fluidStartupCalls.push(payload); return {}; }
+      const result = await original(event, action, payload);
+      if (action === 'state' && globalThis.fluidStartupCalls.length) result.loginItem = globalThis.fluidStartupCalls.at(-1);
+      return result;
+    });
+  });
+  await page.click('#autostart'); await page.locator('#autostart[aria-checked="true"]:not([disabled])').waitFor();
+  await page.focus('#autostart'); await page.keyboard.press('Space');
+  await page.locator('#autostart[aria-checked="false"]:not([disabled])').waitFor();
+  assert.deepEqual(await app.evaluate(() => globalThis.fluidStartupCalls), [true, false]);
+  const folder = path.join(project, '.desktop-test');
+  for (const [language, theme, width, height] of [['en', 'light', 960, 780], ['zh-CN', 'dark', 780, 680], ['en', 'light', 780, 680], ['zh-CN', 'dark', 960, 780]]) {
+    await page.click('#language-button'); await page.click(`[data-language="${language}"]`);
+    await page.click('#theme-button'); await page.click(`button[data-theme="${theme}"]`);
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), [width, height]);
+    await page.mouse.move(400, 90);
+    const layout = await page.evaluate(() => {
+      const bounds = id => { const rect = document.getElementById(id).getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; };
+      const footer = document.querySelector('.workspace-footer').getBoundingClientRect(), star = document.getElementById('star').getBoundingClientRect();
+      const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect();
+      const wordmark = document.querySelector('.sidebar-brand strong').getBoundingClientRect(), sidebar = document.querySelector('.sidebar');
+      return { brandLeft: brand.left, originalBrandLeft: sidebar.getBoundingClientRect().left + parseFloat(getComputedStyle(sidebar).paddingLeft) + 8, wordmarkGap: wordmark.left - brand.right, controls: ['language-button', 'theme-button'].map(bounds), settings: bounds('settings'), starCenter: bounds('star'), brandCenter: brand.top + brand.height / 2, brandTop: brand.top, footer: { bottom: footer.bottom, right: footer.right }, star: { bottom: star.bottom, right: star.right }, width: innerWidth, height: innerHeight, scrollWidth: document.body.scrollWidth };
+    });
+    assert.equal(layout.brandLeft, layout.originalBrandLeft, 'the ocean icon retains its original sidebar position');
+    assert.equal(layout.wordmarkGap, 14, 'only the wordmark moves 6px to the right');
+    assert.ok(layout.controls.every(control => Math.abs(control.y - layout.starCenter.y) < 1), 'footer controls share a center line: ' + JSON.stringify(layout));
+    assert.ok(layout.controls[0].x > layout.width / 2 && layout.controls[1].x < layout.starCenter.x, 'language and appearance sit with the bottom-right actions');
+    if (process.platform === 'darwin') assert.ok(layout.brandTop >= 54, 'logo leaves room below the macOS window controls');
+    assert.ok(Math.abs(layout.settings.y - layout.starCenter.y) < 1, 'sidebar settings and footer actions share a bottom baseline');
+    assert.ok(Math.abs(layout.footer.bottom - layout.height) < 1 && Math.abs(layout.footer.right - layout.width) < 1, 'footer stays at the window edge');
+    assert.ok(layout.star.bottom <= layout.height && layout.star.right <= layout.width && layout.scrollWidth === layout.width, 'footer fits without horizontal overflow');
+    assert.equal(await page.locator('#updates').getAttribute('title'), language === 'en' ? 'Check for updates' : '检查更新');
+    await page.screenshot({ path: path.join(folder, `settings-footer-${language}-${theme}.png`), animations: 'disabled' });
+    await providersPage(page); await page.locator('#updates').waitFor({ state: 'visible' }); await page.locator('#star').waitFor({ state: 'visible' });
+    for (const client of ['codex', 'claude']) {
+      await page.click(`[data-client="${client}"]`);
+      await page.locator('.provider').filter({ hasText: `${client}-main` }).waitFor();
+      await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+      assert.equal(await page.locator('.workspace-title, .workspace-route, #current-provider, #status, #failover, [data-i18n="priorityHelp"]').count(), 0);
+      assert.equal(await page.locator('#language-button').isVisible(), true);
+      assert.equal(await page.locator('#theme-button').isVisible(), true);
+      const actions = await page.locator('.provider-actions button').evaluateAll(buttons => buttons.map(button => {
+        const rect = button.getBoundingClientRect();
+        return { top: rect.top, width: rect.width, height: rect.height, contentWidth: button.scrollWidth, innerWidth: button.clientWidth };
+      }));
+      assert.equal(actions.length, 3);
+      assert.ok(actions.every(button => Math.abs(button.top - actions[0].top) < 1 && Math.abs(button.width - actions[0].width) < 1 && Math.abs(button.height - actions[0].height) < 1), 'import and add actions share one row with equal sizes');
+      assert.ok(actions.every(button => button.contentWidth <= button.innerWidth), 'action labels fit at the minimum window width');
+      const alignment = await page.evaluate(() => {
+        // Host menu-bar visibility is unrelated to the provider layout under test.
+        document.getElementById('tray-hint').hidden = true;
+        const header = document.querySelector('.workspace>header');
+        const brand = document.querySelector('.sidebar-brand img').getBoundingClientRect(), panel = document.getElementById('providers').getBoundingClientRect(), footer = document.querySelector('.workspace-footer');
+        return { brandTop: brand.top, panelTop: panel.top, headerRightInset: innerWidth - header.getBoundingClientRect().right + parseFloat(getComputedStyle(document.querySelector('.workspace-footer')).paddingRight), panelRightInset: innerWidth - panel.right, footerRightInset: innerWidth - footer.getBoundingClientRect().right + parseFloat(getComputedStyle(footer).paddingRight) };
+      });
+      assert.ok(Math.abs(alignment.brandTop - alignment.panelTop) < 1, 'provider panel aligns with the sidebar brand instead of leaving an empty header: ' + JSON.stringify(alignment));
+      assert.ok(Math.abs(alignment.headerRightInset - alignment.panelRightInset) < 1 && Math.abs(alignment.footerRightInset - alignment.panelRightInset) < 1, 'page header, panel and footer share horizontal insets');
+    }
+    await page.screenshot({ path: path.join(folder, `providers-footer-${language}-${theme}.png`), animations: 'disabled' });
+    await page.click('#theme-button');
+    await page.locator('#theme-menu').waitFor({ state: 'visible' });
+    const menu = await page.locator('#theme-menu').boundingBox(), trigger = await page.locator('#theme-button').boundingBox();
+    assert.ok(menu.y >= 0 && menu.y + menu.height < trigger.y, 'footer menu opens upwards within the window');
+    await page.screenshot({ path: path.join(folder, `appearance-toolbar-${language}-${theme}.png`), animations: 'disabled' });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#theme-button').getAttribute('aria-expanded'), 'false');
+    await page.click('#settings');
+  }
+  await page.click('[data-client="codex"]'); await page.locator('#providers-page').waitFor();
+  await page.locator('#providers').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-providers-0.5.16-en.png'), animations: 'disabled' });
+});
+
+test('zero quota uses an outlined warning icon; Go, plan tiers, purchased credits and unknown values remain distinct', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  const window = { remaining: 0, resetsAt: Date.now() + 100000 };
+  const accounts = ['plus', 'prolite', 'pro', 'promax', 'free', 'go'].map(plan => ({ alias: plan, type: 'account', plan, usage: { status: 'ready', fetchedAt: Date.now(), data: { plan, fiveHour: window, weekly: window, credits: 0, unlimited: false } } }));
+  accounts.push({ alias: 'unknown', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: null, weekly: null, credits: null } } });
+  accounts.push({ alias: 'go-short', type: 'account', plan: 'go', usage: { status: 'ready', data: { plan: 'go', fiveHour: { remaining: 60 }, weekly: null, credits: 0 } } });
+  accounts.push({ alias: 'free-month', type: 'account', plan: 'free', usage: { status: 'ready', data: { plan: 'free', fiveHour: null, weekly: null, monthly: { remaining: 97, resetsAt: Date.now() + 30 * 86400000 }, credits: 0 } } });
+  accounts.push({ alias: 'purchased', type: 'account', plan: 'plus', usage: { status: 'ready', data: { plan: 'plus', fiveHour: window, weekly: window, credits: 12 } } });
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
+    powerMonitor.emit('lock-screen');
+    const state = { client: 'codex', running: true, active: 'plus', providers, language: 'en', theme: 'light', dark: false, update: { phase: 'idle' } };
+    ipcMain.removeHandler('fluid:call'); ipcMain.handle('fluid:call', (_event, action, payload) => { if (action === 'preferences') { Object.assign(state, payload); state.dark = state.theme === 'dark'; } return state; });
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed', state);
+  }, accounts);
+  for (const [alias, label] of [['plus','Plus'], ['prolite','Pro 100'], ['pro','Pro 200'], ['promax','Pro 500'], ['free','Free'], ['go','Go']]) {
+    const row = page.locator(`.provider[data-alias="${alias}"]`);
+    await row.locator('.identity small').filter({ hasText: 'ChatGPT ' + label }).waitFor();
+    assert.equal(await row.locator('.quota.stale, .quota-message').count(), 0);
+    assert.match(await row.locator('.quota-center').getAttribute('aria-label'), /Remaining credits\n0$/);
+    assert.equal(await row.locator('.quota-exhausted-outline').count(), 1);
+    assert.equal(await row.locator('.quota-exhausted-mark').count(), 1);
+    assert.equal(await row.locator('.quota-center rect').count(), 0);
+    assert.equal(await row.locator('.quota-progress[visibility="hidden"]').count(), ['plus', 'free', 'go'].includes(alias) ? 2 : 1);
+  }
+  const short = page.locator('[data-alias="go-short"]');
+  assert.equal(await short.locator('.quota-segment').count(), 1);
+  assert.match(await short.locator('.quota-segment').getAttribute('aria-label'), /5h: 60% remaining/);
+  assert.equal(await short.locator('.quota-segment.unknown').count(), 0);
+  const monthly = page.locator('[data-alias="free-month"]');
+  assert.equal(await monthly.locator('.quota-segment').count(), 1);
+  assert.match(await monthly.locator('.quota-segment').getAttribute('aria-label'), /Month: 97% remaining/);
+  assert.equal(await monthly.locator('.quota-progress').getAttribute('stroke-dashoffset'), '3');
+  await monthly.locator('.quota-segment').focus(); await monthly.locator('.quota-tooltip').filter({ hasText: 'Month: 97% remaining' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'quota-month-0.5.25-en.png'), animations: 'disabled' });
+  assert.equal(await page.locator('[data-alias="purchased"] .quota-exhausted-mark').count(), 0, 'purchased credits can remain usable after included quota is exhausted');
+  const plus = page.locator('[data-alias="plus"]');
+  assert.equal(await plus.locator('.quota-segment').count(), 2);
+  await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: 'Remaining credits\n0' }).waitFor();
+  await plus.locator('.quota-center').evaluate(element => element.blur());
+  const unknown = page.locator('[data-alias="unknown"]');
+  assert.equal(await unknown.locator('.quota-segment.unknown').count(), 2);
+  assert.match(await unknown.locator('.quota-center').getAttribute('aria-label'), /does not mean.*failed/);
+  const client = page.locator('[data-client="codex"]'); await client.hover();
+  assert.deepEqual(await client.evaluate(element => ({ shadow: getComputedStyle(element).boxShadow, transform: getComputedStyle(element).transform, backdrop: getComputedStyle(element).backdropFilter })), { shadow: 'none', transform: 'none', backdrop: 'none' });
+  for (const name of ['codex', 'claude']) assert.match(await page.locator(`.sidebar .${name}-logo`).evaluate(element => getComputedStyle(element).maskImage), new RegExp(`${name}-mark\\.png`));
+  await page.mouse.move(450, 100);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-en.png'), animations: 'disabled' });
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  assert.match(await monthly.locator('.quota-segment').getAttribute('aria-label'), /月额度：剩余 97%/);
+  await plus.locator('.quota-center').focus(); await plus.locator('.quota-tooltip').filter({ hasText: '剩余购买额度\n0' }).waitFor();
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'sidebar-zero-quota-0.5.17-zh-dark.png'), animations: 'disabled' });
+});
+
+test('Claude account rows display Free, Pro, Max and Ultra while missing plans stay unknown', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  const providers = ['free', 'pro', 'max', 'ultra', 'unknown'].map(plan => ({ alias: plan, type: 'account', plan: plan === 'unknown' ? null : plan, active: plan === 'free' }));
+  await app.evaluate(({ ipcMain, BrowserWindow, powerMonitor }, providers) => {
+    powerMonitor.emit('lock-screen');
+    const state = { client: 'claude', running: true, active: 'free', providers, language: 'en', theme: 'light', dark: false, version: '0.5.20', update: { phase: 'idle' } };
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', (_event, action, payload) => { if (action === 'preferences') { Object.assign(state, payload); state.dark = state.theme === 'dark'; } return state; });
+    BrowserWindow.getAllWindows()[0].webContents.send('fluid:changed', state);
+  }, providers);
+  for (const plan of ['free', 'pro', 'max', 'ultra']) {
+    const detail = page.locator(`[data-alias="${plan}"] .identity small`);
+    await detail.filter({ hasText: `Claude ${plan[0].toUpperCase() + plan.slice(1)}` }).waitFor();
+    assert.equal(await detail.getAttribute('title'), 'Claude subscription plan.');
+  }
+  await page.locator('[data-alias="unknown"] .identity small').filter({ hasText: 'Claude · Plan unknown' }).waitFor();
+  assert.equal(await page.locator('.quota, .reset-quota, #claude-desktop-hint').count(), 0);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-en-light.png'), animations: 'disabled' });
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]'); await providersPage(page);
+  await page.click('#theme-button'); await page.click('[data-theme="dark"]'); await providersPage(page);
+  const unknown = page.locator('[data-alias="unknown"] .identity small');
+  await unknown.filter({ hasText: 'Claude · 套餐未知' }).waitFor();
+  assert.match(await unknown.getAttribute('title'), /不代表该账号为 Free/);
+  assert.equal(await page.locator('[data-alias="pro"] .identity small').innerText(), 'Claude Pro');
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'claude-plans-zh-CN-dark.png'), animations: 'disabled' });
+});
+
+test('images need no separate settings, login or consent after a saved API is configured', { skip: !enabled, timeout: 20000 }, async t => {
+  const { page, root, home } = await launch(t);
+  await page.click('#add-api'); await page.fill('#provider-alias', 'text-api'); await page.fill('#api-key', 'private-key'); await page.click('#save-provider');
+  await page.locator('[data-alias="text-api"]').waitFor();
+  const authFile = path.join(home, 'auth.json'), auth = '{"auth_mode":"apikey","OPENAI_API_KEY":"private-original"}\n'; fs.writeFileSync(authFile, auth);
+  await page.click('#settings');
+  assert.equal(await page.locator('.web-images-setting, #web-images-open, #web-images-toggle, #web-images-disconnect').count(), 0);
+  assert.equal(parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).features.image_generation, true);
+  assert.equal(fs.readFileSync(authFile, 'utf8'), auth); assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'state.json'))).active, 'text-api');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  assert.doesNotMatch(await page.locator('#settings-page').innerText(), /图片登录|网页图片备用/);
+  await page.screenshot({ path: path.join(project, '.desktop-test', 'account-images-settings-preview.png'), animations: 'disabled' });
+});
+
+test('provider toggles and usage dashboard share glass styles and keep unavailable usage distinct', { skip: !enabled, timeout: 45000 }, async t => {
+  const {page,root}=await launch(t,{},undefined,root=>{
+    addProvider('primary',{type:'api',baseUrl:'https://example.test/v1',apiKey:'PRIVATE'},root);
+    addProvider('backup',{type:'api',baseUrl:'https://example.test/v1',apiKey:'PRIVATE'},root);
+    const directory=path.join(root,'usage');fs.mkdirSync(directory);const at=Date.now();
+    const entries=Array.from({length:40},(_,i)=>({at:at-i*60000,client:i%2?'claude':'codex',provider:'primary',model:i%2?'deepseek-v4-pro':'gpt-6.2-sol',account:false,status:200,outcome:'success',durationMs:3000,firstTokenMs:500,input:10000,output:1000,cached:8000}));
+    fs.writeFileSync(path.join(directory,new Date(at).toISOString().slice(0,10)+'.jsonl'),entries.map(row=>JSON.stringify(row)).join('\n'));
+  });
+  for(const id of ['language-button','theme-button','updates','star'])assert.equal(await page.locator('#'+id).innerText(),'');
+  assert.equal(await page.locator('#language-button').getAttribute('aria-label'),'Language');assert.equal(await page.locator('#theme-button').getAttribute('title'),'Appearance');
+  await page.locator('.provider[data-alias="primary"] .provider-toggle').click();
+  await page.locator('.provider[data-alias="primary"] .provider-toggle[aria-checked="false"]').waitFor();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).active,'backup');
+  assert.equal(await page.locator('.provider[data-alias="primary"] .select-provider').isDisabled(),true);
+  await page.locator('.provider[data-alias="backup"] .provider-toggle').click();await page.locator('.provider[data-alias="backup"] .provider-toggle[aria-checked="false"]').waitFor();assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).active,null);
+  await page.locator('.provider[data-alias="primary"] .provider-toggle').click();await page.locator('.provider[data-alias="primary"] .provider-toggle[aria-checked="true"]').waitFor();assert.equal(JSON.parse(fs.readFileSync(path.join(root,'state.json'))).active,'primary');
+  await page.click('#settings');await page.click('#open-usage');await page.locator('#usage-requests').filter({hasText:'40'}).waitFor();
+  assert.notEqual(await page.locator('#usage-cost').textContent(),'—');assert.equal(await page.locator('#usage-table-body tr').count(),25);assert.equal(await page.locator('#usage-page-number').textContent(),'1 / 2');
+  await page.click('#usage-next');await page.locator('#usage-page-number').filter({hasText:'2 / 2'}).waitFor();assert.equal(await page.locator('#usage-table-body tr').count(),15);
+  await page.click('[data-usage-group="models"]');await page.locator('#usage-table-body tr').nth(1).waitFor();assert.equal(await page.locator('#usage-table-body tr').count(),2);
+  await page.click('[data-usage-client="codex"]');await page.locator('#usage-requests').filter({hasText:'20'}).waitFor();
+  assert.equal(await page.locator('#usage-tokens').textContent(),'220K');
+  assert.equal(await page.locator('#usage-cost').textContent(),'$0.296');
+  assert.equal(await page.locator('.usage-unit, #usage-source, #usage-source-note').count(),0);
+  await page.locator('[data-usage-help="tokens"]').hover();await page.locator('#usage-tooltip').waitFor();
+  assert.match(await page.locator('#usage-tooltip-text').innerText(),/Input \+ output tokens/);
+  assert.equal(await page.locator('#usage-tooltip-detail').count(),0);
+  assert.ok((await page.locator('#usage-tooltip-text').innerText()).length<150);
+  await page.screenshot({path:path.join(project,'.desktop-test','usage-help-en-light.png')});
+  await page.keyboard.press('Escape');await page.locator('#usage-tooltip').waitFor({state:'hidden'});
+  await page.click('[data-usage-help="cost"]');assert.match(await page.locator('#usage-tooltip-text').innerText(),/official API rates/);
+  await page.keyboard.press('Escape');
+  await page.screenshot({path:path.join(project,'.desktop-test','usage-en-light.png')});
+  assert.equal(await page.locator('#usage-pricing, #usage-price-dialog, #usage-reporting, #usage-note').count(),0);
+  const controls=await page.locator('.workspace-footer .footer-control').evaluateAll(buttons=>buttons.map(button=>{const s=getComputedStyle(button);return [s.width,s.height,s.borderRadius,s.backgroundColor,s.fontSize]}));
+  assert.equal(controls.length,4);for(const style of controls)assert.deepEqual(style,controls[0]);
+  for(const tab of await page.locator('.usage-tabs button').all())assert.equal(await tab.evaluate(el=>getComputedStyle(el).backdropFilter),'none');
+  await page.click('#language-button');await page.click('[data-language="zh-CN"]');await page.locator('html[lang="zh-CN"]').waitFor();assert.equal(await page.locator('#usage-title').innerText(),'用量统计');
+  assert.equal(await page.locator('#usage-tokens').textContent(),'220K');assert.equal(await page.locator('#usage-cost').textContent(),'$0.296');
+  await page.locator('[data-usage-help="cache"]').focus();await page.locator('#usage-tooltip').waitFor();
+  assert.match(await page.locator('#usage-tooltip-text').innerText(),/缓存读取 Token ÷ 总输入 Token/);
+  assert.ok((await page.locator('#usage-tooltip-text').innerText()).length<80);
+  const tipBox=await page.locator('#usage-tooltip').boundingBox();assert.ok(tipBox.x>=0&&tipBox.y>=0&&tipBox.x+tipBox.width<=960&&tipBox.y+tipBox.height<=780);
+  await page.screenshot({path:path.join(project,'.desktop-test','usage-help-zh-light.png')});
+  await page.keyboard.press('Escape');
+  await page.screenshot({path:path.join(project,'.desktop-test','usage-zh-light.png')});
+  await page.click('#theme-button');await page.click('[data-theme="dark"]');await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');await page.screenshot({path:path.join(project,'.desktop-test','usage-zh-dark.png')});
+  await page.locator('[data-usage-help="tokens"]').hover();await page.screenshot({path:path.join(project,'.desktop-test','usage-help-zh-dark.png')});
+  await page.click('#close-usage');assert.equal(await page.locator('#settings-overview').isVisible(),true);assert.equal(await page.locator('#usage-tooltip').isVisible(),false);
+});
+
+test('usage units preserve large token totals and tiny nonzero USD costs in both languages', { skip: !enabled, timeout: 45000 }, async t => {
+  const { app, page } = await launch(t);
+  await app.evaluate(({ ipcMain }) => {
+    const original = ipcMain._invokeHandlers.get('fluid:call');
+    ipcMain.removeHandler('fluid:call');
+    ipcMain.handle('fluid:call', async (event, action, payload) => {
+      const data = await original(event, action, payload);
+      if (action === 'usage-stats') {
+        Object.assign(data.summary, { input: 838000000, output: 0, reported: 1, priced: 1, cost: .0000001, requests: 1 });
+        data.daily = data.daily.map((day, i) => ({ ...day, cost: i === data.daily.length - 1 ? .0000001 : 0 }));
+      }
+      return data;
+    });
+  });
+  await page.click('#settings'); await page.click('#open-usage');
+  await page.locator('#usage-tokens').filter({ hasText: '838M' }).waitFor();
+  assert.equal(await page.locator('#usage-cost').textContent(), '<$0.000001');
+  await page.click('[data-usage-metric="cost"]');
+  assert.ok((await page.locator('.usage-axis').allTextContents()).includes('<$0.000001'));
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  assert.equal(await page.locator('#usage-tokens').textContent(), '838M');
+  await page.locator('[data-usage-help="cost"]').hover(); await page.locator('#usage-tooltip').waitFor();
+  assert.match(await page.locator('#usage-tooltip-text').innerText(), /未知价格不计入金额/);
+});
+
+test('usage distinguishes unconfirmed outcomes from explicit upstream failures and explains HTTP status', { skip: !enabled, timeout: 45000 }, async t => {
+  const { page } = await launch(t, {}, undefined, root => {
+    addProvider('relay', { type: 'api', baseUrl: 'https://example.test/v1', apiKey: 'fixture' }, root);
+    const at = Date.now(), directory = path.join(root, 'usage'); fs.mkdirSync(directory);
+    const entry = { at, client: 'codex', provider: 'relay', model: 'gpt-6.1-sol', status: 200, outcome: 'failed', durationMs: 100 };
+    fs.writeFileSync(path.join(directory, new Date(at).toISOString().slice(0, 10) + '.jsonl'), [entry, { ...entry, at: at - 1, schema: 2 }].map(row => JSON.stringify(row)).join('\n'));
+  });
+  await page.click('#settings'); await page.click('#open-usage'); await page.locator('#usage-table-body tr').nth(1).waitFor();
+  await page.click('#usage-columns-button');await page.locator('#usage-column-options label').filter({hasText:'Status'}).locator('input').check();await page.keyboard.press('Escape');
+  const rows = page.locator('#usage-table-body tr');
+  assert.equal(await rows.nth(0).locator('td').last().innerText(), '200 · Unconfirmed');
+  assert.match(await rows.nth(0).locator('td').last().getAttribute('title'), /HTTP 200.*Older versions/);
+  assert.equal(await rows.nth(1).locator('td').last().innerText(), '200 · Failed');
+  await page.click('#language-button'); await page.click('[data-language="zh-CN"]');
+  await rows.nth(0).locator('td').last().filter({ hasText: '未确认' }).waitFor();
+  assert.equal(await rows.nth(0).locator('td').last().innerText(), '200 · 未确认');
+  assert.match(await rows.nth(1).locator('td').last().getAttribute('title'), /HTTP 200.*上游尝试/);
+});
+
+test('usage log shows token breakdowns, column choices and HTTP filters without a source selector', { skip: !enabled, timeout: 45000 }, async t => {
+ const {page}=await launch(t,{},undefined,root=>{
+  const at=Date.now(),directory=path.join(root,'usage');fs.mkdirSync(directory);
+  const row={schema:2,at,client:'codex',provider:'relay',model:'gpt-6.1-sol',status:200,outcome:'success',input:100000,output:1000,cached:90000,cacheWrite:5000,durationMs:3000,firstTokenMs:500};
+  fs.writeFileSync(path.join(directory,new Date(at).toISOString().slice(0,10)+'.jsonl'),[row,{...row,at:at-1000,status:429,outcome:'failed'}].map(v=>JSON.stringify(v)).join('\n'));
+ });
+ await page.click('#settings');await page.click('#open-usage');await page.locator('#usage-table-body tr').nth(1).waitFor();
+ assert.equal(await page.locator('[data-usage-count="requests"]').innerText(),'2');
+ const headers=await page.locator('#usage-table-head th').allTextContents();assert.ok(headers.includes('Fresh input'));assert.ok(headers.includes('Cache reads'));assert.ok(headers.includes('App'));
+ const cells=await page.locator('#usage-table-body tr').first().locator('td').allTextContents();assert.ok(cells.includes('5K'));assert.ok(cells.includes('90K'));assert.ok(cells.includes('1K'));assert.ok(cells.includes('400.0 tok/s'));
+ await page.selectOption('#usage-status','429');await page.locator('#usage-requests').filter({hasText:'1'}).waitFor();assert.equal(await page.locator('#usage-table-body tr').count(),1);
+ await page.click('#usage-columns-button');const option=page.locator('#usage-column-options label').filter({hasText:'Cache writes'}).locator('input');await option.check();await page.keyboard.press('Escape');assert.ok((await page.locator('#usage-table-head th').allTextContents()).includes('Cache writes'));
+ await page.click('#close-usage');await page.click('#open-usage');assert.ok((await page.locator('#usage-table-head th').allTextContents()).includes('Cache writes'));
+ assert.equal(await page.locator('#usage-source, #usage-source-note').count(),0);
+ await page.selectOption('#usage-status','');await page.locator('#usage-requests').filter({hasText:'2'}).waitFor();await page.screenshot({path:path.join(project,'.desktop-test','usage-log-details.png')});
+});
+
+test('usage summaries align numeric headers, distinguish duplicate aliases and label image requests without inventing models', { skip: !enabled, timeout: 45000 }, async t => {
+ const {page}=await launch(t,{},undefined,root=>{
+  const at=Date.now(),directory=path.join(root,'usage');fs.mkdirSync(directory);
+  const row={schema:2,at,client:'codex',provider:'aos',model:'gpt-6.1-sol',status:200,outcome:'success',input:1000,output:100,durationMs:3000,firstTokenMs:500};
+  const rows=[row,{...row,client:'claude',model:'deepseek-v4-pro'},{...row,model:'',image:true},{...row,model:''}];
+  fs.writeFileSync(path.join(directory,new Date(at).toISOString().slice(0,10)+'.jsonl'),rows.map(row=>JSON.stringify(row)).join('\n'));
+ });
+ await page.click('#settings');await page.click('#open-usage');await page.locator('#usage-requests').filter({hasText:'4'}).waitFor();
+ await page.click('[data-usage-group="providers"]');await page.locator('#usage-table-body tr').nth(1).waitFor();
+ assert.deepEqual(await page.locator('#usage-table-body tr td:first-child').allTextContents(),['aos · Codex','aos · Claude Code']);
+ for(const group of ['providers','models']){
+  await page.click(`[data-usage-group="${group}"]`);
+  await page.waitForFunction(group=>document.querySelector('#usage-table-head th')?.textContent===group,group==='models'?'Model':'Provider');
+  assert.equal(await page.locator('#usage-table-head th').evaluateAll(cells=>cells.slice(1).every(cell=>getComputedStyle(cell).textAlign==='right')),true);
+  await page.setViewportSize({width:960,height:780});
+  assert.equal(await page.locator('.usage-table-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
+ }
+ const labels=await page.locator('#usage-table-body tr td:first-child').allTextContents();
+ assert.ok(labels.includes('Image generation'));assert.ok(labels.includes('Model not recorded'));assert.ok(!labels.includes('Session log'));
+ await page.click('#language-button');await page.click('[data-language="zh-CN"]');
+ await page.locator('#usage-table-head th').first().filter({hasText:'模型'}).waitFor();
+ const translated=await page.locator('#usage-table-body tr td:first-child').allTextContents();assert.ok(translated.includes('图片生成'));assert.ok(translated.includes('未记录模型'));
+ await page.screenshot({path:path.join(project,'.desktop-test','usage-summary-aligned.png')});
+});

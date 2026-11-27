@@ -1,0 +1,393 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { init, aliasName, addProvider, editProvider, removeProvider, activate, readState, providerOrder, setOrder, baseURL, accountAuth, atomic, type Client, type Provider, type ProviderEdit } from '../src/store.js';
+import { createReauth, expired } from '../src/auth.js';
+import { codexModels, discoverModels, discoverClaudeModels } from '../src/catalog.js';
+import { claudeModelMapping } from '../src/claude-models.js';
+import { modelContexts as validateModelContexts, providerModels } from '../src/provider-models.js';
+import { claudeHome as defaultClaudeHome, claudeAuth, claudeExpired, existingClaudeAuth, startClaudeLogin, removeClaudeLogin, type ClaudeAuth } from '../src/claude-auth.js';
+import { randomUUID } from 'node:crypto';
+import { networkEnvironment } from '../src/network.js';
+import { detectSystemProxy, desktopNetworkSettings, proxyEnvironment } from './network.js';
+import { DesktopRuntime, protectDirectory, repairPreferencesAccess } from './runtime.js';
+import { existingProvider } from './import.js';
+import { SubscriptionUsage } from './usage.js';
+import { planLabel, claudeSavedPlan } from '../src/plans.js';
+import { codexContext, syncNativeCredentials } from './config.js';
+import { codexResetCredits } from './reset-credits.js';
+import { SessionSync } from '../src/task-sync.js';
+import type { ModelContexts, ModelEntry } from '../src/provider-models.js';
+import type { ClaudeModelMapping } from '../src/claude-models.js';
+import type { CodexExecutable } from '../src/codex-binary.js';
+
+export interface Preferences {
+  client?: Client;
+  syncClient?: Client;
+  routing?: Partial<Record<Client, boolean>>;
+  language?: 'en' | 'zh-CN';
+  theme?: 'system' | 'light' | 'dark';
+  startAtLogin?: boolean;
+  webImages?: boolean;
+}
+export interface AddAPI { alias: string; url?: string; key: string; claudeModels?: ClaudeModelMapping; }
+export interface EditProvider extends Partial<AddAPI> {
+  enabled?: boolean;
+  original: string;
+  alias: string;
+  modelCatalog?: ModelEntry[] | null;
+  modelContexts?: ModelContexts;
+  expectedRevision?: number;
+}
+interface DeviceSignIn {
+  alias: string;
+  phase: 'starting' | 'pending' | 'complete' | 'failed';
+  message: string;
+  url?: string;
+  code?: string;
+  codeRequired?: boolean;
+}
+interface ControllerOptions {
+  root: string; codexHome: string; binary: CodexExecutable; claudeHome?: string;
+  claudeDesktop?: ReturnType<typeof import('../src/claude-desktop.js').claudeDesktopPaths>; port?: number;
+  env?: NodeJS.ProcessEnv; detectProxy?: typeof detectSystemProxy; resetRequest?: typeof codexResetCredits;
+  repairPreferences?: typeof repairPreferencesAccess;
+  changed?: () => void;
+}
+
+export class DesktopController {
+  declare root: string;
+  declare codexHome: string;
+  declare binary: CodexExecutable;
+  declare originalEnv: NodeJS.ProcessEnv;
+  declare detectProxy: typeof detectSystemProxy;
+  declare detectedProxy: Awaited<ReturnType<typeof detectSystemProxy>>;
+  declare networkInfo?: ReturnType<typeof desktopNetworkSettings>;
+  declare login: DeviceSignIn | null;
+  declare claudeLogin?: ReturnType<typeof startClaudeLogin> | null;
+  declare reauth: ReturnType<typeof createReauth>;
+  declare runtime: DesktopRuntime;
+  declare usage: SubscriptionUsage;
+  declare claudeUsage: SubscriptionUsage;
+  declare preferencesFile: string;
+  declare preferencesError?: string | null;
+  declare preferencesRecovery?: ReturnType<typeof repairPreferencesAccess>;
+  declare lastPreferences?: Preferences;
+  declare repairPreferences: typeof repairPreferencesAccess;
+  declare resetRequest: typeof codexResetCredits;
+  declare resetPending: Map<string, Promise<{ outcome: string }>>;
+  declare taskSync: SessionSync;
+  declare changed: () => void;
+
+  constructor({ root, codexHome, claudeHome = defaultClaudeHome(), claudeDesktop, binary, port = 18345, env = process.env, detectProxy = detectSystemProxy, resetRequest = codexResetCredits, repairPreferences = repairPreferencesAccess, changed = () => {} }: ControllerOptions) {
+    Object.assign(this, { root, codexHome, binary, changed });
+    this.originalEnv = { ...env }; this.detectProxy = detectProxy; this.detectedProxy = {};
+    protectDirectory(root);
+    this.login = null;
+    this.reauth = createReauth({ binary, changed });
+    this.runtime = new DesktopRuntime({ root, codexHome, claudeHome, claudeDesktop, port });
+    this.usage = new SubscriptionUsage({ root, changed, refreshAuth: (provider, signal) => codexModels({ binary, provider, signal }) });
+    this.claudeUsage = new SubscriptionUsage({ root, client: 'claude', changed });
+    this.preferencesFile = path.join(root, 'desktop.json');
+    this.repairPreferences = repairPreferences;
+    this.resetRequest = resetRequest; this.resetPending = new Map();
+    this.taskSync = new SessionSync({ root, codexHome, claudeHome, binary, managedSchedule: true, changed });
+    this.taskSync.client = this.preferences().syncClient || 'codex';
+  }
+  get client() { return this.preferences().client || 'codex'; }
+  get providerRoot() { return this.client === 'claude' ? path.join(this.root, 'claude') : this.root; }
+  get currentLogin() { return this.client === 'claude' ? this.claudeLogin : this.login; }
+  clientSelection(client: Client) {
+    if (!['codex', 'claude'].includes(client)) throw new Error('Choose Codex or Claude Code.');
+    this.setPreferences({ client }); return this.snapshot();
+  }
+  preferences(): Preferences {
+    try {
+      const preferences = JSON.parse(fs.readFileSync(this.preferencesFile, 'utf8'));
+      this.preferencesError = null; this.lastPreferences = preferences;
+      return preferences;
+    } catch (error) {
+      if (error.code === 'ENOENT') { this.preferencesError = null; this.lastPreferences = {}; return {}; }
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+      if (!this.preferencesRecovery && ['EPERM', 'EACCES'].includes(error.code)) {
+        this.preferencesRecovery = this.repairPreferences(this.preferencesFile);
+        if (this.preferencesRecovery === 'repaired') return this.preferences();
+      }
+      this.preferencesError = error.code;
+      return this.lastPreferences || {};
+    }
+  }
+  setPreferences(patch: Preferences) {
+    for (const [key, value] of Object.entries(patch)) {
+      const valid = key === 'routing' ? value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(client => ['codex', 'claude'].includes(client) && typeof value[client] === 'boolean') : ['client', 'syncClient'].includes(key) ? ['codex', 'claude'].some(item => item === value) : key === 'language' ? ['en', 'zh-CN'].some(item => item === value) : key === 'theme' ? ['system', 'light', 'dark'].some(item => item === value) : key === 'startAtLogin' && typeof value === 'boolean';
+      if (!valid) throw new Error('Invalid desktop preference.');
+    }
+    const current = this.preferences();
+    if (this.preferencesError) throw new Error('Restore access to desktop.json before saving desktop preferences.');
+    const next = { ...current, ...patch }; delete next.webImages;
+    atomic(this.preferencesFile, next);
+  }
+  async start() {
+    if (!this.networkInfo) await this.configureNetwork();
+    this.usage.closed = false;
+    this.claudeUsage.closed = false;
+    Object.assign(this.runtime.routes, { codex: true, claude: true }, this.preferences().routing);
+    await this.runtime.start();
+    this.taskSync.closed = false;
+    this.taskSync.setPaused(false);
+  }
+  resetCards(alias) {
+    if (this.client !== 'codex') throw new Error('Reset cards are available for Codex subscriptions only.');
+    const provider = readState(this.root).providers[aliasName(alias)];
+    if (provider?.type !== 'account') throw new Error('Choose a subscription account.');
+    return this.resetRequest({ binary: this.binary, provider });
+  }
+  async consumeReset({ alias, creditId, idempotencyKey }: { alias?: string; creditId?: string; idempotencyKey?: string } = {}) {
+    if (this.client !== 'codex') throw new Error('Reset cards are available for Codex subscriptions only.');
+    const provider = readState(this.root).providers[aliasName(alias)];
+    if (provider?.type !== 'account') throw new Error('Choose a subscription account.');
+    if (typeof creditId !== 'string' || !creditId.trim() || typeof idempotencyKey !== 'string') throw new Error('Choose a reset card and retry.');
+    if (this.resetPending.has(alias)) throw new Error('A reset is already in progress for this account.');
+    const operation = this.resetRequest({ binary: this.binary, provider, creditId, idempotencyKey });
+    this.resetPending.set(alias, operation);
+    try {
+      const result = await operation;
+      // Refresh both authoritative card details and quota after any outcome.
+      const cards = await this.resetCards(alias).catch(() => null);
+      if (this.runtime.active) {
+        await this.usage.entries.get(alias)?.pending;
+        this.usage.snapshot(readState(this.root), alias);
+        await this.usage.entries.get(alias)?.pending;
+      }
+      return { ...result, cards };
+    } finally { this.resetPending.delete(alias); }
+  }
+  async setRouting({ client, enabled }: { client: Client; enabled: boolean }) {
+    if (!['codex', 'claude'].includes(client) || typeof enabled !== 'boolean') throw new Error('Invalid client routing state.');
+    const routing = { codex: true, claude: true, ...this.preferences().routing };
+    await this.runtime.setClientRouting(client, enabled);
+    try { this.setPreferences({ routing: { ...this.runtime.routes } }); }
+    catch (error) { await this.runtime.setClientRouting(client, routing[client]); throw error; }
+    const usage = client === 'claude' ? this.claudeUsage : this.usage;
+    usage.closed = !enabled;
+    return this.snapshot();
+  }
+  async stop() { this.taskSync.setPaused(true); await this.taskSync.pending; await this.runtime.stop(); this.usage.close(); this.claudeUsage.close(); this.reauth.close(); this.claudeLogin?.cancel?.(); }
+  snapshot({ usage: includeUsage = true } = {}) {
+    const preferences = this.preferences();
+    const client = this.client;
+    if (includeUsage && client === 'codex' && this.runtime.clientEnabled('codex')) syncNativeCredentials(this.root, this.codexHome);
+    const state = init(this.providerRoot);
+    const usage = this.runtime.clientEnabled(client) && includeUsage ? (client === 'claude' ? this.claudeUsage : this.usage).snapshot(state) : {};
+    const hasImageAccount = client === 'codex' && Object.values(state.providers).some(provider => provider.enabled !== false && provider.type === 'account');
+    const providers = providerOrder(state).map(alias => {
+      const provider = state.providers[alias];
+      let needsLogin = false, plan: string | null = null;
+      if (provider.type === 'account') {
+        try {
+          if (client === 'claude') {
+            const auth = claudeAuth(provider);
+            needsLogin = usage[alias]?.status === 'signin' || claudeExpired(auth) && !auth.refreshToken;
+            plan = needsLogin ? null : usage[alias]?.data?.plan || claudeSavedPlan(auth);
+          } else needsLogin = expired(accountAuth(provider));
+        }
+        catch { needsLogin = true; }
+        if (client === 'codex') try {
+          const auth = accountAuth(provider);
+          for (const token of [auth.tokens.id_token, auth.tokens.access_token]) {
+            try {
+              const value = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())['https://api.openai.com/auth']?.chatgpt_plan_type;
+              if (planLabel(value)) { plan = value.toLowerCase(); break; }
+            } catch {}
+          }
+        } catch {}
+      }
+      return { alias, plan, enabled: provider.enabled !== false, type: provider.type, revision: provider.revision || 0, baseUrl: provider.baseUrl || '', active: alias === state.active, needsLogin, usage: usage[alias] || null,
+        modelCatalog: provider.modelCatalog ?? null, modelContexts: provider.modelContexts ?? null,
+        ...(client === 'claude' && provider.type === 'api' ? { claudeModels: provider.claudeModels || null } : {}) };
+    });
+    const login = this.currentLogin;
+    const clients = Object.fromEntries((['codex', 'claude'] as const).map(name => {
+      const saved = name === client ? state : init(name === 'claude' ? path.join(this.root, 'claude') : this.root);
+      return [name, { running: this.runtime.clientEnabled(name), active: saved.active }];
+    }));
+    return { client, clients, running: this.runtime.clientEnabled(client), providers, active: state.active,
+      claudeDesktop: client === 'claude' && fs.existsSync(path.join(this.root, 'claude-desktop-session.json')),
+      lastFailover: state.lastFailover || null, login: login && { alias: login.alias, phase: login.phase, message: login.message, url: login.url, code: login.code, codeRequired: !!login.codeRequired },
+      imageTools: client === 'codex' && !!this.runtime.imageTools, imageToolsBlocked: this.runtime.clientEnabled('codex') && hasImageAccount && !this.runtime.imageTools, preferences, preferencesError: this.preferencesError || null, preferencesRecovery: this.preferencesRecovery || null };
+  }
+  switchProvider(alias: string) { activate(aliasName(alias), this.providerRoot); this.runtime.syncClaude(); return this.snapshot(); }
+  order(aliases: string[]) { setOrder(aliases, this.providerRoot); return this.snapshot(); }
+  edit({ original, alias, url, key, claudeModels, modelCatalog, modelContexts, enabled, expectedRevision }: EditProvider) {
+    const provider = readState(this.providerRoot).providers[original];
+    if (!provider) throw new Error('Unknown provider.');
+    const patch: ProviderEdit = { alias, modelCatalog, enabled, expectedRevision };
+    if (modelContexts !== undefined) patch.modelContexts = validateModelContexts(modelContexts, this.client === 'claude');
+    if (provider.type === 'api') {
+      if (url !== undefined && this.apiURL(url) !== provider.baseUrl) patch.baseUrl = this.apiURL(url);
+      if (key?.trim()) patch.apiKey = key;
+      if (this.client === 'claude' && claudeModels !== undefined) patch.claudeModels = claudeModels;
+    }
+    editProvider(original, patch, this.providerRoot);
+    if (this.client === 'codex' && modelContexts !== undefined) {
+      codexContext(this.codexHome, { window: null, compact: null });
+    }
+    if (enabled !== undefined && this.client === 'codex') this.runtime.syncTools();
+    this.runtime.syncClaude();
+    const login = this.currentLogin; if (login?.alias === original) login.alias = alias;
+    return this.snapshot();
+  }
+  async remove(alias: string) {
+    const client = this.client, root = this.providerRoot, provider = readState(root).providers[alias];
+    if (!provider) throw new Error('Unknown provider.');
+    if (client === 'claude' && provider.type === 'account' && path.dirname(path.resolve(provider.accountHome)) === path.join(root, 'accounts')) {
+      if (this.claudeLogin?.alias === alias) this.claudeLogin.cancel?.();
+      await removeClaudeLogin(provider.accountHome);
+    }
+    removeProvider(alias, root);
+    this.runtime.syncTools(); this.runtime.syncClaude();
+    if (provider.type === 'account') {
+      if (client === 'codex') { this.reauth.cancel(provider); if (this.login?.alias === alias) this.login = null; }
+      else if (this.claudeLogin?.alias === alias) { this.claudeLogin.cancel?.(); this.claudeLogin = null; }
+      const owned = path.resolve(provider.accountHome);
+      if (path.dirname(owned) === path.join(root, 'accounts') && fs.existsSync(owned) && !fs.lstatSync(owned).isSymbolicLink() &&
+          fs.realpathSync(path.dirname(owned)) === path.join(fs.realpathSync(root), 'accounts') &&
+          !Object.values(readState(root).providers).some(item => item.accountHome === provider.accountHome)) fs.rmSync(owned, { recursive: true, force: true });
+    }
+    return this.snapshot();
+  }
+  apiURL(url = '') { return baseURL(url.trim() || (this.client === 'claude' ? 'https://api.anthropic.com' : '')); }
+  addAPI({ alias, url = '', key, claudeModels }: AddAPI) {
+    aliasName(alias);
+    if (typeof key !== 'string' || !key.trim() || key.length > 8192) throw new Error('Enter a valid API key.');
+    const mapping = this.client === 'claude' ? claudeModelMapping(claudeModels) : null;
+    addProvider(alias, { type: 'api', baseUrl: this.apiURL(url), apiKey: key.trim(), ...(mapping ? { claudeModels: mapping } : {}) }, this.providerRoot);
+    this.runtime.syncTools(); this.runtime.syncClaude();
+    return this.snapshot();
+  }
+  async startLogin(alias: string) {
+    if (this.client === 'claude') return this.startClaudeSignIn(alias);
+    aliasName(alias);
+    if (this.login && ['starting', 'pending'].includes(this.login.phase)) throw new Error('Finish the current sign-in first.');
+    const state = init(this.root), existing = state.providers[alias];
+    if (existing && existing.type !== 'account') throw new Error('That alias belongs to an API provider.');
+    const accountHome = existing?.accountHome || path.join(this.root, 'accounts', randomUUID());
+    fs.mkdirSync(accountHome, { recursive: true, mode: 0o700 });
+    const task = this.reauth.start({ accountHome });
+    const login: DeviceSignIn = { alias, phase: 'starting', message: 'Preparing official device sign-in…' };
+    this.login = login;
+    task.completed.then(result => {
+      delete login.url; delete login.code;
+      login.message = result.message;
+      if (!result.success) { login.phase = 'failed'; return; }
+      try {
+        if (!existing) addProvider(alias, { type: 'account', accountHome }, this.root);
+        login.phase = 'complete';
+        login.message = 'Signed in successfully.';
+        this.runtime.syncTools();
+      } catch { login.phase = 'failed'; login.message = 'Sign-in completed, but that alias was added elsewhere. Use a different alias.'; }
+    }).finally(this.changed);
+    const message = await task.ready;
+    if (login.phase === 'starting') {
+      login.message = message; login.phase = 'pending';
+      login.url = message.match(/https:\/\/auth\.openai\.com\/codex\/device\b/)?.[0];
+      login.code = message.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/)?.[0];
+    }
+    this.changed();
+    return this.snapshot();
+  }
+  async startClaudeSignIn(alias: string) {
+    aliasName(alias);
+    if (this.claudeLogin && ['starting', 'pending'].includes(this.claudeLogin.phase)) return this.snapshot();
+    const root = path.join(this.root, 'claude'), existing = init(root).providers[alias];
+    if (existing && existing.type !== 'account') throw new Error('That alias belongs to an API provider.');
+    const accountHome = existing?.accountHome || path.join(root, 'accounts', randomUUID());
+    const login = startClaudeLogin({ directory: accountHome }); login.alias = alias; this.claudeLogin = login;
+    login.completed.then(success => {
+      if (!success) return;
+      try {
+        if (!existing) addProvider(login.alias, { type: 'account', accountHome }, root);
+        this.runtime.syncClaude();
+      } catch { login.phase = 'failed'; login.message = 'That alias already exists.'; }
+    }).finally(this.changed);
+    await login.ready; this.changed(); return this.snapshot();
+  }
+  submitLogin(code: string) {
+    if (this.client !== 'claude' || !this.claudeLogin?.codeRequired) throw new Error('Start Claude subscription sign-in first.');
+    this.claudeLogin.submit(code); return this.snapshot();
+  }
+  existingLogin() {
+    if (this.client === 'claude') return this.existingClaudeLogin();
+    const provider = existingProvider({ codexHome: this.codexHome, root: this.root, env: this.originalEnv });
+    let alias = String(provider.name).replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 48) || 'codex-import';
+    try { aliasName(alias); } catch { alias = 'codex-import'; }
+    const state = init(this.root), suggested = alias; let suffix = 2;
+    while (state.providers[alias]) alias = `${suggested}-${suffix++}`;
+    return { type: provider.type, baseUrl: provider.baseUrl || '', alias };
+  }
+  importLogin(alias: string) {
+    if (this.client === 'claude') return this.importClaudeLogin(alias);
+    aliasName(alias);
+    const provider = existingProvider({ codexHome: this.codexHome, root: this.root, env: this.originalEnv });
+    const state = init(this.root);
+    if (state.providers[alias]) throw new Error('That alias already exists.');
+    if (provider.type === 'api') return this.addAPI({ alias, url: provider.baseUrl, key: provider.apiKey });
+    const accountHome = path.join(this.root, 'accounts', randomUUID());
+    atomic(path.join(accountHome, 'auth.json'), provider.auth);
+    addProvider(alias, { type: 'account', accountHome }, this.root);
+    this.runtime.syncTools();
+    return this.snapshot();
+  }
+  async readExistingClaude(): Promise<Extract<Provider, { type: 'api' }> | { type: 'account'; auth: ClaudeAuth; baseUrl?: never }> {
+    const file = path.join(this.runtime.claudeHome, 'settings.json');
+    let settings: { env?: NodeJS.ProcessEnv } = {};
+    const recordFile = path.join(this.root, 'claude-session.json');
+    if (fs.existsSync(recordFile)) {
+      const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+      settings = record.original ? JSON.parse(record.original) : {};
+    } else if (fs.existsSync(file)) settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const env = { ...this.originalEnv, ...settings.env };
+    const apiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+    if (apiKey?.startsWith('sk-ant-oat01-')) return { type: 'account', auth: { accessToken: apiKey, expiresAt: null, scopes: ['user:inference'] } };
+    if (apiKey) return { type: 'api', baseUrl: baseURL(env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'), apiKey };
+    if (env.CLAUDE_CODE_OAUTH_TOKEN) return { type: 'account', auth: { accessToken: env.CLAUDE_CODE_OAUTH_TOKEN, expiresAt: null, scopes: ['user:inference'] } };
+    return { type: 'account', auth: await existingClaudeAuth(this.runtime.claudeHome) };
+  }
+  async existingClaudeLogin() {
+    const provider = await this.readExistingClaude(), state = init(path.join(this.root, 'claude'));
+    let alias = 'claude-import', suffix = 2;
+    while (state.providers[alias]) alias = `claude-import-${suffix++}`;
+    return { alias, type: provider.type, baseUrl: provider.baseUrl || '' };
+  }
+  async importClaudeLogin(alias: string) {
+    aliasName(alias);
+    const root = path.join(this.root, 'claude'), state = init(root);
+    if (state.providers[alias]) throw new Error('That alias already exists.');
+    const provider = await this.readExistingClaude();
+    if (provider.type === 'api') addProvider(alias, provider, root);
+    else {
+      const accountHome = path.join(root, 'accounts', randomUUID());
+      atomic(path.join(accountHome, 'oauth.json'), provider.auth);
+      addProvider(alias, { type: 'account', accountHome }, root);
+    }
+    this.runtime.syncClaude(); return this.snapshot();
+  }
+  async models(alias: string, clientVersion?: string) {
+    const client = this.client, root = this.providerRoot;
+    const state = readState(root), name = aliasName(alias), provider = state.providers[name];
+    if (!provider) throw new Error('Unknown provider.');
+    const result = client === 'claude' ? await discoverClaudeModels(provider, this.root) : await discoverModels(provider, this.root, {
+      binary: this.binary, clientVersion,
+    });
+    const current = readState(root).providers[name];
+    if (this.providerRoot !== root || !current || JSON.stringify(current) !== JSON.stringify(provider)) throw new Error('The provider changed while loading models. Refresh the catalog again.');
+    return { alias: name, client, globalContext: client === 'codex' ? codexContext(this.codexHome) : null, ...result, models: providerModels(provider, result.models), discovered: result.models, fetchedAt: Date.now() };
+  }
+  async configureNetwork() {
+    this.detectedProxy = await this.detectProxy();
+    this.networkInfo = desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
+    Object.assign(process.env, networkEnvironment(this.root, { ...this.originalEnv, ...proxyEnvironment(this.networkInfo) }));
+  }
+  network() {
+    return this.networkInfo || desktopNetworkSettings(this.root, this.originalEnv, this.detectedProxy);
+  }
+}

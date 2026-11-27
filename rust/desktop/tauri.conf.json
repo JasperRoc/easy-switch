@@ -1,0 +1,73 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "fluid",
+  "version": "0.8.0",
+  "identifier": "io.github.jasperroc.fluid",
+  "build": {
+    "frontendDist": "../../.build/webview"
+  },
+  "app": {
+    "windows": [],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'",
+      "capabilities": [
+        {
+          "identifier": "settings-window-drag",
+          "windows": [
+            "settings"
+          ],
+          "permissions": [
+            "core:window:allow-start-dragging",
+            "core:window:allow-internal-toggle-maximize"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "nsis"
+    ],
+    "publisher": "fluid contributors",
+    "category": "DeveloperTool",
+    "icon": [
+      "../../.build/icons/icon.icns",
+      "../../.build/icons/icon.ico",
+      "../../desktop/assets/icon.png"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "headerImage": "../../desktop/assets/installerHeader.bmp",
+        "sidebarImage": "../../desktop/assets/installerSidebar.bmp",
+        "languages": [
+          "English",
+          "SimpChinese"
+        ],
+        "installerHooks": "installer.nsh"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      }
+    },
+    "resources": {
+      "../../docs/LICENSE": "LICENSE",
+      "../../docs/NODE-LICENSE": "NODE-LICENSE",
+      "../../docs/CODEX-LICENSE": "CODEX-LICENSE",
+      "../../docs/CC-SWITCH-LICENSE": "CC-SWITCH-LICENSE",
+      "../../docs/DEEPSEEK-HARNESS-LICENSE": "DEEPSEEK-HARNESS-LICENSE",
+      "../../docs/THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "../../.build/worker": "worker"
+    }
+  },
+  "mainBinaryName": "fluid"
+}

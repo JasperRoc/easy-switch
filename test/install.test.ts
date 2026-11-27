@@ -1,0 +1,128 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { parse } from 'smol-toml';
+import { patchedConfig, prepareConfig, restoreConfig, unitText } from '../src/install.js';
+
+test('global configuration keeps comments and unrelated settings, needs no shell environment', () => {
+  const original = '# settings\nmodel_provider = "old" # previous\nmodel = "test"\n[mcp_servers.example]\ncommand = "tool"\n';
+  const output = patchedConfig(original, 18345, 'local-token');
+  const parsed = parse(output);
+  assert.match(output, /# settings/);
+  assert.equal(parsed.model_provider, 'fluid');
+  assert.equal(parsed.mcp_servers.example.command, 'tool');
+  assert.equal(parsed.model_providers.fluid.http_headers.Authorization, 'Bearer local-token');
+  assert.equal(parsed.model_providers.fluid.env_key, undefined);
+  assert.equal(parsed.model_providers.fluid.model_catalog_url, 'http://127.0.0.1:18345/v1/models');
+  assert.throws(() => patchedConfig(output, 18345, 'token'));
+});
+
+test('updating a legacy installation enables authenticated model discovery without losing settings or restoration', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-legacy-catalog-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
+  const file = path.join(codexHome, 'config.toml'), original = '# My settings\nmodel="selected-model"\n';
+  fs.writeFileSync(file, original); prepareConfig(root, codexHome, 18345, 'token').apply();
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^model_catalog_url.*\n/m, '').replace(/^experimental_bearer_token.*\n/m, ''));
+  recordLegacyHash(root, file);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const installed = fs.readFileSync(file, 'utf8'), config = parse(installed);
+  assert.equal(config.model, 'selected-model'); assert.match(installed, /# My settings/);
+  assert.equal(config.model_providers.fluid.model_catalog_url, 'http://127.0.0.1:18345/v1/models');
+  assert.equal(config.model_providers.fluid.experimental_bearer_token, 'token');
+  prepareConfig(root, codexHome, 18345, 'token').apply(); assert.equal(fs.readFileSync(file, 'utf8'), installed);
+  restoreConfig(root); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+test('installation is idempotent, restores exact original, refuses unsafe restoration', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-install-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
+  const file = path.join(codexHome, 'config.toml');
+  const original = '# original\nmodel="test"\n';
+  fs.writeFileSync(file, original);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const installed = fs.readFileSync(file, 'utf8');
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  assert.equal(fs.readFileSync(file, 'utf8'), installed);
+  fs.appendFileSync(file, '\n# user edit\n');
+  assert.throws(() => restoreConfig(root));
+  fs.writeFileSync(file, installed);
+  restoreConfig(root);
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+test('complex TOML never silently changes unrelated values', () => {
+  const original = 'note = """\nmodel_provider = "fake"\n"""\nmodel_provider = "old"\n';
+  assert.throws(() => patchedConfig(original, 18345, 'token'));
+});
+test('systemd service has stable paths, restart policy, no shell, no secret', () => {
+  const unit = unitText('/home/user/a% b', 18345, '/opt/node/bin/node', '/opt/fluid space/src/daemon.js');
+  assert.match(unit, /Restart=on-failure/);
+  assert.match(unit, /WantedBy=default.target/);
+  assert.match(unit, /ExecStart="[^"\r\n]+\/bin\/fluid" --service\n/);
+  assert.match(unit, /Environment="FLUID_NODE=\/opt\/node\/bin\/node"\n/);
+  assert.match(unit, /Environment="FLUID_WORKER=\/opt\/fluid space\/src\/daemon.js"\n/);
+  assert.match(unit, /a%% b/);
+  assert.doesNotMatch(unit, /Bearer/);
+});
+
+
+test('reinstallation preserves changed model preferences, unrelated settings, and comments', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-config-update-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'); fs.mkdirSync(codexHome);
+  const file = path.join(codexHome, 'config.toml');
+  fs.writeFileSync(file, 'model="gpt-6-sol"\nmodel_reasoning_effort="medium"\n');
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const changed = fs.readFileSync(file, 'utf8').replace('gpt-6-sol', 'gpt-6.1-sol').replace('medium', 'low') + '\n# user preferences\n[mcp_servers.example]\ncommand="tool"\n';
+  fs.writeFileSync(file, changed);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  assert.equal(fs.readFileSync(file, 'utf8'), changed);
+  for (const [from, to] of [['model_provider = "fluid"', 'model_provider = "other"'], ['127.0.0.1:18345', '127.0.0.1:9999'], ['Bearer token', 'Bearer changed']]) {
+    fs.writeFileSync(file, changed.replace(from, to));
+    assert.throws(() => prepareConfig(root, codexHome, 18345, 'token'), /代理接入配置/);
+  }
+  fs.writeFileSync(file, changed);
+  assert.throws(() => prepareConfig(root, codexHome, 18346, 'token'), /路径或端口/);
+  const plan = prepareConfig(root, codexHome, 18345, 'token');
+  fs.appendFileSync(file, '# concurrent edit\n');
+  assert.throws(() => plan.apply(), /安装期间配置被修改/);
+});
+
+test('Linux full uninstall restores client settings, removes account data and completions, and unregisters its package', {skip:process.platform!=='linux'},async t=>{
+ const {service}=await import('../src/install.js'),{installCompletion}=await import('../src/completion.js');
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'switch-uninstall-linux-')),root=path.join(home,'switch'),codexHome=path.join(home,'codex');
+ const previous=process.env.XDG_CONFIG_HOME;process.env.XDG_CONFIG_HOME=path.join(home,'.config');
+ t.after(()=>{if(previous===undefined)delete process.env.XDG_CONFIG_HOME;else process.env.XDG_CONFIG_HOME=previous;});
+ t.after(()=>fs.rmSync(home,{recursive:true,force:true}));fs.mkdirSync(codexHome);
+ const original='model="saved"\n';fs.writeFileSync(path.join(codexHome,'config.toml'),original);
+ prepareConfig(root,codexHome,18345,'token').apply();installCompletion(home,home);fs.mkdirSync(path.join(root,'accounts'));
+ const calls=[];service('uninstall',root,{userHome:home,zshHome:home,execute:(binary,args)=>calls.push([binary,args])});
+ assert.equal(fs.existsSync(root),false);assert.equal(fs.readFileSync(path.join(codexHome,'config.toml'),'utf8'),original);
+ assert.deepEqual(calls.at(-1),['npm',['uninstall','--global','--ignore-scripts','fluid']]);
+ assert.ok(!fs.readFileSync(path.join(home,'.bashrc'),'utf8').includes('fluid'));
+});
+
+test('Linux configuration explicitly enables discovery and portable compaction through legacy upgrades', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-legacy-portable-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, 'codex'), file = path.join(codexHome, 'config.toml'); fs.mkdirSync(codexHome);
+  const original = '# User settings\n[features]\napi_key_model_discovery=false\nshell_tool=true\n';
+  fs.writeFileSync(file, original); prepareConfig(root, codexHome, 18345, 'token').apply();
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^model_catalog_url.*\n/m, '').replace(/^experimental_bearer_token.*\n/m, '').replace(/^capabilities.*\n/m, '').replace('api_key_model_discovery = true','api_key_model_discovery = false'));
+  recordLegacyHash(root, file);
+  prepareConfig(root, codexHome, 18345, 'token').apply();
+  const installed = parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(installed.features.api_key_model_discovery, true);
+  assert.equal(installed.features.shell_tool, true);
+  assert.equal(installed.model_providers.fluid.capabilities.remote_compaction, 'unsupported');
+  restoreConfig(root); assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+
+function recordLegacyHash(root, file) {
+  const recordFile = path.join(root, 'installation.json');
+  const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  fs.writeFileSync(recordFile, JSON.stringify({ ...record, installedHash: createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
+}

@@ -1,0 +1,180 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { atomic, type AccountProvider, type Provider } from './store.js';
+import type { UpstreamFetch } from './network.js';
+
+export interface ClaudeAuth {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number | null;
+  scopes?: string[];
+  subscriptionType?: string;
+  subscriptionTypeSource?: string;
+  subscriptionTypeVerifiedAt?: number;
+  rateLimitTier?: string | null;
+}
+
+interface ClaudeLogin {
+  alias?: string;
+  phase: 'starting' | 'pending' | 'complete' | 'failed';
+  message: string;
+  url?: string;
+  code?: string;
+  codeRequired?: boolean;
+  ready?: Promise<void>;
+  completed?: Promise<boolean>;
+  submit?: (code: string) => void;
+  cancel?: () => void;
+}
+
+const execute = promisify(execFile);
+export function claudeProfileHeaders(token) {
+  return { authorization: `Bearer ${token}`, accept: 'application/json', 'content-type': 'application/json',
+    'cache-control': 'no-cache', 'user-agent': 'fluid', 'anthropic-beta': 'oauth-2025-04-20' };
+}
+export function claudeHeaders(provider: Provider, token: string | null, incoming: NodeJS.Dict<string | string[]> = {}) {
+  const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
+  for (const [key, value] of Object.entries(incoming)) if (/^(anthropic-|x-stainless-|x-claude-code-)/.test(key) || ['user-agent', 'x-app', 'accept'].includes(key)) headers[key] = value as string;
+  if (provider.type === 'account') {
+    headers.authorization = `Bearer ${token}`;
+    headers['anthropic-beta'] = [...new Set((headers['anthropic-beta'] || '').split(',').filter(Boolean).concat('oauth-2025-04-20'))].join(',');
+  } else { headers['x-api-key'] = provider.apiKey; headers.authorization = `Bearer ${provider.apiKey}`; }
+  return headers;
+}
+export const claudeEndpoint = (provider: Provider) => (provider.baseUrl || 'https://api.anthropic.com').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+const keychainService = directory => 'Claude Code-credentials-' + createHash('sha256').update(directory).digest('hex').slice(0, 8);
+export async function removeClaudeLogin(directory, executeImpl = execute) {
+  if (process.platform !== 'darwin') return;
+  try { await executeImpl('/usr/bin/security', ['delete-generic-password', '-s', keychainService(directory), '-a', process.env.USER || os.userInfo().username], { timeout: 10000 }); }
+  catch (error) { if (error.code !== 44) throw new Error('Unable to remove this isolated Claude Keychain login. Allow Keychain access and retry.'); }
+}
+export const claudeHome = () => path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
+export function claudeBinary({ env = process.env, home = os.homedir(), platform = process.platform, arch = process.arch, files = fs } = {}) {
+  if (env.SWITCH_CLAUDE_BIN) return env.SWITCH_CLAUDE_BIN;
+  const name = platform === 'win32' ? 'claude.exe' : 'claude';
+  const dirs = [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', ...(env.PATH || '').split(platform === 'win32' ? ';' : ':').filter(Boolean)];
+  if (platform === 'win32' && env.APPDATA) dirs.push(path.join(env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin'));
+  const usable = file => {
+    try { if (!files.statSync(file).isFile()) return false; files.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK); return true; }
+    catch { return false; }
+  };
+  const binary = dirs.map(dir => path.join(dir, name)).find(usable);
+  if (binary) return binary;
+  // Editor extensions bundle the official native CLI even without a shell command.
+  const extensions = [];
+  for (const editor of ['.vscode', '.vscode-insiders', '.cursor']) {
+    const directory = path.join(home, editor, 'extensions');
+    let entries;
+    try { entries = files.readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const match = /^anthropic\.claude-code-(\d+\.\d+\.\d+)(?:-(.+))?$/.exec(entry.name);
+      if (!match || !entry.isDirectory() || match[2] && match[2] !== `${platform}-${arch}`) continue;
+      const file = path.join(directory, entry.name, 'resources', 'native-binary', name);
+      if (usable(file)) extensions.push({ file, version: match[1] });
+    }
+  }
+  extensions.sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
+  if (extensions.length) return extensions[0].file;
+  throw new Error('Unable to find Claude Code. Install the CLI or its VS Code extension, or set SWITCH_CLAUDE_BIN to its executable.');
+}
+export async function existingClaudeAuth(directory = claudeHome(), { platform = process.platform, explicit = !!process.env.CLAUDE_CONFIG_DIR, executeImpl = execute } = {}): Promise<ClaudeAuth> {
+  let credentials;
+  if (platform === 'darwin') {
+    const suffix = explicit ? '-' + createHash('sha256').update(directory).digest('hex').slice(0, 8) : '';
+    try {
+      const { stdout } = await executeImpl('/usr/bin/security', ['find-generic-password', '-s', `Claude Code-credentials${suffix}`, '-a', process.env.USER || os.userInfo().username, '-w'], { timeout: 10000, maxBuffer: 1024 * 1024 });
+      credentials = JSON.parse(stdout);
+    } catch { /* Claude Code also supports file storage when Keychain is unavailable. */ }
+  }
+  if (!credentials) {
+    try { credentials = JSON.parse(fs.readFileSync(path.join(directory, '.credentials.json'), 'utf8')); } catch {}
+  }
+  const oauth = credentials?.claudeAiOauth;
+  if (!oauth?.accessToken || !oauth.scopes?.includes('user:inference')) throw new Error('No Claude subscription sign-in was found. Add a subscription first.');
+  return oauth;
+}
+export function claudeAuth(provider: Pick<AccountProvider, 'accountHome'>): ClaudeAuth {
+  const auth: ClaudeAuth = JSON.parse(fs.readFileSync(path.join(provider.accountHome, 'oauth.json'), 'utf8'));
+  if (!auth.accessToken) throw new Error('Claude subscription authentication required.');
+  return auth;
+}
+export const claudeExpired = (auth: ClaudeAuth) => typeof auth.expiresAt === 'number' && auth.expiresAt <= Date.now() + 60000;
+const refreshing = new Map<string, Promise<string>>();
+export async function claudeToken(provider: AccountProvider, fetchImpl: UpstreamFetch, { signal, force = false }: { signal?: AbortSignal; force?: boolean } = {}): Promise<string> {
+  const auth = claudeAuth(provider);
+  if (!force && !claudeExpired(auth)) return auth.accessToken;
+  if (!auth.refreshToken) throw new Error('Claude subscription authentication required.');
+  const file = path.join(provider.accountHome, 'oauth.json');
+  if (refreshing.has(file)) {
+    try { return await refreshing.get(file); }
+    catch (error) {
+      // A hidden window may cancel its profile refresh while inference waits.
+      if (signal || error.name !== 'AbortError') throw error;
+      return claudeToken(provider, fetchImpl, { force });
+    }
+  }
+  const operation = (async () => {
+    const response = await fetchImpl('https://platform.claude.com/v1/oauth/token', { method: 'POST', redirect: 'error',
+      headers: { 'content-type': 'application/json' }, signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e' }) });
+    if (!response.ok) {
+      await response.body?.cancel();
+      const error = new Error([400, 401].includes(response.status) ? 'Claude subscription authentication required.' : 'Unable to refresh Claude credentials. Check the connection or proxy.');
+      throw Object.assign(error, { code: [400, 401].includes(response.status) ? 'CLAUDE_AUTH_REQUIRED' : 'CLAUDE_REFRESH_UNAVAILABLE' });
+    }
+    const next = await response.json();
+    signal?.throwIfAborted();
+    if (typeof next.access_token !== 'string' || !Number.isFinite(next.expires_in)) throw new Error('Claude subscription authentication required.');
+    // Never recreate removed credentials or overwrite a separate sign-in.
+    const current = claudeAuth(provider);
+    if (current.accessToken !== auth.accessToken) return current.accessToken;
+    atomic(file, { ...auth, accessToken: next.access_token, refreshToken: next.refresh_token || auth.refreshToken,
+      expiresAt: Date.now() + next.expires_in * 1000 });
+    return next.access_token;
+  })();
+  refreshing.set(file, operation);
+  try { return await operation; } finally { refreshing.delete(file); }
+}
+
+// Delegate browser authentication and PKCE handling to the official client.
+export function startClaudeLogin({ directory, binary = claudeBinary(), env = process.env, spawnImpl = spawn, readAuth = existingClaudeAuth }) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const isolated: NodeJS.ProcessEnv = { ...env, CLAUDE_CONFIG_DIR: directory, BROWSER: process.platform === 'win32' ? undefined : '/usr/bin/true' };
+  isolated.PATH = [...new Set([path.dirname(binary), ...(env.PATH || '').split(path.delimiter), ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : [])])].join(path.delimiter);
+  for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) delete isolated[key];
+  const login: ClaudeLogin = { phase: 'starting', message: 'Opening official Claude subscription sign-in…' };
+  let ready, complete, buffer = '', settled = false, cancelled = false;
+  login.ready = new Promise(resolve => { ready = resolve; });
+  login.completed = new Promise(resolve => { complete = resolve; });
+  const child = spawnImpl(binary, ['auth', 'login', '--claudeai'], { env: isolated, cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const finish = async success => {
+    if (settled) return; settled = true; clearTimeout(timer);
+    try {
+      if (!success) throw Error();
+      const auth = await readAuth(directory, { explicit: true });
+      if (cancelled) throw Error();
+      atomic(path.join(directory, 'oauth.json'), auth);
+      login.phase = 'complete'; login.message = 'Signed in successfully.';
+    } catch { login.phase = 'failed'; login.message = 'Claude sign-in failed. Retry with the latest Claude Code installed.'; }
+    delete login.url; delete login.codeRequired; ready(); complete(login.phase === 'complete');
+  };
+  const timer = setTimeout(() => { child.kill(); finish(false); }, 10 * 60 * 1000);
+  const output = chunk => {
+    buffer = (buffer + chunk.toString()).slice(-32768);
+    const url = buffer.match(/https:\/\/(?:claude\.com|claude\.ai)\/(?:cai\/)?oauth\/authorize\?[^\s\u001b\u0007]+/)?.[0];
+    if (url && !login.url && !settled) { login.url = url; login.phase = 'pending'; login.codeRequired = true; login.message = 'Complete sign-in in your browser, then paste the authorization code here.'; ready(); }
+  };
+  child.stdout.on('data', output); child.stderr.on('data', output);
+  child.stdin.on('error', () => {});
+  child.once('error', () => finish(false)); child.once('close', code => finish(code === 0));
+  login.submit = code => {
+    if (settled || !login.codeRequired || typeof code !== 'string' || !code.trim() || code.length > 4096 || /[\r\n]/.test(code)) throw new Error('Enter the authorization code from the official Claude sign-in page.');
+    child.stdin.write(code.trim() + '\n'); login.codeRequired = false;
+  };
+  login.cancel = () => { cancelled = true; child.kill(); finish(false); };
+  return login;
+}

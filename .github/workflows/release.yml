@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: mac
+            arch: arm64
+          - runner: macos-15-intel
+            platform: mac
+            arch: x64
+          - runner: windows-2022
+            platform: win
+            arch: x64
+          - runner: ubuntu-22.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      HOST_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal
+          rustup default 1.100.0
+      - run: npm ci
+      - run: npm run check
+      - name: Run TypeScript regression tests
+        if: matrix.platform != 'win'
+        run: npm test -- --test-concurrency=4
+      - name: Build and test Linux gateway
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          cargo test --locked --manifest-path rust/desktop/Cargo.toml
+          cargo build --release --locked --manifest-path rust/desktop/Cargo.toml
+          export SWITCH_TEST_NATIVE_GATEWAY="$PWD/rust/desktop/target/release/fluid"
+          node scripts/test.ts test/native-gateway.integration.test.ts
+          version="$(node -p 'require("./package.json").version')"
+          mkdir -p "dist/native-$version"
+          cp "$SWITCH_TEST_NATIVE_GATEWAY" "dist/native-$version/fluid-$version-linux-$HOST_ARCH"
+      - name: Import Apple Developer ID certificate when configured
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if test -z "$APPLE_CERTIFICATE"; then
+            echo "No Developer ID certificate configured; producing an ad hoc preview."
+            exit 0
+          fi
+          test -n "$APPLE_SIGNING_IDENTITY" || { echo "Missing APPLE_SIGNING_IDENTITY"; exit 1; }
+          certificate_file="$RUNNER_TEMP/fluid-signing.p12"
+          signing_keychain="$RUNNER_TEMP/fluid-signing.keychain-db"
+          signing_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$signing_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_file"
+          security create-keychain -p "$signing_password" "$signing_keychain"
+          security set-keychain-settings -lut 21600 "$signing_keychain"
+          security unlock-keychain -p "$signing_password" "$signing_keychain"
+          security import "$certificate_file" -k "$signing_keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$signing_password" "$signing_keychain"
+          security list-keychains -d user -s "$signing_keychain"
+          rm -f "$certificate_file"
+      - name: Build and check macOS packages
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm run desktop:build:mac -- "$HOST_ARCH"
+          node scripts/verify-mac-artifacts.ts dist/native-*/*-mac-"$HOST_ARCH".dmg
+          export SWITCH_TEST_NATIVE_DESKTOP="$(find rust/desktop/target -path '*/bundle/macos/fluid.app/Contents/MacOS/fluid' -type f -print -quit)"
+          export SWITCH_TEST_NATIVE_DESKTOP="$PWD/$SWITCH_TEST_NATIVE_DESKTOP"
+          node scripts/test.ts test/native-gateway.integration.test.ts
+      - name: Remove temporary Apple signing keychain
+        if: always() && matrix.platform == 'mac'
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/fluid-signing.p12"
+          if test -f "$RUNNER_TEMP/fluid-signing.keychain-db"; then
+            security delete-keychain "$RUNNER_TEMP/fluid-signing.keychain-db"
+          fi
+      - name: Run Windows-specific regression tests
+        if: matrix.platform == 'win'
+        timeout-minutes: 5
+        run: npm test -- --test-timeout=90000 test/desktop-permissions.test.ts test/desktop-uninstall.test.ts test/desktop-updater.test.ts test/desktop-runtime.test.ts test/task-sync.test.ts test/claude-sync.test.ts test/linux-package.test.ts test/session-usage.test.ts test/account-images.test.ts test/catalog.test.ts
+      - name: Verify Windows saved-account image browser transport
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $env:SWITCH_TEST_IMAGE_BROWSER = '1'
+          node scripts/test.ts --test-timeout=90000 test/account-images.integration.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and check the Windows installer
+        if: matrix.platform == 'win'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run desktop:build:win
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Get-ChildItem dist -Recurse -File -Filter '*-win-x64.exe' | Select-Object -First 1
+          if (!$installer) { throw 'Missing NSIS installer' }
+          .\scripts\verify-windows-artifacts.ps1 $installer.FullName
+      - uses: actions/upload-artifact@v6
+        with:
+          name: fluid-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/native-*/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: fluid-*
+          merge-multiple: true
+          path: assets
+      - name: Publish verified packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          test "v$version" = "$RELEASE_TAG"
+          cd "assets/native-$version"
+          packages=(
+            "fluid-$version-mac-arm64.dmg"
+            "fluid-$version-mac-arm64.zip"
+            "fluid-$version-mac-x64.dmg"
+            "fluid-$version-mac-x64.zip"
+            "fluid-$version-win-x64.exe"
+            "fluid-$version-linux-arm64"
+            "fluid-$version-linux-x64"
+          )
+          sha256sum "${packages[@]}" > "SHA256SUMS-$version.txt"
+          if test -f "../../docs/releases/$version.md"; then
+            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid $version" --prerelease --notes-file "../../docs/releases/$version.md"
+          else
+            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid $version" --prerelease --generate-notes
+          fi

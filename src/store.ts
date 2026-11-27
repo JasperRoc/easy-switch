@@ -1,0 +1,212 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { claudeModelMapping } from './claude-models.js';
+import { modelCatalog, modelContexts as validateModelContexts, type ModelContexts, type ModelEntry } from './provider-models.js';
+import type { ClaudeModelMapping } from './claude-models.js';
+
+export type Client = 'codex' | 'claude';
+
+interface ManagedProvider {
+  enabled?: boolean;
+  revision?: number;
+  modelCatalog?: ModelEntry[];
+  modelContexts?: ModelContexts;
+}
+
+interface ApiProvider extends ManagedProvider {
+  type: 'api';
+  baseUrl: string;
+  apiKey: string;
+  claudeModels?: ClaudeModelMapping;
+  accountHome?: never;
+}
+
+export interface AccountProvider extends ManagedProvider {
+  type: 'account';
+  accountHome: string;
+  baseUrl?: never;
+  apiKey?: never;
+  claudeModels?: never;
+}
+
+export type Provider = ApiProvider | AccountProvider;
+
+export interface ProviderState {
+  version: 1;
+  token: string;
+  active: string | null;
+  providers: Record<string, Provider>;
+  order?: string[];
+  generation?: number;
+  manualGeneration?: number;
+  reason?: 'manual' | 'failover';
+  lastFailover?: { from: string; to: string; status: number; at: string };
+}
+
+export interface ProviderEdit {
+  enabled?: boolean;
+  alias?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  claudeModels?: ClaudeModelMapping | null;
+  modelCatalog?: ModelEntry[] | null;
+  modelContexts?: ModelContexts;
+  expectedRevision?: number;
+}
+
+export interface CodexAuth {
+  tokens: { access_token: string; account_id: string; id_token?: string; refresh_token?: string };
+  last_refresh?: string;
+  auth_mode?: string;
+  OPENAI_API_KEY?: string | null;
+}
+
+export const home = () => path.resolve(process.env.SWITCH_HOME || path.join(os.homedir(), '.fluid'));
+const reserved = new Set(['add', 'edit', 'rm', 'ls', 'order', 'cc', 'update', 'uninstall', 'help']);
+export function aliasName(value: string) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) || reserved.has(value)) throw new Error('别名须为 1–64 位字母、数字、_、-，且不能是命令名');
+  return value;
+}
+export function atomic(file: string, value: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temp, file);
+  } finally { fs.rmSync(temp, { force: true }); }
+}
+export function readState(root = home()): ProviderState {
+  return JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8'));
+}
+export function init(root = home()) {
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const file = path.join(root, 'state.json');
+  try { fs.writeFileSync(file, JSON.stringify({ version: 1, token: crypto.randomBytes(32).toString('hex'), active: null, providers: {} }), { flag: 'wx', mode: 0o600 }); }
+  catch (e) { if (e.code !== 'EEXIST') throw e; }
+  return readState(root);
+}
+export function update(fn: (state: ProviderState) => void, root = home()) {
+  init(root);
+  const lock = path.join(root, 'write.lock');
+  let fd;
+  try { fd = fs.openSync(lock, 'wx', 0o600); }
+  catch (e) { if (e.code === 'EEXIST') throw new Error('另一个配置写入正在进行；若此前进程崩溃，请确认后删除 write.lock'); throw e; }
+  try {
+    const state = readState(root);
+    fn(state);
+    atomic(path.join(root, 'state.json'), state);
+    return state;
+  } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
+}
+export function addProvider(alias: string, provider: Provider, root = home()) {
+  aliasName(alias);
+  return update(s => {
+    if (Object.hasOwn(s.providers, alias)) throw new Error('别名已存在');
+    const order = providerOrder(s);
+    s.providers[alias] = provider;
+    s.order = [...order, alias];
+    if (!s.active && provider.enabled !== false) s.active = alias;
+  }, root);
+}
+export function providerOrder(state: ProviderState) {
+  return state.order || Object.keys(state.providers);
+}
+export function enabledProviders(state: ProviderState) {
+  return providerOrder(state).filter(alias => state.providers[alias] && state.providers[alias].enabled !== false);
+}
+export function editProvider(alias: string, { alias: renamed = alias, baseUrl, apiKey, claudeModels, modelCatalog: models, modelContexts, enabled, expectedRevision }: ProviderEdit = {}, root = home()) {
+  aliasName(renamed);
+  return update(s => {
+    const provider = Object.hasOwn(s.providers, alias) ? s.providers[alias] : null;
+    if (!provider) throw new Error('Unknown provider.');
+    if (expectedRevision !== undefined && (provider.revision || 0) !== expectedRevision) throw new Error('The provider changed. Reopen the model catalog before saving.');
+    if (renamed !== alias && Object.hasOwn(s.providers, renamed)) throw new Error('That alias already exists.');
+    if (provider.type !== 'api' && (baseUrl !== undefined || apiKey !== undefined || claudeModels !== undefined)) throw new Error('Only API providers have a Base URL, API key or model mapping.');
+    if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 8192)) throw new Error('Enter a valid API key.');
+    if (enabled !== undefined && typeof enabled !== 'boolean') throw new Error('Invalid provider enabled state.');
+    const next = { ...provider, revision: (provider.revision || 0) + 1 };
+    if (enabled !== undefined) next.enabled = enabled;
+    if (baseUrl !== undefined) next.baseUrl = baseURL(baseUrl);
+    if (apiKey !== undefined) next.apiKey = apiKey.trim();
+    if (claudeModels !== undefined) {
+      const mapping = claudeModelMapping(claudeModels);
+      if (mapping) next.claudeModels = mapping; else delete next.claudeModels;
+    }
+    if (models !== undefined) {
+      const catalog = modelCatalog(models);
+      if (catalog) next.modelCatalog = catalog; else delete next.modelCatalog;
+    }
+    if (modelContexts !== undefined) {
+      const contexts = validateModelContexts(modelContexts, false);
+      if (Object.keys(contexts).length) next.modelContexts = contexts; else delete next.modelContexts;
+    }
+    s.order = providerOrder(s).map(name => name === alias ? renamed : name);
+    delete s.providers[alias]; s.providers[renamed] = next;
+    if (s.active === alias) {
+      s.active = renamed;
+    }
+    if (enabled === false && s.active === renamed) s.active = enabledProviders(s)[0] || null;
+    if (enabled === true && !s.active) s.active = renamed;
+    if (s.lastFailover) for (const key of ['from', 'to']) if (s.lastFailover[key] === alias) s.lastFailover[key] = renamed;
+    s.generation = (s.generation || 0) + 1;
+    s.manualGeneration = (s.manualGeneration || 0) + 1;
+    s.reason = 'manual';
+  }, root);
+}
+export function removeProvider(alias: string, root = home()) {
+  return update(s => {
+    if (!Object.hasOwn(s.providers, alias)) throw new Error('未知别名');
+    s.order = providerOrder(s).filter(name => name !== alias);
+    delete s.providers[alias];
+    if (s.active === alias) s.active = enabledProviders(s)[0] || null;
+    s.generation = (s.generation || 0) + 1;
+    s.manualGeneration = (s.manualGeneration || 0) + 1;
+    s.reason = 'manual';
+    if (s.lastFailover?.from === alias || s.lastFailover?.to === alias) delete s.lastFailover;
+  }, root);
+}
+export function setOrder(aliases: string[], root = home()) {
+  return update(s => {
+    if (aliases.length !== Object.keys(s.providers).length ||
+        new Set(aliases).size !== aliases.length ||
+        aliases.some(alias => !Object.hasOwn(s.providers, alias))) {
+      throw new Error('服务商优先级必须包含全部别名，每个恰好一次；运行 fd order 调整');
+    }
+    s.order = [...aliases];
+  }, root);
+}
+export function activate(alias: string, root = home()) {
+  return update(s => {
+    if (!Object.hasOwn(s.providers, alias)) throw new Error('未知别名');
+    if (s.providers[alias].enabled === false) throw new Error('Enable this provider before selecting it.');
+    s.active = alias;
+    s.generation = (s.generation || 0) + 1;
+    s.manualGeneration = (s.manualGeneration || 0) + 1;
+    s.reason = 'manual';
+  }, root);
+}
+export function activateFallback(alias: string, expectedGeneration: number, from: string, status: number, root = home()) {
+  let changed = false;
+  update(s => {
+    if ((s.generation || 0) !== expectedGeneration || s.active !== from || !Object.hasOwn(s.providers, alias) || s.providers[alias].enabled === false) return;
+    s.active = alias;
+    s.generation = (s.generation || 0) + 1;
+    s.reason = 'failover';
+    s.lastFailover = { from, to: alias, status, at: new Date().toISOString() };
+    changed = true;
+  }, root);
+  return changed;
+}
+export function baseURL(value: string) {
+  const u = new URL(value.trim() || 'https://api.openai.com/v1');
+  if (u.username || u.password || u.search || u.hash) throw new Error('Base URL 不允许包含凭据、查询或片段');
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname))) throw new Error('远程上游必须使用 HTTPS');
+  return u.href.replace(/\/+$/, '');
+}
+export function accountAuth(provider: Pick<AccountProvider, 'accountHome'>): CodexAuth {
+  const auth: CodexAuth = JSON.parse(fs.readFileSync(path.join(provider.accountHome, 'auth.json'), 'utf8'));
+  if (!auth.tokens?.access_token || !auth.tokens?.account_id) throw new Error('账号没有有效的 ChatGPT 登录，需要重新认证');
+  return auth;
+}

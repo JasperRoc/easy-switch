@@ -1,0 +1,765 @@
+import { element as $ } from './dom.js';
+import { translate, normalizeLanguage, localizeMessage, type Language, type TranslationValues } from './i18n.js';
+import { releaseNotes } from './release-notes.js';
+import { claudeFamilies, type ClaudeModelMapping } from '../src/claude-models.js';
+import { planLabel } from '../src/plans.js';
+import type { Client } from '../src/store.js';
+import type { Preferences } from './controller.js';
+import type { ModelContext, ModelEntry } from '../src/provider-models.js';
+import type { DesktopSnapshot, DesktopAction, DesktopArgs, DesktopResult, DesktopBridge } from './ipc.js';
+import { usageStatsUI } from './usage-stats.js';
+import { taskSyncUI } from './task-sync.js';
+import { extensionsUI } from './extensions.js';
+const mappingFields = { ...Object.fromEntries(claudeFamilies.map(role => [role, `claude-${role}-model`])), default: 'claude-main-model', subagent: 'claude-agent-model' };
+function showMapping(mapping = {}) {
+  for (const [role, id] of Object.entries(mappingFields)) $<HTMLInputElement>(id).value = mapping?.[role] || '';
+}
+let state: DesktopSnapshot, renderedProviders = '', refreshing: Promise<void> | null = null;
+let pendingRefresh = false;
+let pendingSnapshot: DesktopSnapshot | undefined;
+let language: Language = 'en', appliedLanguage, providerMode = 'account', dragging = null, renderedUpdate = '';
+let providerDrag: { id: number; startY: number; offset: number; moved: boolean; order: string[] } | null = null;
+let pendingUpdateAction: 'update-install' | 'update-download' | 'update-reveal' | undefined;
+let importLoading = false;
+type ProviderRow = DesktopSnapshot['providers'][number];
+let catalogProvider: (ProviderRow & { client: Client }) | null = null, catalogResult: DesktopResult<'models'> | null = null, catalogLoading = false, catalogError = '', catalogRequest = 0;
+let catalogDraft: ModelEntry[] = [], catalogMapping: ClaudeModelMapping = {}, catalogCustom = false, catalogDirty = false, catalogDrag = null;
+let catalogContexts = new Map<string, ModelContext>();
+let contextEntry: ModelEntry | null = null;
+let catalogContextDirty = false;
+let resetAlias = null, resetData = null, resetSelected = null, resetBusy = false, resetLoading = false, resetAttempt = null, resetOutcome = null;
+let renderedState = '';
+let editingProvider: ProviderRow | null = null, settingsOpen = false;
+let lastReauth = '';
+const resetAttempts = new Map();
+const t = (key: string, values?: TranslationValues) => {
+  const text = translate(language, state?.client === 'claude' && ['baseHint', 'subscriptionHelp', 'importHelp'].includes(key) ? 'claude_' + key : key, values);
+  if (key === 'taskSync' || /^(context|codex|sync|extension|skill|mcp)/.test(key)) return text;
+  return text.replaceAll('Codex', state?.client === 'claude' ? 'Claude' : 'Codex').replaceAll('ChatGPT', state?.client === 'claude' ? 'Claude' : 'ChatGPT');
+};
+function appearance() {
+  language = normalizeLanguage(state.language);
+  document.documentElement.lang = language;
+  document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
+  document.documentElement.dataset.platform = state.platform;
+  $('theme-symbol').setAttribute('href', 'assets/ui.svg#appearance');
+  for (const item of document.querySelectorAll<HTMLElement>('[data-language]')) item.setAttribute('aria-checked', String(item.dataset.language === language));
+  for (const item of document.querySelectorAll<HTMLElement>('[data-theme]')) if (item.tagName === 'BUTTON') item.setAttribute('aria-checked', String(item.dataset.theme === state.theme));
+  if (appliedLanguage === language + state.client) return;
+  appliedLanguage = language + state.client;
+  for (const element of document.querySelectorAll<HTMLElement>('[data-i18n]')) element.textContent = t(element.dataset.i18n);
+  for (const element of document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]')) element.placeholder = t(element.dataset.i18nPlaceholder);
+  for (const element of document.querySelectorAll<HTMLElement>('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
+  $('language-button').title = t('language'); $('theme-button').title = t('appearance');
+  $('updates').title = t('updates'); $('star').title = t('star');
+  $('import-existing').title = t('importHint');
+  renderProviderModels();
+  for (const element of document.querySelectorAll<HTMLElement>('[data-error]')) element.textContent = localizeMessage(element.dataset.error, language);
+  providerType(); renderResetCards(); statistics.localize();
+}
+const call: DesktopBridge['call'] = (action, ...args) => window.fluid.call(action, ...args);
+const statistics = usageStatsUI({ call, language: () => language });
+const syncUI = taskSyncUI({ call, language: () => language });
+const extensions = extensionsUI({ call, language: () => language, currentClient: () => state?.client || 'codex', icon });
+function showError(error, target = 'error') {
+  const text = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, '');
+  $(target).dataset.error = text; $(target).textContent = localizeMessage(text, language);
+  $(target).hidden = false;
+}
+async function run<A extends DesktopAction>(action: A, ...args: DesktopArgs<A>): Promise<DesktopResult<A>> {
+  $('error').hidden = true;
+  try { const result = await call(action, ...args); if (refreshing) await refreshing; await refresh(); return result; }
+  catch (error) { showError(error); throw error; }
+}
+function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string | null, className?: string): HTMLElementTagNameMap[K] {
+  const element = document.createElement(tag); if (text != null) element.textContent = text; if (className) element.className = className; return element;
+}
+function button(text, handler, className = 'secondary') {
+  const element = node('button', text, className); element.addEventListener('click', () => Promise.resolve(handler()).catch(() => {})); return element;
+}
+function icon(name) { const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'), use=document.createElementNS('http://www.w3.org/2000/svg','use'); use.setAttribute('href',`assets/ui.svg#${name}`); svg.setAttribute('aria-hidden','true'); svg.append(use); return svg; }
+function quotaRing(data, tooltip) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 48 48'); svg.setAttribute('class', 'quota-ring');
+  const plus = data.plan === 'plus' || !!data.fiveHour && !!data.weekly && !['pro', 'prolite', 'promax'].includes(data.plan);
+  const depleted = !data.unlimited && data.credits === 0 && [data.fiveHour, data.weekly, data.monthly].some(window => window?.remaining === 0);
+  if (depleted) {
+    svg.classList.add('depleted');
+    const outline = document.createElementNS(svg.namespaceURI, 'circle');
+    for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 20, class: 'quota-exhausted-outline' })) outline.setAttribute(key, String(value));
+    svg.append(outline);
+  }
+  const windows = data.monthly ? ['monthly'] : plus ? ['fiveHour', 'weekly'] : [data.weekly ? 'weekly' : data.fiveHour ? 'fiveHour' : data.plan === 'free' ? 'monthly' : 'weekly'];
+  const descriptions = [];
+  for (const name of windows) {
+    const weekly = name === 'weekly';
+    const value = data[name], label = t(name === 'monthly' ? 'quotaMonth' : weekly ? 'quotaWeek' : 'quotaFiveHour');
+    const percent = value ? new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value.remaining) : '—';
+    let description = value ? t('quotaRemaining', { label, percent }) : t('quotaNotProvided', { label });
+    if (value?.resetsAt) description += '\n' + t('quotaResets', { time: new Date(value.resetsAt).toLocaleString(language) });
+    descriptions.push(description);
+    const group = document.createElementNS(svg.namespaceURI, 'g');
+    group.setAttribute('class', `quota-segment${value ? value.remaining === 0 ? ' exhausted' : '' : ' unknown'}${weekly ? ' weekly' : ''}${value && value.remaining <= 20 ? ' low' : ''}`);
+    group.setAttribute('role', 'img'); group.setAttribute('aria-label', description); group.setAttribute('tabindex', '0');
+    for (const progress of [false, true]) {
+      const shape = document.createElementNS(svg.namespaceURI, plus ? 'path' : 'circle');
+      const attributes = plus ? { d: weekly ? 'M42.271 15.865 A20 20 0 1 1 5.729 15.865' : 'M7.820 12.244 A20 20 0 0 1 40.180 12.244' } : { cx: 24, cy: 24, r: 20, transform: 'rotate(-90 24 24)' };
+      for (const [key, val] of Object.entries({ ...attributes, pathLength: 100, class: progress ? 'quota-progress' : 'quota-track' })) shape.setAttribute(key, String(val));
+      if (progress) { if (!value || value.remaining === 0) shape.setAttribute('visibility', 'hidden'); shape.setAttribute('stroke-dasharray', '100'); shape.setAttribute('stroke-dashoffset', String(value ? 100 - value.remaining : 100)); }
+      group.append(shape);
+    }
+    const hit = group.firstElementChild.cloneNode() as SVGElement; hit.setAttribute('class', 'quota-hit'); group.append(hit);
+    group.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
+    group.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+    group.addEventListener('focus', () => { tooltip.textContent = description; tooltip.hidden = false; });
+    group.addEventListener('blur', () => { tooltip.hidden = true; });
+    svg.append(group);
+  }
+  const center = document.createElementNS(svg.namespaceURI, 'g');
+  const balance = data.unlimited ? '∞' : Number.isFinite(data.credits) ? new Intl.NumberFormat(language, { maximumFractionDigits: 3 }).format(data.credits) : null;
+  const creditDescription = balance === null ? t('creditsNotProvided') : `${t('quotaCredits')}\n${balance}`;
+  const description = depleted ? [t('quotaExhausted'), ...descriptions, creditDescription].join('\n') : creditDescription;
+  center.setAttribute('class', 'quota-center'); center.setAttribute('tabindex', '0');
+  center.setAttribute('role', 'img'); center.setAttribute('aria-label', description);
+  const mark = document.createElementNS(svg.namespaceURI, depleted ? 'path' : 'rect');
+  const attributes = depleted ? { d: 'M24 16v9m0 6v.1', class: 'quota-exhausted-mark' } : { x: 18, y: 18, width: 12, height: 12, rx: 2, transform: 'rotate(45 24 24)' };
+  for (const [key, value] of Object.entries(attributes)) mark.setAttribute(key, String(value));
+  const hit = document.createElementNS(svg.namespaceURI, 'circle');
+  for (const [key, value] of Object.entries({ cx: 24, cy: 24, r: 10, class: 'quota-center-hit' })) hit.setAttribute(key, String(value));
+  center.append(mark, hit);
+  center.addEventListener('mouseenter', () => { tooltip.textContent = description; tooltip.hidden = false; });
+  center.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  center.addEventListener('focus', () => { tooltip.textContent = description; tooltip.hidden = false; });
+  center.addEventListener('blur', () => { tooltip.hidden = true; });
+  svg.append(center);
+  return svg;
+}
+function quotaDisplay(provider: ProviderRow) {
+  const usage = provider.usage, data = usage?.data;
+  const box = node('div', null, 'quota');
+  box.setAttribute('role', 'group');
+  if (!data) {
+    box.append(node('span', t(usage?.status === 'signin' ? 'loginNeeded' : usage?.status === 'unavailable' ? 'quotaUnavailable' : 'quotaLoading'), 'quota-message'));
+  } else {
+    const tooltip = node('span', null, 'quota-tooltip'); tooltip.hidden = true; tooltip.id = `quota-tip-${provider.alias}`; tooltip.setAttribute('role', 'tooltip');
+    box.append(quotaRing(data, tooltip), tooltip);
+  }
+  let description = t('quotaAutoRefresh');
+  if (usage?.fetchedAt) description += '\n' + t('quotaUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString(language) });
+  if (data && usage.status !== 'ready') { box.classList.add('stale'); description += '\n' + t('quotaStale'); }
+  box.setAttribute('aria-label', description);
+  if (!data || usage.status !== 'ready') box.title = description;
+  if (usage?.refreshing) box.setAttribute('aria-busy', 'true');
+  return box;
+}
+const providerAnimations = new WeakMap<Element, Animation>();
+function providerPositions() {
+  return new Map([...($('provider-list').children as HTMLCollectionOf<HTMLElement>)].map(row => [row.dataset.alias, row.getBoundingClientRect().top]));
+}
+function animateProviders(before: ReadonlyMap<string, number>) {
+  for (const row of ($('provider-list').children as HTMLCollectionOf<HTMLElement>)) providerAnimations.get(row)?.cancel();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const row of ($('provider-list').children as HTMLCollectionOf<HTMLElement>)) {
+    if (row.classList.contains('dragging')) continue;
+    const distance = before.get(row.dataset.alias) - row.getBoundingClientRect().top;
+    if (!Number.isFinite(distance) || Math.abs(distance) < 1) continue;
+    providerAnimations.set(row, row.animate([{ transform: `translateY(${distance}px)` }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' }));
+  }
+}
+function renderProviders() {
+  const signature = JSON.stringify([language, state.client, state.providers]);
+  if (signature === renderedProviders || dragging) return;
+  const before = providerPositions();
+  renderedProviders = signature; $('provider-list').replaceChildren(); $('empty').hidden = !!state.providers.length;
+  state.providers.forEach((provider, index) => {
+    const row = node('div', null, `provider${provider.active ? ' active' : ''}${provider.enabled === false ? ' disabled' : ''}`);
+    row.dataset.alias = provider.alias;
+    const handle = button('', () => {}, 'drag-handle'); handle.append(icon('grip')); handle.setAttribute('aria-label', t('drag', {alias: provider.alias}));
+    handle.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || dragging) return;
+      event.preventDefault(); dragging = provider.alias;
+      providerDrag = { id: event.pointerId, startY: event.clientY, offset: event.clientY - row.getBoundingClientRect().top, moved: false, order: state.providers.map(item => item.alias) };
+      providerAnimations.get(row)?.cancel();
+      $('provider-list').setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('keydown', event => { if (!['ArrowUp','ArrowDown'].includes(event.key)) return; event.preventDefault(); const names = state.providers.map(item=>item.alias), next=index+(event.key==='ArrowUp'?-1:1); if(next<0 || next>=names.length)return; [names[index],names[next]]=[names[next],names[index]]; run('order',names).catch(()=>{}); });
+    row.append(handle);
+    const identity = node('div', null, 'identity');
+    const plan = provider.needsLogin && state.client === 'claude' ? null : provider.usage?.data?.plan || provider.plan, label = planLabel(plan, state.client);
+    const detail = node('small', provider.type === 'account' ? label ? `${state.client === 'claude' ? 'Claude' : 'ChatGPT'} ${label}` : state.client === 'claude' ? t('claudePlanUnknown') : t('account') : provider.baseUrl);
+    if (provider.type === 'account') detail.title = state.client === 'claude' ? t(label ? 'claudePlanCached' : 'claudePlanUnknownHelp') : label ? t(provider.usage?.data?.plan ? 'planLive' : 'planCached') : '';
+    if (provider.plan && provider.usage?.data?.plan && provider.plan !== provider.usage.data.plan) detail.title = t('planMismatch', { cached: planLabel(provider.plan, state.client), live: label });
+    identity.append(node('strong', provider.alias), detail); row.append(identity);
+    if (provider.type === 'account' && state.client !== 'claude' && provider.enabled !== false) {
+      row.append(quotaDisplay(provider));
+      const reset = button('', () => openResetCards(provider.alias), 'icon-button reset-quota'); reset.append(icon('refresh'));
+      reset.title = t('resetQuota'); reset.setAttribute('aria-label', t('resetQuota')); row.append(reset);
+    }
+    if (provider.needsLogin) row.append(button(t('signIn'), () => startLogin(provider.alias)));
+    const select = button('', () => provider.active ? undefined : run('switch', provider.alias), 'icon-button select-provider');
+    select.disabled = provider.enabled === false;
+    select.append(icon(provider.active ? 'check' : 'switch')); select.setAttribute('aria-pressed', String(provider.active));
+    select.title = t(provider.active ? 'selected' : 'use'); select.setAttribute('aria-label', `${select.title} · ${provider.alias}`); row.append(select);
+    const query = button('', () => openProviderModels(provider.alias), 'icon-button query-models');
+    query.append(icon('search')); query.title = t('queryModels'); query.setAttribute('aria-label', t('queryModels') + ' · ' + provider.alias); row.append(query);
+    const edit = button('', () => openProvider('edit', provider.alias), 'icon-button edit-provider');
+    edit.append(icon('edit')); edit.title = t('editProvider'); edit.setAttribute('aria-label', t('editProvider') + ' · ' + provider.alias); row.append(edit);
+    const remove = button('', async () => { if (confirm(t('removeConfirm', {alias:provider.alias}))) await run('remove', provider.alias); }, 'icon-button delete-provider');
+    remove.append(icon('trash')); remove.setAttribute('aria-label', t('remove',{alias:provider.alias})); row.append(remove);
+    const enabled = button('', () => run('edit', { original: provider.alias, alias: provider.alias, enabled: provider.enabled === false }), 'route-switch provider-toggle');
+    enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-checked', String(provider.enabled !== false));
+    enabled.setAttribute('aria-label', t(provider.enabled === false ? 'enableProvider' : 'disableProvider', { alias: provider.alias }));
+    enabled.title = t(provider.enabled === false ? 'providerDisabled' : 'providerEnabled'); enabled.append(node('span', null, 'route-switch-thumb')); row.append(enabled);
+    $('provider-list').append(row);
+  });
+  animateProviders(before);
+}
+function renderResetCards() {
+  if (!resetAlias) return;
+  $('reset-title').textContent = t('resetAccount', { alias: resetAlias });
+  $('reset-status').textContent = t(resetLoading ? 'resetLoading' : resetData?.availableCount == null ? 'resetUnknown' : 'resetCount', { count: resetData?.availableCount });
+  $('reset-card-list').replaceChildren();
+  for (const card of resetData?.credits || []) {
+    const available = card.status === 'available' && card.resetType === 'codexRateLimits' && (!card.expiresAt || card.expiresAt > Date.now());
+    const option = button('', () => { resetSelected = card.id; renderResetCards(); }, 'secondary reset-card');
+    option.dataset.creditId = card.id; option.setAttribute('role', 'radio'); option.setAttribute('aria-checked', String(resetSelected === card.id));
+    option.disabled = !available || resetBusy || !!resetAttempt;
+    const copy = node('span', null, 'reset-card-copy');
+    copy.append(node('strong', card.title || t('resetCard')), node('small', card.expiresAt ? t('resetExpires', { time: new Date(card.expiresAt).toLocaleString(language) }) : t(card.expiryKnown ? 'resetNoExpiry' : 'resetExpiryUnknown')));
+    if (!available) copy.append(node('small', t(card.expiresAt && card.expiresAt <= Date.now() ? 'resetExpired' : 'resetUnavailable')));
+    if (card.description) copy.append(node('small', card.description));
+    option.append(node('span', null, 'reset-card-check'), copy); $('reset-card-list').append(option);
+  }
+  $('reset-card-help').textContent = t(!resetLoading && resetData?.availableCount > 0 && !resetData?.credits?.length ? 'resetDetailsMissing' : 'resetCardHelp');
+  $('reset-result').hidden = !resetOutcome;
+  if (resetOutcome) $('reset-result').textContent = t('reset_' + resetOutcome);
+  $('reset-confirm').textContent = t(resetBusy ? 'resetWorking' : resetAttempt ? 'resetRetry' : 'resetConfirm');
+  const card = resetData?.credits?.find(card => card.id === resetSelected);
+  $<HTMLButtonElement>('reset-confirm').disabled = resetLoading || resetBusy || !resetAttempt && (!card || card.status !== 'available' || card.resetType !== 'codexRateLimits' || card.expiresAt && card.expiresAt <= Date.now());
+  $<HTMLButtonElement>('reset-reload').disabled = resetBusy || !!resetAttempt;
+  $<HTMLButtonElement>('close-reset').disabled = resetBusy;
+}
+async function loadResetCards() {
+  const alias = resetAlias; resetLoading = true; resetSelected = resetAttempt?.creditId || null; resetData = null; resetOutcome = null; $('reset-error').hidden = true; renderResetCards();
+  try { const result = await call('reset-cards', alias); if (alias === resetAlias) resetData = result; }
+  catch (error) { if (alias === resetAlias) showError(error, 'reset-error'); }
+  finally { if (alias === resetAlias) { resetLoading = false; renderResetCards(); } }
+}
+async function openResetCards(alias) {
+  resetAlias = alias; resetAttempt = resetAttempts.get(alias) || null; $<HTMLDialogElement>('reset-dialog').showModal(); await loadResetCards();
+}
+$('close-reset').addEventListener('click', () => $<HTMLDialogElement>('reset-dialog').close());
+$('reset-dialog').addEventListener('cancel', event => { if (resetBusy) event.preventDefault(); });
+$('reset-reload').addEventListener('click', loadResetCards);
+$('reset-confirm').addEventListener('click', async () => {
+  if (resetBusy || !resetSelected) return;
+  resetAttempt ??= { alias: resetAlias, creditId: resetSelected, idempotencyKey: crypto.randomUUID() };
+  resetAttempts.set(resetAlias, resetAttempt);
+  resetBusy = true; $('reset-error').hidden = true; renderResetCards();
+  try {
+    const result = await call('consume-reset', resetAttempt);
+    resetOutcome = result.outcome; resetData = result.cards; resetSelected = null; resetAttempt = null; resetAttempts.delete(resetAlias);
+    await refresh();
+  } catch (error) { showError(error, 'reset-error'); }
+  finally { resetBusy = false; renderResetCards(); }
+});
+function refresh(nextState?: DesktopSnapshot) {
+  if (refreshing) {
+    pendingRefresh = true;
+    pendingSnapshot = nextState;
+    return refreshing;
+  }
+  refreshing = (async () => {
+  try {
+    state = nextState || await call('state');
+    const signature = JSON.stringify(state);
+    if (signature === renderedState) return;
+    renderedState = signature; appearance(); showSettings(settingsOpen);
+    for (const item of document.querySelectorAll<HTMLElement>('[data-client]')) item.setAttribute('aria-pressed', String(!settingsOpen && item.dataset.client === (state.client || 'codex')));
+    for (const name of ['codex', 'claude']) {
+      const route = state.clients?.[name] || { running: state.running, active: name === (state.client || 'codex') ? state.active : null };
+      const item = document.querySelector(`[data-client-item="${name}"]`), control = document.querySelector<HTMLElement>(`[data-routing-client="${name}"]`);
+      item.classList.toggle('selected', !settingsOpen && name === (state.client || 'codex'));
+      const provider = item.querySelector<HTMLElement>('.client-provider'); provider.textContent = route.active || '—'; provider.title = route.active || t('noProvider');
+      control.setAttribute('aria-checked', String(route.running));
+      control.setAttribute('aria-label', `${name === 'codex' ? 'Codex' : 'Claude'} · ${t(route.running ? 'stopRouting' : 'startRouting')}`);
+      control.title = control.getAttribute('aria-label');
+    }
+    $('version').textContent = `fluid ${state.version}`; $('tray-hint').hidden = !state.menuBarHidden; renderUpdate(); $('autostart').setAttribute('aria-checked', String(!!state.loginItem));
+    $('preferences-warning').hidden = !state.preferencesError;
+    $('preferences-warning').textContent = state.preferencesError ? t('preferencesUnavailable', { code: state.preferencesError }) : '';
+    $('native-images').hidden = !state.imageToolsBlocked;
+    if (state.error) showError(state.error);
+    renderProviders(); syncUI.render(); extensions.render();
+    renderLogin();
+    if (!state.login || !['starting', 'pending'].includes(state.login.phase)) lastReauth = '';
+    if (state.reauth) {
+      const { client, alias } = state.reauth;
+      const identity = client + '/' + alias;
+      if (lastReauth !== identity) {
+        lastReauth = identity;
+        void (async () => {
+          if (state.client !== client) await run('client', client);
+          if (state.login?.alias === alias && ['starting', 'pending'].includes(state.login.phase)) {
+            if (!$<HTMLDialogElement>('add-dialog').open) openProvider('account', alias);
+            if (state.login.url && !(client === 'claude' && state.platform === 'win32')) await call('open-login');
+          }
+        })().catch(showError);
+      }
+    }
+    if (catalogProvider && (catalogProvider.client !== state.client || !state.providers.some(provider => provider.alias === catalogProvider.alias))) {
+      $<HTMLDialogElement>('models-dialog').close(); catalogProvider = null; catalogRequest++;
+    }
+  } catch (error) { showError(error); }
+  })().finally(() => {
+    refreshing = null;
+    if (pendingRefresh) {
+      pendingRefresh = false;
+      const next = pendingSnapshot;
+      pendingSnapshot = undefined;
+      void refresh(next);
+    }
+  });
+  return refreshing;
+}
+function catalogChanged() {
+  catalogCustom = true; catalogDirty = true;
+  $<HTMLButtonElement>('models-save').disabled = false;
+  $('models-mode').textContent = t('customCatalog');
+}
+function renderProviderModels() {
+  if (!catalogProvider) return;
+  $('models-provider').textContent = `${catalogProvider.client === 'claude' ? 'Claude' : 'Codex'} · ${catalogProvider.alias}`;
+  $('models-title').textContent = t('modelCatalog');
+  $<HTMLButtonElement>('models-refresh').disabled = catalogLoading;
+  $('models-refresh').classList.toggle('loading', catalogLoading);
+  $<HTMLButtonElement>('models-save').disabled = !catalogDirty || catalogLoading;
+  $('models-mode').textContent = t(catalogCustom ? 'customCatalog' : 'automaticCatalog');
+  $('models-status').classList.toggle('failed', !!catalogError);
+  $('models-status').textContent = catalogLoading ? t('catalogLoading') : catalogError ? localizeMessage(catalogError, language) : catalogResult
+    ? t('catalogRefreshed', { count: catalogResult.discovered.length, time: new Date(catalogResult.fetchedAt).toLocaleTimeString(language) }) : '';
+  const query = $<HTMLInputElement>('models-search').value.trim().toLowerCase();
+  $('models-list').replaceChildren();
+  const options = [...new Map([...(catalogResult?.discovered || []), ...catalogDraft].filter(entry => entry.id).map(entry => [entry.id, entry])).values()];
+  for (const id of ['claude-model-options', 'catalog-model-options']) $(id).replaceChildren(...options.map(entry => {
+    const option = node('option', entry.label || entry.id); option.value = entry.id; return option;
+  }));
+  const reorder = (index, next) => {
+    if (next < 0 || next >= catalogDraft.length || index === next) return;
+    const before = new Map([...($('models-list').children as HTMLCollectionOf<HTMLElement>)].map(row => [row.dataset.index, row.getBoundingClientRect().top]));
+    const [entry] = catalogDraft.splice(index, 1); catalogDraft.splice(next, 0, entry);
+    catalogChanged(); renderProviderModels();
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const row of ($('models-list').children as HTMLCollectionOf<HTMLElement>)) {
+      const old = Number(row.dataset.index) === next ? index : Number(row.dataset.index) + (index < next && Number(row.dataset.index) >= index && Number(row.dataset.index) < next ? 1 : index > next && Number(row.dataset.index) > next && Number(row.dataset.index) <= index ? -1 : 0);
+      const distance = before.get(String(old)) - row.getBoundingClientRect().top;
+      if (distance) row.animate([{ transform: `translateY(${distance}px)` }, { transform: 'none' }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' });
+    }
+  };
+  catalogDraft.forEach((entry, index) => {
+    if (query && !`${entry.id} ${entry.label}`.toLowerCase().includes(query)) return;
+    const row = node('div', null, 'catalog-model'); row.setAttribute('role', 'listitem'); row.dataset.index = String(index);
+    const grip = button('', () => {}, 'drag-handle'); grip.append(icon('grip')); grip.draggable = true;
+    grip.setAttribute('aria-label', t('reorderModel', { index: index + 1 }));
+    grip.addEventListener('dragstart', event => { catalogDrag = index; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); event.dataTransfer.setDragImage(row, 16, 16); row.classList.add('dragging'); });
+    grip.addEventListener('dragend', () => { catalogDrag = null; row.classList.remove('dragging'); });
+    grip.addEventListener('keydown', event => { if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return; event.preventDefault(); reorder(index, index + (event.key === 'ArrowUp' ? -1 : 1)); });
+    row.addEventListener('dragover', event => { if (catalogDrag !== null) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+    row.addEventListener('drop', event => { event.preventDefault(); if (catalogDrag !== null) reorder(catalogDrag, index); catalogDrag = null; });
+    row.append(grip);
+    for (const [field, key] of [['id', 'modelID'], ['label', 'modelDisplayName']] as const) {
+      const input = node('input'); input.value = entry[field] || ''; input.placeholder = t(key); input.autocomplete = 'off';
+      input.className = field === 'id' ? 'catalog-id' : 'catalog-label';
+      input.setAttribute('aria-label', `${t(key)} ${index + 1}`); input.maxLength = field === 'id' ? 200 : 120;
+      input.addEventListener('input', () => { entry[field] = input.value; catalogChanged(); }); row.append(input);
+    }
+    const context = catalogContexts.get(entry.id.trim());
+    const summary = [context?.window, context?.compact].filter(Boolean).map(tokenSize).join(' / ');
+    const editContext = button('', () => openModelContext(entry), 'catalog-context-button');
+    const contextLabel = node('span', summary || t('codexContextDefault'));
+    editContext.append(contextLabel, icon('chevron-down'));
+    editContext.disabled = !entry.id.trim();
+    editContext.setAttribute('aria-label', t('contextRowLabel', { model: entry.id || index + 1 }));
+    row.append(editContext);
+    row.querySelector('.catalog-id').addEventListener('input', () => {
+      editContext.disabled = !entry.id.trim();
+      editContext.setAttribute('aria-label', t('contextRowLabel', { model: entry.id || index + 1 }));
+      const updated = catalogContexts.get(entry.id.trim());
+      contextLabel.textContent = [updated?.window, updated?.compact].filter(Boolean).map(tokenSize).join(' / ') || t('codexContextDefault');
+    });
+    const remove = button('', () => {
+      catalogDraft.splice(index, 1); if (catalogContexts.delete(entry.id.trim())) catalogContextDirty = true; catalogChanged(); renderProviderModels();
+    }, 'icon-button delete-model');
+    remove.append(icon('trash')); remove.setAttribute('aria-label', t('removeModel', { index: index + 1 })); row.append(remove);
+    $('models-list').append(row);
+  });
+  const mappings = catalogProvider.client === 'claude' && catalogProvider.type === 'api';
+  $('catalog-mappings').hidden = !mappings;
+  $('catalog-family-fields').replaceChildren();
+  if (mappings) for (const role of claudeFamilies) {
+    const label = node('label'), input = node('input');
+    label.append(node('span', `${role[0].toUpperCase() + role.slice(1)} →`));
+    input.id = `catalog-${role}`; input.setAttribute('list', 'catalog-model-options'); input.value = catalogMapping[role] || '';
+    input.placeholder = t('familyMappingHint'); input.autocomplete = 'off';
+    input.addEventListener('input', () => { catalogMapping[role] = input.value.trim(); catalogDirty = true; $<HTMLButtonElement>('models-save').disabled = false; });
+    label.append(input); $('catalog-family-fields').append(label);
+  }
+  $('models-empty').hidden = catalogLoading || !!($('models-list').children as HTMLCollectionOf<HTMLElement>).length;
+  $('models-empty').textContent = t(query ? 'noMatchingModels' : 'noModelsReported');
+  $('models-notice').textContent = t('catalogEditorHelp') + (catalogResult ? ' ' + localizeMessage(catalogResult.notice, language) : '');
+}
+const modelContextDialog = $<HTMLDialogElement>('model-context-dialog');
+const modelWindowSize = $<HTMLSelectElement>('model-window-size');
+const modelCompactSize = $<HTMLSelectElement>('model-compact-size');
+const modelWindowCustom = $<HTMLInputElement>('model-window-custom');
+const modelCompactCustom = $<HTMLInputElement>('model-compact-custom');
+function tokenSize(value: number) {
+  return value % 1000 === 0 ? `${value / 1000}K` : value.toLocaleString(language);
+}
+function contextOptions(select: HTMLSelectElement, input: HTMLInputElement, values: number[], saved: number | undefined, automatic: number | undefined, maximum?: number) {
+  const presets = values.filter(value => maximum === undefined || value <= maximum);
+  const options = [['', automatic ? t('contextDefaultValue', { tokens: tokenSize(automatic) }) : t('codexContextDefault')],
+    ...presets.map(value => [String(value), tokenSize(value)]), ['custom', t('contextCustom')]];
+  select.replaceChildren(...options.map(([value, label]) => {
+    const option = node('option', label); option.value = value; return option;
+  }));
+  select.value = saved === undefined ? '' : presets.includes(saved) ? String(saved) : 'custom';
+  input.value = saved === undefined ? '' : String(saved);
+  input.hidden = select.value !== 'custom'; input.required = !input.hidden;
+}
+function openModelContext(entry: ModelEntry) {
+  contextEntry = entry;
+  const id = entry.id.trim(), claude = catalogProvider.client === 'claude';
+  const inherited = catalogResult?.globalContext;
+  const saved = catalogContexts.get(id) || { window: inherited?.window ?? undefined, compact: inherited?.compact ?? undefined };
+  const reported = catalogResult?.discovered.find(model => model.id === id);
+  const metadata = reported && 'metadata' in reported ? reported.metadata : undefined;
+  const window = metadata?.context_window;
+  const compact = metadata?.auto_compact_token_limit ?? (window ? Math.floor(window * .9) : undefined);
+  $('model-context-id').textContent = id;
+  $('model-window-field').hidden = claude;
+  $('model-context-help').textContent = t(claude ? 'contextClaudeHelp' : 'contextCodexHelp')
+    + (inherited?.window || inherited?.compact ? ' ' + t('contextGlobalMigration') : '');
+  $('model-context-error').hidden = true;
+  contextOptions(modelWindowSize, modelWindowCustom, [64000, 128000, 200000, 256000, 500000, 1000000], saved.window, window, metadata?.max_context_window);
+  const reportedLimit = reported && 'reportedContextWindow' in reported ? reported.reportedContextWindow : undefined;
+  contextOptions(modelCompactSize, modelCompactCustom,
+    claude ? [100000, 128000, 150000, 200000, 256000, 500000, 800000] : [48000, 96000, 128000, 180000, 220000, 250000, 400000],
+    saved.compact, claude ? undefined : compact, claude ? reportedLimit : undefined);
+  modelCompactCustom.min = claude ? '100000' : '1';
+  modelContextDialog.showModal();
+}
+for (const [select, input] of [[modelWindowSize, modelWindowCustom], [modelCompactSize, modelCompactCustom]] as const) {
+  select.addEventListener('change', () => {
+    input.hidden = select.value !== 'custom'; input.required = !input.hidden;
+    if (!input.hidden) input.focus();
+  });
+}
+$('close-model-context').addEventListener('click', () => modelContextDialog.close());
+$('model-context-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!contextEntry || !catalogProvider) return;
+  const readSize = (select: HTMLSelectElement, input: HTMLInputElement) => select.value === 'custom' ? input.valueAsNumber : Number(select.value) || undefined;
+  const window = catalogProvider.client === 'codex' ? readSize(modelWindowSize, modelWindowCustom) : undefined;
+  const compact = readSize(modelCompactSize, modelCompactCustom);
+  const id = contextEntry.id.trim();
+  if (window !== undefined && compact !== undefined && compact >= window) {
+    showError('The auto-compaction threshold must be lower than the context window.', 'model-context-error');
+    return;
+  }
+  if (window === undefined && compact === undefined) catalogContexts.delete(id);
+  else catalogContexts.set(id, { window, compact });
+  catalogDirty = true; catalogContextDirty = true;
+  modelContextDialog.close();
+  renderProviderModels();
+});
+async function loadProviderModels(importModels = false) {
+  if (!catalogProvider) return;
+  const request = ++catalogRequest, provider = catalogProvider;
+  catalogLoading = true; catalogError = ''; renderProviderModels();
+  try {
+    const result = await call('models', provider.alias);
+    if (request !== catalogRequest) return;
+    catalogResult = result;
+    if (importModels && catalogCustom) {
+      const ids = new Set(catalogDraft.map(entry => entry.id));
+      catalogDraft.push(...result.discovered.filter(entry => !ids.has(entry.id)).map(({ id, label }) => ({ id, label })));
+      catalogDirty = true;
+    } else if (!catalogDirty || importModels) catalogDraft = result.models.map(({ id, label }) => ({ id, label }));
+  } catch (error) { if (request === catalogRequest) catalogError = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); }
+  finally { if (request === catalogRequest) { catalogLoading = false; renderProviderModels(); } }
+}
+async function openProviderModels(alias) {
+  const provider = state.providers.find(item => item.alias === alias);
+  catalogProvider = { ...provider, client: state.client };
+  catalogContexts = new Map(Object.entries(provider.modelContexts || {})); catalogContextDirty = false;
+  catalogDraft = (provider.modelCatalog || []).map(entry => ({ ...entry }));
+  catalogMapping = { ...provider.claudeModels }; catalogCustom = Array.isArray(provider.modelCatalog); catalogDirty = false;
+  catalogResult = null; catalogError = ''; $<HTMLInputElement>('models-search').value = ''; $<HTMLDetailsElement>('catalog-mappings').open = false;
+  renderProviderModels(); $<HTMLDialogElement>('models-dialog').showModal(); await loadProviderModels();
+}
+$('close-models').addEventListener('click', () => $<HTMLDialogElement>('models-dialog').close());
+$('models-cancel').addEventListener('click', () => $<HTMLDialogElement>('models-dialog').close());
+$('models-dialog').addEventListener('close', () => { catalogProvider = null; catalogRequest++; catalogLoading = false; catalogDrag = null; if (modelContextDialog.open) modelContextDialog.close(); });
+$('models-refresh').addEventListener('click', () => loadProviderModels(true));
+$('models-search').addEventListener('input', renderProviderModels);
+$('models-add').addEventListener('click', () => { catalogDraft.push({ id: '', label: '' }); $<HTMLInputElement>('models-search').value = ''; catalogChanged(); renderProviderModels(); $('models-list').lastElementChild?.querySelector('input')?.focus(); });
+$('models-reset').addEventListener('click', async () => {
+  catalogCustom = false; catalogDirty = true;
+  if (!catalogResult) await loadProviderModels();
+  catalogDraft = (catalogResult?.discovered || []).map(({ id, label }) => ({ id, label })); renderProviderModels();
+});
+$('models-save').addEventListener('click', async () => {
+  const provider = catalogProvider; if (!provider) return;
+  $<HTMLButtonElement>('models-save').disabled = true; catalogError = '';
+  try {
+    await run('edit', { original: provider.alias, alias: provider.alias, expectedRevision: provider.revision,
+      ...(catalogContextDirty ? { modelContexts: Object.fromEntries(catalogContexts) } : {}),
+      modelCatalog: catalogCustom ? catalogDraft.map(({ id, label }) => ({ id: id.trim(), label: label.trim() })) : null,
+      ...(provider.client === 'claude' && provider.type === 'api' ? { claudeModels: catalogMapping } : {}) });
+    if (editingProvider?.alias === provider.alias) {
+      editingProvider = state.providers.find(item => item.alias === provider.alias); showMapping(editingProvider.claudeModels);
+    }
+    $<HTMLDialogElement>('models-dialog').close();
+  } catch (error) { catalogError = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); renderProviderModels(); }
+});
+async function startLogin(alias) {
+  if (!$<HTMLDialogElement>('add-dialog').open) openProvider('account', alias);
+  const result = await run('login', alias);
+  if (result?.login?.url && !(state.client === 'claude' && state.platform === 'win32')) await call('open-login');
+  return result;
+}
+function dialogLogin() { return providerMode === 'account' && state.login?.alias === $<HTMLInputElement>('provider-alias').value.trim() ? state.login : null; }
+function renderLogin() {
+  const login = dialogLogin(), pending = login && ['starting', 'pending'].includes(login.phase);
+  $('login-status').hidden = !login;
+  $<HTMLInputElement>('provider-alias').disabled = !!pending;
+  $<HTMLButtonElement>('save-provider').disabled = !!pending && !login.codeRequired;
+  $('claude-code-field').hidden = !pending || !login.codeRequired;
+  if (providerMode === 'import' && importLoading) $<HTMLButtonElement>('save-provider').disabled = true;
+  $('save-provider').textContent = t(providerMode === 'edit' ? 'saveChanges' : login?.phase === 'complete' ? 'done' : login?.codeRequired ? 'completeSignIn' : providerMode === 'api' ? 'addAPI' : providerMode === 'import' ? 'importAction' : 'addSubscription');
+  $('login-code').textContent = pending ? login.code || '' : '';
+  $('open-login').hidden = !pending || !login.url;
+  if (!login) return;
+  $('login-alias').textContent = `${login.alias} · ${t('phase' + login.phase[0].toUpperCase() + login.phase.slice(1))}`;
+  $('login-message').textContent = pending && login.code ? t('loginInstructions') : localizeMessage(login.message, language);
+}
+function openProvider(mode, alias = '') {
+  providerMode = mode; $('dialog-error').hidden = true; $<HTMLFormElement>('provider-form').reset();
+  editingProvider = mode === 'edit' ? state.providers.find(provider => provider.alias === alias) : null;
+  const pending = state.login && ['starting', 'pending'].includes(state.login.phase);
+  $<HTMLInputElement>('provider-alias').value = alias || (mode === 'account' && pending ? state.login.alias : '');
+  $<HTMLInputElement>('base-url').value = editingProvider?.baseUrl || '';
+  showMapping(editingProvider?.claudeModels);
+  $<HTMLDetailsElement>('claude-mapping').open = state.client === 'claude';
+  $('import-preview').hidden = true;
+  providerType(); renderLogin(); $<HTMLDialogElement>('add-dialog').showModal();
+}
+$('add-subscription').addEventListener('click',()=>openProvider('account'));
+$('add-api').addEventListener('click',()=>openProvider('api'));
+$('import-existing').addEventListener('click', async () => {
+  openProvider('import'); importLoading = true; renderLogin();
+  try {
+    const existing = await call('existing-login');
+    if (providerMode !== 'import' || !$<HTMLDialogElement>('add-dialog').open) return;
+    $<HTMLInputElement>('provider-alias').value = existing.alias; $('import-preview').hidden = false;
+    $('import-preview').textContent = `${t(existing.type === 'api' ? 'detectedAPI' : 'detectedAccount')}${existing.baseUrl ? ' · ' + existing.baseUrl : ''}`;
+  } catch (error) { if (providerMode === 'import' && $<HTMLDialogElement>('add-dialog').open) showError(error, 'dialog-error'); }
+  finally { importLoading = false; renderLogin(); }
+});
+$('close-dialog').addEventListener('click', () => $<HTMLDialogElement>('add-dialog').close());
+$('claude-choose-model').addEventListener('click', () => openProviderModels(editingProvider.alias));
+function providerType() {
+  const api = providerMode === 'api' || editingProvider?.type === 'api', imported = providerMode === 'import'; $('api-fields').hidden = !api; $('account-help').hidden = api || providerMode === 'edit';
+  $('edit-key-help').hidden = providerMode !== 'edit';
+  $('claude-mapping').hidden = !api || state.client !== 'claude' || providerMode !== 'edit';
+  $('claude-choose-model').hidden = !editingProvider || editingProvider.type !== 'api';
+  $('account-help').textContent = t(imported ? 'importHelp' : 'subscriptionHelp');
+  $('provider-dialog-title').textContent = t(providerMode === 'edit' ? 'editProvider' : api ? 'addAPI' : imported ? 'importExisting' : 'addSubscription');
+  $('save-provider').textContent = t(api ? 'addAPI' : imported ? 'importAction' : 'addSubscription');
+}
+$('provider-form').addEventListener('submit', async event => {
+  event.preventDefault(); $<HTMLButtonElement>('save-provider').disabled = true; $('dialog-error').hidden = true;
+  try {
+    if (dialogLogin()?.phase === 'complete') { $<HTMLDialogElement>('add-dialog').close(); return; }
+    const alias = $<HTMLInputElement>('provider-alias').value.trim();
+    const mapping = providerMode === 'edit' && state.client === 'claude' ? { claudeModels: Object.fromEntries(Object.entries(mappingFields).map(([role, id]) => [role, $<HTMLInputElement>(id).value.trim()])) } : {};
+    if (providerMode === 'edit') { await call('edit', { original: editingProvider.alias, alias, url: $<HTMLInputElement>('base-url').value.trim(), key: $<HTMLInputElement>('api-key').value, ...mapping }); $<HTMLInputElement>('api-key').value = ''; $<HTMLDialogElement>('add-dialog').close(); }
+    else if (dialogLogin()?.codeRequired) { await call('login-code', $<HTMLInputElement>('authorization-code').value.trim()); $<HTMLInputElement>('authorization-code').value = ''; }
+    else if (providerMode === 'api') { await call('add-api', { alias, url: $<HTMLInputElement>('base-url').value.trim(), key: $<HTMLInputElement>('api-key').value, ...mapping }); $<HTMLInputElement>('api-key').value = ''; $<HTMLDialogElement>('add-dialog').close(); }
+    else if (providerMode === 'import') { await call('import-login',alias); $<HTMLDialogElement>('add-dialog').close(); }
+    else { await startLogin(alias); }
+    await refresh();
+  } catch (error) { showError(error, 'dialog-error'); }
+  finally { renderLogin(); }
+});
+$('provider-alias').addEventListener('input', renderLogin);
+function showSettings(open) {
+  if (!open) statistics.close();
+  if (!open) { syncUI.close(); extensions.close(); }
+  settingsOpen = open;
+  $('providers-page').hidden = open; $('settings-page').hidden = !open;
+  $('settings').setAttribute('aria-pressed', String(open));
+  for (const item of document.querySelectorAll<HTMLElement>('[data-client]')) item.setAttribute('aria-pressed', String(!open && item.dataset.client === state.client));
+  for (const item of document.querySelectorAll<HTMLElement>('[data-client-item]')) item.classList.toggle('selected', !open && item.dataset.clientItem === state.client);
+}
+$('open-usage').addEventListener('click', () => { syncUI.close(); extensions.close(); statistics.open(); });
+$('close-usage').addEventListener('click', () => { statistics.close(); $('settings-overview').hidden = false; });
+$('settings').addEventListener('click', () => { statistics.close(); $('settings-overview').hidden = false; syncUI.close(); extensions.close(); showSettings(true); });
+for (const item of document.querySelectorAll<HTMLElement>('[data-client]')) item.addEventListener('click', async () => {
+  showSettings(false);
+  if (item.dataset.client === state.client) return;
+  $<HTMLDialogElement>('add-dialog').close(); $<HTMLDialogElement>('reset-dialog').close(); editingProvider = null; providerMode = 'account';
+  $<HTMLDialogElement>('models-dialog').close(); catalogProvider = null; catalogRequest++;
+  try { await run('client', item.dataset.client as Client); } catch {}
+});
+$('provider-list').addEventListener('pointermove', event => {
+  const drag = providerDrag;
+  if (!drag || drag.id !== event.pointerId) return;
+  if (!drag.moved && Math.abs(event.clientY - drag.startY) < 3) return;
+  drag.moved = true;
+  const list = $('provider-list'), rows = [...(list.children as HTMLCollectionOf<HTMLElement>)];
+  const moving = rows.find(row => row.dataset.alias === dragging);
+  if (!moving) return;
+  moving.classList.add('dragging');
+  const desiredTop = event.clientY - drag.offset;
+  // Cross a neighbour's midpoint with the card edge, without waiting for a full-row move.
+  const top = list.getBoundingClientRect().top - list.offsetTop;
+  const index = rows.indexOf(moving); let target = index;
+  if (desiredTop < top + moving.offsetTop) {
+    while (target > 0 && desiredTop < top + rows[target - 1].offsetTop + rows[target - 1].offsetHeight / 2) target--;
+  } else {
+    while (target < rows.length - 1 && desiredTop + moving.offsetHeight > top + rows[target + 1].offsetTop + rows[target + 1].offsetHeight / 2) target++;
+  }
+  if (target !== index) {
+    const before = providerPositions(); list.insertBefore(moving, rows[target + (target > index ? 1 : 0)] || null); animateProviders(before);
+  }
+  moving.style.transform = 'none';
+  const position = moving.getBoundingClientRect().top;
+  moving.style.transform = `translateY(${desiredTop - position}px)`;
+});
+async function finishProviderDrag(event: PointerEvent) {
+  const drag = providerDrag;
+  if (!drag || drag.id !== event.pointerId) return;
+  providerDrag = null;
+  const list = $('provider-list'), aliases = [...(list.children as HTMLCollectionOf<HTMLElement>)].map(row => row.dataset.alias);
+  if (list.hasPointerCapture(event.pointerId)) list.releasePointerCapture(event.pointerId);
+  const before = providerPositions(), moving = [...(list.children as HTMLCollectionOf<HTMLElement>)].find(row => row.dataset.alias === dragging);
+  moving?.classList.remove('dragging'); if (moving) moving.style.transform = '';
+  if (event.type !== 'pointerup') for (const alias of drag.order) {
+    const row = [...(list.children as HTMLCollectionOf<HTMLElement>)].find(row => row.dataset.alias === alias);
+    if (row) list.append(row);
+  }
+  animateProviders(before);
+  try {
+    if (event.type === 'pointerup' && drag.moved && JSON.stringify(aliases) !== JSON.stringify(drag.order)) await run('order', aliases);
+  } catch {} finally {
+    await Promise.allSettled([...list.children].flatMap(row => row.getAnimations().map(animation => animation.finished)));
+    dragging = null; renderedProviders = ''; renderProviders();
+  }
+}
+for (const name of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) $('provider-list').addEventListener(name, finishProviderDrag);
+function closeMenus() { for(const id of ['language','theme']) { $(id+'-menu').hidden=true; $(id+'-button').setAttribute('aria-expanded','false'); } }
+for(const id of ['language','theme']) $(id+'-button').addEventListener('click',()=>{const open=$(id+'-menu').hidden;closeMenus();$(id+'-menu').hidden=!open;$(id+'-button').setAttribute('aria-expanded',String(open));if(open)$(id+'-menu').querySelector('button').focus();});
+for(const item of document.querySelectorAll<HTMLElement>('[data-language],button[data-theme]')) item.addEventListener('click',async()=>{closeMenus();try{await run('preferences', item.dataset.language ? { language: item.dataset.language as Language } : { theme: item.dataset.theme as Preferences['theme'] });}catch{}});
+document.addEventListener('click', event => { if (!(event.target as Element).closest('.icon-control')) closeMenus(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenus(); });
+$('uninstall').addEventListener('click', () => call('uninstall').catch(error => showError(error)));
+$('autostart').addEventListener('click', async event => {
+  const control = event.currentTarget as HTMLButtonElement; control.disabled = true;
+  try { await run('autostart', !state.loginItem); } catch {} finally { control.disabled = false; }
+});
+for (const control of document.querySelectorAll<HTMLButtonElement>('[data-routing-client]')) control.addEventListener('click', async () => {
+  if (refreshing) await refreshing;
+  await refresh();
+  const client = control.dataset.routingClient as Client, route = state.clients?.[client] || { running: state.running, activeRequests: state.activeRequests };
+  if (route.running && route.activeRequests && !confirm(t('stopConfirm'))) return;
+  control.disabled = true;
+  try { await run('routing', { client, enabled: !route.running }); } catch {} finally { control.disabled = false; }
+});
+$('open-login').addEventListener('click', () => call('open-login').catch(showError));
+function formattedBytes(value) { return `${(value / 1024 ** 2).toLocaleString(language, { maximumFractionDigits: 1 })} MB`; }
+function appendNoteText(element, text) {
+  for (const part of text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)) {
+    if (part.startsWith('`')) element.append(node('code', part.slice(1, -1)));
+    else if (part.startsWith('**')) element.append(node('strong', part.slice(2, -2)));
+    else element.append(document.createTextNode(part));
+  }
+}
+function renderReleaseNotes(notes) {
+  $('update-notes').replaceChildren(); let list;
+  if (!notes) { $('update-notes').append(node('p', t('updateNotesMissing'))); return; }
+  for (const line of notes.split('\n')) {
+    const text = line.trim(); if (!text || text.startsWith('<!--')) continue;
+    if (/^[-*] /.test(text)) {
+      if (!list) { list = node('ul'); $('update-notes').append(list); }
+      const item = node('li'); appendNoteText(item, text.slice(2)); list.append(item);
+    } else {
+      list = null; const element = node(/^#+ /.test(text) ? 'h4' : 'p');
+      appendNoteText(element, text.replace(/^#+ /, '')); $('update-notes').append(element);
+    }
+  }
+}
+function renderUpdate() {
+  const update: Partial<DesktopSnapshot['update']> = state.update || {};
+  const phase = update.phase || 'idle';
+  const busy = !!pendingUpdateAction || ['checking', 'downloading', 'installing'].includes(phase);
+  $('update-dialog').dataset.phase = phase;
+  $('update-dot').hidden = !['available', 'ready'].includes(phase);
+  $('update-current').textContent = `fluid ${state.version}`;
+  const titles = { checking: 'updateChecking', current: 'updateCurrent', available: 'updateAvailable', downloading: 'updateDownloading', ready: 'updateReady', installing: 'updateInstall', error: 'updateFailed' };
+  const percent = Math.min(100, Math.floor(100 * (update.received || 0) / (update.total || 1)));
+  $('update-title').textContent = t(titles[phase] || 'updateIdle', { version: update.version, percent });
+  const subtitle = { current: update.checkedAt ? 'updateCheckedAt' : 'updateCurrentHelp', available: 'updateReview', ready: 'updateReadyHelp', error: 'updateFailedHelp' }[phase] || 'updateIdleHelp';
+  $('update-status').textContent = t(subtitle, { time: update.checkedAt ? new Date(update.checkedAt).toLocaleTimeString(language) : '' });
+  $('update-symbol').setAttribute('href', `assets/ui.svg#${phase === 'current' || phase === 'ready' ? 'check' : phase === 'error' ? 'close' : phase === 'available' || phase === 'downloading' ? 'download' : 'refresh'}`);
+  $('update-emblem').classList.toggle('spinning', phase === 'checking');
+  $('update-transfer').hidden = phase !== 'downloading'; $<HTMLProgressElement>('update-progress').value = percent;
+  $('update-bytes').textContent = `${formattedBytes(update.received || 0)} / ${formattedBytes(update.total || 0)}`;
+  $('update-error').hidden = !update.error; if (update.error) $('update-error').textContent = localizeMessage(update.error, language);
+  $('update-action').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase) && !update.retryDownload;
+  $<HTMLButtonElement>('update-action').disabled = busy; $('update-action').textContent = t(update.retryDownload ? 'retryDownload' : phase === 'ready' || phase === 'installing' ? 'updateInstall' : 'updateDownload');
+  if (pendingUpdateAction === 'update-install' && phase === 'ready') $('update-action').textContent = t('updatePreparing');
+  $<HTMLButtonElement>('update-retry').disabled = busy; $('update-retry').hidden = !!update.canRevealInstaller;
+  $('update-reveal').hidden = !update.canRevealInstaller; $<HTMLButtonElement>('update-reveal').disabled = busy;
+  $('update-warning').hidden = !['available', 'ready', 'downloading', 'installing'].includes(phase);
+  $('update-warning').textContent = t(update.canRevealInstaller && update.error ? 'updateManualInstallHelp' : 'updateRestartWarning');
+  $('update-metadata').hidden = !update.version;
+  $('update-metadata').textContent = [update.version ? `${state.version} → ${update.version}` : '', update.date ? new Date(update.date).toLocaleDateString(language) : '', update.size ? formattedBytes(update.size) : ''].filter(Boolean).join(' · ');
+  $('update-changes').hidden = !update.version;
+  const signature = JSON.stringify([language, update.version, update.notes]);
+  if (signature !== renderedUpdate) { renderedUpdate = signature; renderReleaseNotes(releaseNotes(update.notes, language)); }
+}
+async function showUpdates() { if(!$<HTMLDialogElement>('update-dialog').open)$<HTMLDialogElement>('update-dialog').showModal();try{await run('updates');}catch{} }
+$('updates').addEventListener('click',showUpdates); $('update-retry').addEventListener('click',showUpdates);
+$('close-update').addEventListener('click',()=>$<HTMLDialogElement>('update-dialog').close());
+async function runUpdateAction(action: NonNullable<typeof pendingUpdateAction>) {
+  if (pendingUpdateAction) return;
+  pendingUpdateAction = action;
+  renderUpdate();
+  let failure;
+  try { await call(action); }
+  catch (error) { failure = error; }
+  finally {
+    if (refreshing) await refreshing;
+    await refresh();
+    pendingUpdateAction = undefined;
+    renderUpdate();
+  }
+  if (failure) showError(failure, 'update-error');
+}
+$('update-action').addEventListener('click', () => runUpdateAction(state.update.phase === 'ready' ? 'update-install' : 'update-download'));
+$('update-reveal').addEventListener('click', () => runUpdateAction('update-reveal'));
+$('star').addEventListener('click',()=>call('star').catch(showError));
+window.fluid.onChange(nextState => { if (!document.hidden) refresh(nextState); });
+window.fluid.onShow(() => { if (document.activeElement?.closest('.sidebar')) (document.activeElement as HTMLElement).blur(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+window.fluid.onTab(async tab => {
+  await refresh();
+  if (tab === 'updates') showUpdates(); else showSettings(tab === 'settings');
+});
+const preserveDraft = () => window.fluid.retainWindow(!!document.querySelector('dialog[open], #sync-page:not([hidden]), #extensions-page:not([hidden])'));
+const draftObserver = new MutationObserver(preserveDraft);
+for (const dialog of document.querySelectorAll('dialog')) draftObserver.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+for (const panel of [$('sync-page'), $('extensions-page')]) draftObserver.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+refresh();

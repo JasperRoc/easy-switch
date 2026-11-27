@@ -1,0 +1,59 @@
+[package]
+name = "fluid-desktop"
+version = "0.8.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[[bin]]
+name = "fluid"
+path = "src/main.rs"
+
+[features]
+desktop = ["dep:tauri-build", "dep:tauri", "dep:tauri-plugin-single-instance", "dep:notify", "dep:rfd", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true , features = [] }
+
+[dependencies]
+tauri = { version = "2", optional = true, default-features = false, features = ["wry", "tray-icon", "custom-protocol", "macos-private-api", "image-png"] }
+tauri-plugin-single-instance = { version = "2", optional = true }
+notify = { version = "8", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "net", "rt-multi-thread", "macros", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "json", "query", "http2", "system-proxy", "gzip", "brotli", "deflate"] }
+futures-util = "0.3"
+tokio-util = "0.7"
+regex = "1"
+subtle = "2"
+base64 = "0.22"
+aes-gcm = "0.10"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+directories = "6"
+rfd = { version = "0.17", optional = true, default-features = false }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["NSScreen", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["NSArray", "NSGeometry", "NSString", "objc2-core-foundation"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
