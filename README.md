@@ -39,7 +39,7 @@ fd work
 
 The installer uses your user directory and prepares a private runtime when needed. No global npm installation. API Base URL is optional; leave it blank for the client’s official API.
 
-Upgrading an existing installation? Quit it normally first and keep a separate backup. This release uses fresh fluid application/data identities; see [release notes](docs/releases/0.8.0.md).
+Upgrading an existing installation? Quit it normally first and keep a separate backup. This release uses fresh fluid application/data identities; see [release notes](docs/releases/0.1.0.md).
 
 ### ⌨️ A small CLI
 

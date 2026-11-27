@@ -172,7 +172,7 @@ jobs:
           )
           sha256sum "${packages[@]}" > "SHA256SUMS-$version.txt"
           if test -f "../../docs/releases/$version.md"; then
-            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid $version" --prerelease --notes-file "../../docs/releases/$version.md"
+            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid v$version" --prerelease --notes-file "../../docs/releases/$version.md"
           else
-            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid $version" --prerelease --generate-notes
+            gh release create "$RELEASE_TAG" "${packages[@]}" "SHA256SUMS-$version.txt" --verify-tag --title "fluid v$version" --prerelease --generate-notes
           fi

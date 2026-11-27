@@ -1,6 +1,6 @@
 {
   "name": "fluid",
-  "version": "0.8.0",
+  "version": "0.1.0",
   "description": "Switch Codex, Claude Code CLI and Claude Desktop accounts and APIs with a desktop tray app or Linux CLI",
   "type": "module",
   "bin": {
