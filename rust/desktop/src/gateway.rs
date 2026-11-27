@@ -62,10 +62,17 @@ fn message(text: &str) -> String {
     text.to_owned()
 }
 fn recoverable(status: u16, text: &str) -> bool {
-    matches!(status, 401 | 402 | 403 | 429)
-        && !matches_regex!(
+    let text = message(text);
+    if matches_regex!(
             r"(?i)content[_ -]?(?:policy|filter)|safety|moderation|refusal|refused|unsupported_country|(?:country|region|territory).*(?:not supported|not allowed)|(?:organization|workspace|admin|security) policy|内容安全|内容政策|地区.{0,20}不支持",
-            &message(text)
+            &text
+    ) {
+        return false;
+    }
+    matches!(status, 401 | 402 | 403 | 429)
+        || status == 400 && !matches_regex!(
+            r"(?i)\b(?:invalid_json|json_parse_error|malformed_json|missing_required_parameter|missing_required_field|context_length_exceeded|context_window_exceeded|input_too_long|max_tokens_exceeded)\b|\b(?:invalid|malformed) (?:json|request body)\b|\b(?:missing|required) (?:parameter|field|argument)\b|\b(?:parameter|field|argument)\b.{0,80}\b(?:is required|must be|must have|must contain)\b|\binvalid (?:parameter|argument|temperature|effort)\b|\bcontext (?:window|length)\b.{0,40}\b(?:exceed|too (?:long|large))|\b(?:maximum context length|too many tokens|input is too long)\b|上下文.{0,20}(?:超|过长)|(?:缺少|缺失|非法|无效).{0,12}(?:参数|字段)|(?:参数|字段).{0,12}(?:必填|不能为空|格式错误)",
+            &text
         )
 }
 fn model_denied(status: u16, text: &str) -> bool {

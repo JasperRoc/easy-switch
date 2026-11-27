@@ -232,11 +232,35 @@ test('validation errors never switch', async t => {
     const proxy = await listen(t, createProxy({ root, fetchImpl: async () => {
       calls++;
       if (!status) throw Error('network');
-      return new Response('Forbidden: access denied', { status });
+      return Response.json({ error: { code: 'invalid_json', message: 'Invalid JSON request body' } }, { status });
     } }));
     const response = await send(proxy, token); await response.text();
     assert.equal(calls, 1);
     assert.equal(readState(root).active, 'a');
+  }
+});
+
+test('unclassified HTTP 400 and startup rejection events try backups without replaying accepted output', async t => {
+  for (const mode of ['http', 'startup', 'validation', 'policy', 'late']) {
+    const { root, token } = fixture(t), seen = [];
+    for (const alias of ['a', 'b']) addProvider(alias, { type: 'api', baseUrl: `https://${alias}.example/v1`, apiKey: alias }, root);
+    const proxy = await listen(t, createProxy({ root, fetchImpl: async (url, options) => {
+      const alias = new URL(url).hostname[0]; seen.push({ alias, body: JSON.parse(options.body), headers: options.headers });
+      if (alias === 'b') return new Response('data: backup completed\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      if (mode === 'http') return new Response('', { status: 400 });
+      if (mode === 'validation') return Response.json({ error: { code: 'invalid_json' } }, { status: 400 });
+      if (mode === 'policy') return Response.json({ error: { code: 'content_policy_violation' } }, { status: 400 });
+      const prefix = mode === 'late' ? 'data: {"type":"response.output_text.delta","delta":"accepted"}\n\n' : '';
+      return new Response(prefix + 'data: {"type":"response.failed","response":{"error":{"type":"invalid_request_error","message":"Bad Request"}}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    } }));
+    const response = await send(proxy, token, { ...payload, reasoning: { effort: 'high' } }); await response.text();
+    const fallback = ['http', 'startup'].includes(mode);
+    assert.deepEqual(seen.map(row => row.alias), fallback ? ['a', 'b'] : ['a'], mode);
+    if (fallback) {
+      assert.equal(response.status, 200); assert.equal(response.headers.get('x-switch-alias'), 'b');
+      assert.deepEqual(seen[0].body, seen[1].body, 'preserve model, effort and complete history');
+      assert.equal(seen[1].headers.authorization, 'Bearer b');
+    }
   }
 });
 test('transient HTTP and connection failures reach Codex without proxy retries or provider changes', async t => {

@@ -159,6 +159,34 @@ test('native gateway keeps sessions and model choices across manual switches, qu
   assert.equal(readState(fixture.data).active, 'backup');
 });
 
+test('native Codex and Claude fail over opaque HTTP 400 rejections before output without replaying validation, policy or accepted output', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
+  const fixture=roots(t);let app,mode='http';const seen=[];
+  t.after(async()=>{await app?.close();fixture.close();});
+  for(const alias of ['a','b']){
+    const upstream=await listener(t,(req,res,body)=>{
+      if(req.method==='GET')return json(res,200,{data:[{id:'test'}]});
+      const claude=req.url.includes('messages');seen.push({alias,body});
+      if(alias==='b')return claude?json(res,200,{type:'message',content:[]}):sse(res,answer('backup'));
+      if(mode==='http'){res.writeHead(400);res.end();return;}
+      if(mode==='validation')return json(res,400,{error:{code:'invalid_json',message:'Invalid JSON'}});
+      if(mode==='policy')return json(res,400,{error:{code:'content_policy_violation'}});
+      const prefix=mode==='late'?(claude?event('content_block_delta',{delta:{type:'text_delta',text:'accepted'}}):event('response.output_text.delta',{delta:'accepted'})):'';
+      const rejection=claude?event('error',{error:{type:'invalid_request_error',message:'Bad Request'}}):event('response.failed',{response:{error:{type:'invalid_request_error',message:'Bad Request'}}});
+      sse(res,prefix+rejection);
+    });
+    for(const root of [fixture.data,fixture.claude])addProvider(alias,{type:'api',baseUrl:upstream+'/v1',apiKey:'secret-'+alias},root);
+  }
+  app=await start(binary,fixture,['--service']);await until(async()=>(await app.call('/health')).ok,'gateway startup');
+  for(const claude of [false,true])for(const selected of ['http','startup','validation','policy','late']){
+    mode=selected;seen.length=0;activate('a',claude?fixture.claude:fixture.data);
+    const payload=claude?{model:'test',messages:[{role:'user',content:'history'}],output_config:{effort:'high'}}:{model:'test',input:[{role:'user',content:'history'}],reasoning:{effort:'high'}};
+    const response=await app.call(claude?'/claude/v1/messages':'/v1/responses',payload,{},claude?fixture.claudeToken:fixture.token);await response.text();
+    const fallback=['http','startup'].includes(mode);
+    assert.deepEqual(seen.map(row=>row.alias),fallback?['a','b']:['a'],`${claude?'Claude':'Codex'} ${mode}`);
+    if(fallback){assert.equal(response.status,200);assert.equal(response.headers.get('x-switch-alias'),'b');assert.deepEqual(seen[0].body,seen[1].body);}
+  }
+});
+
 test('native gateway enriches new API model efforts from the matching Codex and preserves explicit upstream capabilities', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
  const fixture=roots(t);let app;t.after(async()=>{await app?.close();fixture.close();});
  const helper=path.join(fixture.root,'codex-helper');fs.writeFileSync(helper,"#!/bin/sh\nprintf 'codex-cli 0.171.0\\n'\n",{mode:0o755});

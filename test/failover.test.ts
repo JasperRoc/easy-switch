@@ -25,13 +25,18 @@ test('server policy retries provider-level access failures but preserves explici
   for (const text of ['', 'Forbidden: access denied', '<html>403 Forbidden</html>', '团队 今日额度不足', 'insufficient_quota', 'quota exhausted', '余额不足']) assert.equal(recoverable(403, text), true);
   for (const text of ['{"error":{"code":"content_policy_violation","message":"denied"}}', '{"error":"content_policy_violation"}', 'refused for safety', 'unsupported_country_region_territory', 'organization policy denied access', '违反内容安全政策']) assert.equal(recoverable(403, text), false);
   assert.equal(recoverable(403, '{"error":{"message":"Forbidden"},"input":"safety policy"}'), true);
-  for (const status of [400,408,500,503]) assert.equal(recoverable(status, 'access denied'), false);
+  for (const status of [408,500,503]) assert.equal(recoverable(status, 'access denied'), false);
   assert.equal(rejectionStatus({ status: '403' }), 403);
   assert.equal(rejectionStatus({ type: 'permission_error' }), 403);
   assert.equal(rejectionStatus({ status_code: 503 }), 503);
   assert.equal(rejectionStatus({ type: 'server_error' }), 500);
   assert.equal(rejectionStatus({ code: '__proto__' }), undefined);
   assert.equal(rejectionStatus({ code: 'invalid_request_error' }), undefined);
+});
+test('HTTP 400 tries a backup for upstream rejection but not malformed requests, context limits or policy refusals', () => {
+  for (const text of ['', 'Bad Request', 'Forbidden: access denied', '{"error":{"type":"invalid_request_error","message":"Request rejected by upstream"}}', '{"error":{"message":"No available channel for the selected model"}}']) assert.equal(recoverable(400, text), true, text);
+  for (const text of ['invalid effort parameter', 'invalid temperature', 'missing required parameter: input', 'field input must be an array', 'malformed JSON', 'context length exceeded', 'input is too long', '上下文过长', '缺少必填参数', '{"error":{"code":"context_length_exceeded"}}', '{"error":{"code":"content_policy_violation"}}', 'organization policy denied access']) assert.equal(recoverable(400, text), false, text);
+  assert.equal(recoverable(400, '{"error":{"message":"Bad Request"},"input":"invalid JSON safety policy"}'), true, 'classify the rejection, never the user input');
 });
 test('error classification reads no more than 64 KiB and cancels remaining body', async () => {
   let cancelled = false;

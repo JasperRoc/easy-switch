@@ -269,7 +269,7 @@ export function createProxy({ root, fetchImpl, binary, reauth = createReauth({ b
         const imageDenied = image && imageUnavailable(upstream.ok && startup?.error ? 403 : upstream.status, message || JSON.stringify(startup?.error));
         const modelDenied = !image && modelUnavailable(upstream.ok && startup?.error ? 400 : upstream.status, message || JSON.stringify(startup?.error));
         const contextDenied = !image && compactionRejected(upstream.ok && startup?.error ? 400 : upstream.status, failureMessage);
-        if (!upstream.ok || capacity || streamStatus || imageDenied || modelDenied || contextDenied) {
+        if (!upstream.ok || startup?.error || capacity || streamStatus || imageDenied || modelDenied || contextDenied) {
           const status = capacity ? 503 : !upstream.ok ? quotaStatus || upstream.status : streamStatus || (imageDenied ? 403 : 400);
           const temporary = [500, 502, 503, 504, 529].includes(status) && recoverable(403, failureMessage);
           // Transient text failures belong to the client's native retry policy.

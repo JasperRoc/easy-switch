@@ -28,6 +28,27 @@ async function setup(t, fetchImpl, extra = {}) {
 const provider = alias => ({ type: 'api', baseUrl: `https://${alias}.test`, apiKey: alias + '-secret' });
 const message = model => Response.json({ type: 'message', model, content: [{ type: 'text', text: 'OK' }] });
 
+test('Claude tries a backup for an opaque HTTP 400 and preserves validation and policy rejections', async t => {
+  for (const mode of ['http', 'startup', 'validation', 'policy', 'late']) {
+    const calls=[];
+    const gateway=await setup(t,async(url,options)=>{
+      if(!options.body)return Response.json({data:[{id:'claude-sonnet-test'}]});
+      const alias=new URL(url).hostname[0];calls.push({alias,body:JSON.parse(options.body)});
+      if(alias==='b')return message('claude-sonnet-test');
+      if(mode==='http')return new Response('',{status:400});
+      if(mode==='validation')return Response.json({error:{code:'context_length_exceeded'}},{status:400});
+      if(mode==='policy')return Response.json({error:{code:'content_policy_violation'}},{status:400});
+      const prefix=mode==='late'?'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"accepted"}}\n\n':'';
+      return new Response(prefix+'event: error\ndata: {"type":"error","error":{"type":"invalid_request_error","message":"Bad Request"}}\n\n',{headers:{'content-type':'text/event-stream'}});
+    });
+    for(const alias of ['a','b'])addProvider(alias,provider(alias),gateway.root);
+    const response=await gateway.send('claude-sonnet-test','/claude');await response.text();
+    const fallback=['http','startup'].includes(mode);
+    assert.deepEqual(calls.map(row=>row.alias),fallback?['a','b']:['a'],mode);
+    if(fallback){assert.equal(response.status,200);assert.deepEqual(calls[0].body,calls[1].body);}
+  }
+});
+
 test('Claude desktop and editor discovery retain their own protocol headers, model capabilities and cache entries', async t => {
   const reads = [];
   const gateway = await setup(t, async (_url, options) => {

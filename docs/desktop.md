@@ -14,6 +14,8 @@ The left rail selects Codex or Claude; its switch controls routing for that clie
 
 The next request uses your selection. Before output starts, explicit quota, expired authentication, unavailable model or image capability errors can try the next enabled provider. Transient network and overload errors follow the client’s retry policy. Accepted output and tool events are never replayed. Switching does not create a subscription or grant model access. / 后续请求使用所选服务商；明确的额度、认证、模型或图片能力错误可在输出前尝试备用方式。临时网络、过载错误沿用客户端重试；已接收的输出和工具事件不重放。
 
+An upstream HTTP 400 without a recognized cause also tries enabled backups before output starts. Malformed requests, context limits and policy refusals are excluded. / 输出前遇到未明确归因的上游 HTTP 400，也会尝试启用的备用服务商；请求格式错误、上下文超限及策略拒绝除外。
+
 The local gateway listens on `127.0.0.1:18345`. Internet proxy settings are read automatically; this is separate from the local route. Models remain selected in Codex or Claude. Claude APIs may need model-family mapping in the provider editor. / 本地网关默认端口为 `18345`，与自动读取的外网代理分开；模型仍在原客户端选择，Claude 第三方模型可在编辑窗口配置映射。
 
 ## macOS first launch / 首次打开
