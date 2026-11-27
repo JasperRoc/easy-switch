@@ -28,6 +28,28 @@ async function setup(t, fetchImpl, extra = {}) {
 const provider = alias => ({ type: 'api', baseUrl: `https://${alias}.test`, apiKey: alias + '-secret' });
 const message = model => Response.json({ type: 'message', model, content: [{ type: 'text', text: 'OK' }] });
 
+test('Claude desktop and editor discovery retain their own protocol headers, model capabilities and cache entries', async t => {
+  const reads = [];
+  const gateway = await setup(t, async (_url, options) => {
+    reads.push(options.headers);
+    const desktop = options.headers['user-agent'] === 'claude-desktop/1.0';
+    return Response.json({ data: [{ id: 'claude-sonnet-test', display_name: desktop ? 'Desktop model' : 'Editor model',
+      capabilities: { effort: { supported_efforts: desktop ? ['low', 'high'] : ['low', 'high', 'max'] } }, max_input_tokens: desktop ? 100000 : 200000 }] });
+  });
+  addProvider('api', provider('api'), gateway.root);
+  for (const desktop of [true, false, true]) {
+    const prefix = desktop ? '/claude-desktop' : '/claude';
+    const headers = { ...gateway.headers, 'user-agent': desktop ? 'claude-desktop/1.0' : 'claude-cli/2.0', 'anthropic-version': desktop ? '2023-06-01' : '2024-01-01', 'anthropic-beta': desktop ? 'desktop-fixture' : 'editor-fixture' };
+    const response = await fetch(gateway.base + prefix + '/v1/models', { headers });
+    const result = await response.json(); assert.equal(response.status, 200);
+    assert.equal(result.data[0].display_name, desktop ? 'Desktop model' : 'Editor model');
+    assert.deepEqual(result.data[0].capabilities.effort.supported_efforts, desktop ? ['low', 'high'] : ['low', 'high', 'max']);
+    assert.equal(result.data[0].max_input_tokens, desktop ? 100000 : 200000);
+    assert.equal(reads.at(-1)['anthropic-beta'], headers['anthropic-beta']);
+    assert.equal(reads.at(-1).authorization, 'Bearer api-secret', 'never forward the local gateway token');
+  }
+});
+
 test('gateway catalog is a stable client-compatible union, tolerates unavailable providers and refreshes edits', async t => {
   let time = 0;
   const queries = [], catalogs = { a: ['deepseek-v4-pro', 'deepseek-v4-flash'], b: ['deepseek-v4-flash', 'claude-sonnet-test'] };

@@ -316,7 +316,7 @@ test('a saved provider catalog makes later launches independent of slow upstream
   let respond,metadataReads=0;
   const restarted=createCodexCatalog({root,metadataImpl:async()=>{metadataReads++;return clientMetadata();},fetchImpl:()=>new Promise(resolve=>{respond=resolve;})});
   const models=await restarted.union(state,'0.165.0',new AbortController().signal);
-  assert.equal(models.models[0].slug,'gpt-6.1-sol');assert.equal(metadataReads,0);
+  assert.equal(models.models[0].slug,'gpt-6.1-sol');assert.equal(metadataReads,1);
   assert.equal(restarted.supports('api',providers.api,'not-in-stale-cache'),true,'stale menus cannot claim current model exclusion');
   const next=await restarted.union(state,'0.165.0',new AbortController().signal);
   assert.equal(next.models[0].slug,'gpt-6.1-sol');
@@ -361,6 +361,24 @@ test('lazy Codex executable discovery supplies new model effort and reloads meta
  fs.writeFileSync(binary,'updated fixture');fs.writeFileSync(path.join(root,'version.txt'),'second');save('second',['medium','high']);
  const updated=await codexModelMetadata(()=>binary);
  assert.deepEqual(updated[0].supported_reasoning_levels.map(level=>level.effort),['medium','high']);
+});
+
+test('API availability is shared but reasoning metadata stays isolated across desktop and editor versions and restarts', async t => {
+  const root = catalogRoot(t), provider = { type: 'api', baseUrl: 'https://models.example/v1', apiKey: 'PRIVATE' };
+  const state = { providers: { api: provider }, order: ['api'] }, signal = new AbortController().signal;
+  const old = '0.170.0', current = '0.172.0', model = 'gpt-6.2-sol'; let requests = 0;
+  const metadataImpl = async version => [nativeModel(model, 0, version === old ? ['low'] : ['low', 'high', 'ultra'])];
+  const catalog = createCodexCatalog({ root, metadataImpl, fetchImpl: async () => { requests++; return Response.json({ data: [{ id: model }, { id: 'vendor', supported_reasoning_levels: [] }] }); } });
+  for (const version of [old, current, old, current]) {
+    const { models } = await catalog.union(state, version, signal);
+    assert.deepEqual(models[0].supported_reasoning_levels.map(level => level.effort), version === old ? ['low'] : ['low', 'high', 'ultra']);
+    assert.deepEqual(models[1].supported_reasoning_levels, [], 'preserve explicit upstream capabilities');
+  }
+  assert.equal(requests, 1, 'switching clients does not refetch version-independent API availability');
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'model-catalog-cache.json'), 'utf8'));
+  assert.equal(saved.api.models[0].metadata.supported_reasoning_levels, undefined, 'persist upstream metadata without client enrichment');
+  const restarted = createCodexCatalog({ root, metadataImpl, fetchImpl: async () => new Response('', { status: 503 }) });
+  assert.deepEqual((await restarted.union(state, current, signal)).models[0].supported_reasoning_levels.map(level => level.effort), ['low', 'high', 'ultra']);
 });
 
 test('exact official model IDs retain context and compaction metadata even without a local Codex helper', async t => {

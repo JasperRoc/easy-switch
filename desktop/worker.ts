@@ -76,7 +76,7 @@ async function call(action: string, payload, context) {
     case 'recover': controller.runtime.restore(); return null;
     case 'uninstall-data': if (fs.existsSync(root)) await removeDesktopData(root); return null;
     case 'installed-version': return await installedCodexVersion();
-    case 'codex-metadata': return codexModelMetadata(binary);
+    case 'codex-metadata': return codexModelMetadata(binary, payload?.version);
     case 'sync-claude-context': controller.runtime.syncClaude(); return null;
     case 'sync-client-settings': controller.runtime.syncTools(); controller.runtime.syncClaude(); return null;
     case 'sync-background':

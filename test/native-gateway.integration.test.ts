@@ -159,9 +159,9 @@ test('native gateway keeps sessions and model choices across manual switches, qu
   assert.equal(readState(fixture.data).active, 'backup');
 });
 
-test('native gateway enriches new API model efforts from the installed Codex and preserves explicit upstream capabilities', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
+test('native gateway enriches new API model efforts from the matching Codex and preserves explicit upstream capabilities', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
  const fixture=roots(t);let app;t.after(async()=>{await app?.close();fixture.close();});
- const helper=path.join(fixture.root,'codex-helper');fs.writeFileSync(helper,'fixture',{mode:0o755});
+ const helper=path.join(fixture.root,'codex-helper');fs.writeFileSync(helper,"#!/bin/sh\nprintf 'codex-cli 0.171.0\\n'\n",{mode:0o755});
  fs.writeFileSync(path.join(fixture.root,'version.txt'),'fixture');
  const efforts=['low','medium','high','xhigh','max','ultra'];
  fs.writeFileSync(path.join(fixture.root,'model-metadata.json'),JSON.stringify({version:'fixture',models:[
@@ -182,6 +182,25 @@ test('native gateway enriches new API model efforts from the installed Codex and
  assert.deepEqual(models[0].supported_reasoning_levels.map(level=>level.effort),efforts);assert.equal(models[0].default_reasoning_level,'low');
  assert.deepEqual(models[1].supported_reasoning_levels,[{effort:'high',description:'Upstream high'}]);assert.equal(models[1].default_reasoning_level,'high');
  assert.deepEqual(models[2].supported_reasoning_levels,[]);
+});
+
+test('native worker selects desktop and VS Code metadata independently when their Codex versions differ', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
+ const fixture=roots(t);let app;t.after(async()=>{await app?.close();fixture.close();});
+ const old='0.170.0',current='0.172.0',id='gpt-6.2-sol';
+ const desktop=path.join(fixture.root,'desktop-client','codex');
+ const editor=path.join(fixture.root,'extensions','openai.chatgpt-26.1127.1','bin',`${process.platform==='darwin'?'macos':'linux'}-${process.arch==='arm64'?'aarch64':'x86_64'}`,'codex');
+ for(const [file,version,efforts] of [[desktop,old,['low']],[editor,current,['low','high','ultra']]]){
+  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,`#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`,{mode:0o755});
+  fs.writeFileSync(path.join(path.dirname(file),'version.txt'),version);
+  fs.writeFileSync(path.join(path.dirname(file),'model-metadata.json'),JSON.stringify({version,models:[{id,label:id,efforts,defaultEffort:'low'}]}));
+ }
+ fixture.env.SWITCH_CODEX_BIN=desktop;fixture.env.VSCODE_EXTENSIONS=path.join(fixture.root,'extensions');
+ const upstream=await listener(t,(_req,res)=>json(res,200,{data:[{id}]}));addProvider('api',{type:'api',baseUrl:upstream+'/v1',apiKey:'fixture'},fixture.data);
+ app=await start(binary,fixture,['--service']);await until(async()=>(await app.call('/health')).ok,'gateway startup');
+ for(const version of [old,current,old,current]){
+  const {models}=await(await app.call('/v1/models',null,{'user-agent':`codex_vscode/${version}`,originator:'codex_vscode'})).json();
+  assert.deepEqual(models[0].supported_reasoning_levels.map(level=>level.effort),version===old?['low']:['low','high','ultra']);
+ }
 });
 
 test('native model union survives partial upstream capabilities and is readable by the VS Code Codex app-server', {
@@ -300,6 +319,29 @@ test('native gateway exposes Claude model unions and preserves explicit mappings
   const tokens = await req('messages/count_tokens?beta=true', { model: 'haiku', messages });
   assert.equal((await tokens.json()).input_tokens, 42);
   assert.deepEqual(seen.at(-1).slice(0, 3), ['b', 'deepseek-v4-1-flash', '/v1/messages/count_tokens?beta=true']);
+});
+
+test('native Claude model discovery isolates desktop and editor capabilities and forwards the actual client protocol', { skip: !binary || process.platform === 'win32', timeout: 30000 }, async t => {
+  const fixture=roots(t);let app;t.after(async()=>{await app?.close();fixture.close();});
+  const reads=[];
+  const upstream=await listener(t,(req,res)=>{
+    reads.push(req.headers);
+    const desktop=req.headers['user-agent']==='claude-desktop/1.0';
+    json(res,200,{data:[{id:'claude-sonnet-test',display_name:desktop?'Desktop':'Editor',capabilities:{effort:{supported_efforts:desktop?['low','high']:['low','high','max']}},max_input_tokens:desktop?100000:200000}]});
+  });
+  addProvider('api',{type:'api',baseUrl:upstream,apiKey:'upstream-key'},fixture.claude);
+  app=await start(binary,fixture,['--service']);await until(async()=>(await app.call('/health')).ok,'Claude gateway startup');
+  for(const desktop of [true,false,true,false]){
+    const headers={'user-agent':desktop?'claude-desktop/1.0':'claude-cli/2.0','anthropic-version':desktop?'2023-06-01':'2024-01-01','anthropic-beta':desktop?'desktop-fixture':'editor-fixture'};
+    const response=await app.call((desktop?'/claude-desktop':'/claude')+'/v1/models',null,headers,fixture.claudeToken);
+    const {data}=await response.json();assert.equal(response.status,200);
+    assert.equal(data[0].display_name,desktop?'Desktop':'Editor');
+    assert.deepEqual(data[0].capabilities.effort.supported_efforts,desktop?['low','high']:['low','high','max']);
+    assert.equal(data[0].max_input_tokens,desktop?100000:200000);
+  }
+  assert.equal(reads.length,2,'each client reuses its own discovery cache');
+  assert.equal(reads[1]['anthropic-beta'],'editor-fixture');assert.equal(reads[1]['anthropic-version'],'2024-01-01');
+  assert.ok(reads.every(headers=>headers.authorization==='Bearer upstream-key'));
 });
 
 test('the packaged desktop confirms startup and recovers both clients after termination', { skip: !desktop, timeout: 45000 }, async t => {

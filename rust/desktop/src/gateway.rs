@@ -1630,14 +1630,14 @@ fn claude_model<'a>(
     model
 }
 type ClaudeCatalog = HashMap<String, (Vec<Value>, bool)>;
-async fn claude_catalog(gateway: &Gateway, state: &State) -> ClaudeCatalog {
+async fn claude_catalog(gateway: &Gateway, state: &State, headers: &HeaderMap) -> ClaudeCatalog {
     futures_util::future::join_all(state.ordered().into_iter().filter_map(|alias| {
         state.providers.get(alias).map(|provider| async move {
             (
                 alias.to_owned(),
                 gateway
                     .catalog
-                    .provider(gateway, alias, provider, None, true)
+                    .provider(gateway, alias, provider, None, true, Some(headers))
                     .await,
             )
         })
@@ -1682,7 +1682,7 @@ async fn claude_request(
         return Ok(error(409, "Add a Claude Code provider first.", true));
     }
     if is_catalog {
-        let catalog = claude_catalog(gateway, &state).await;
+        let catalog = claude_catalog(gateway, &state, &parts.headers).await;
         let mut all = indexmap::IndexMap::new();
         for alias in state.ordered() {
             if let Some((models, _)) = catalog.get(alias) {
@@ -1693,8 +1693,10 @@ async fn claude_request(
                     let route = catalog::route_id(id);
                     all.entry(route.clone()).or_insert_with(|| {
                         let description: String = format!("fluid · {id}").chars().take(100).collect();
-                        json!({"id":route,"type":"model","display_name":item["display_name"].as_str().unwrap_or(id),
-                            "created_at":"2024-01-01T00:00:00Z","description":description})
+                        let mut model = item.clone();
+                        model.as_object_mut().unwrap().extend(json!({"id":route,"type":"model","display_name":item["display_name"].as_str().unwrap_or(id),
+                            "created_at":"2024-01-01T00:00:00Z","description":description}).as_object().unwrap().clone());
+                        model
                     });
                 }
             }
@@ -1721,7 +1723,7 @@ async fn claude_request(
     let requested = model_name(payload["model"].as_str().unwrap_or_default()).to_owned();
     let synthetic = matches_regex!(r"-es-[a-f0-9]{16}$", &requested);
     let catalog = if desktop || synthetic {
-        claude_catalog(gateway, &state).await
+        claude_catalog(gateway, &state, &parts.headers).await
     } else {
         HashMap::new()
     };

@@ -49,3 +49,20 @@ test('Codex lookup finds Node version-manager installations without a shell envi
   fs.mkdirSync(path.dirname(binary), { recursive: true }); fs.writeFileSync(binary, '#!/bin/sh\n', { mode: 0o755 });
   assert.equal(codexBinary({ userHome: directory, platform: 'linux', arch: 'x64', env: { PATH: '' } }), binary);
 });
+
+test('model metadata selects the installed Codex matching the requesting client rather than the default CLI', { skip: process.platform === 'win32' }, async t => {
+  const { codexBinary, codexExecutableForVersion } = await import('../src/codex-binary.js');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fluid-client-versions-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const cli = path.join(directory, '.local', 'bin', 'codex');
+  const extension = path.join(directory, '.vscode-server', 'extensions', 'openai.chatgpt-26.1127.1-linux-x64', 'bin', 'linux-x86_64', 'codex');
+  const write = (file, version) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`, { mode: 0o755 }); };
+  write(cli, '0.170.0'); write(extension, '0.172.0');
+  const options = { userHome: directory, platform: 'linux', arch: 'x64', env: { PATH: '', SWITCH_CODEX_BIN: cli } };
+  assert.equal(codexBinary(options), cli);
+  assert.equal(await codexExecutableForVersion(cli, '0.172.0', options), extension);
+  assert.equal(await codexExecutableForVersion(cli, '0.170.0', options), cli);
+  assert.equal(await codexExecutableForVersion(cli, '0.999.0', options), undefined, 'never substitute another client version');
+  write(extension, '0.173.0-preview');
+  assert.equal(await codexExecutableForVersion(cli, '0.173.0', options), extension, 'upgraded binaries invalidate version metadata');
+});

@@ -3,6 +3,7 @@ use crate::{
     store::{codex_auth, Provider, State},
 };
 use anyhow::{anyhow, Context, Result};
+use axum::http::HeaderMap;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -17,7 +18,7 @@ use tokio::sync::{Mutex, OnceCell};
 pub struct Catalog(
     Arc<Mutex<HashMap<String, Entry>>>,
     Arc<Mutex<()>>,
-    Arc<Mutex<Option<(String, Instant, Vec<Value>)>>>,
+    Arc<Mutex<HashMap<String, (Instant, Vec<Value>)>>>,
 );
 
 #[derive(Clone)]
@@ -29,8 +30,24 @@ struct Entry {
 const MAX_SAVED_AGE: u64 = 24 * 60 * 60 * 1000;
 const MAX_ENTRIES: usize = 256;
 
-fn key(alias: &str, provider: &Provider, version: Option<&str>, claude: bool) -> String {
+fn key(
+    alias: &str,
+    provider: &Provider,
+    version: Option<&str>,
+    claude: bool,
+    incoming: Option<&HeaderMap>,
+) -> String {
     let mut hash = Sha256::new();
+    if claude {
+        for name in ["user-agent", "anthropic-version", "anthropic-beta", "x-app"] {
+            hash.update(name);
+            hash.update([0]);
+            if let Some(value) = incoming.and_then(|headers| headers.get(name)) {
+                hash.update(value.as_bytes());
+            }
+            hash.update([0]);
+        }
+    }
     match provider {
         Provider::Api {
             api_key,
@@ -85,24 +102,27 @@ impl Catalog {
     async fn metadata(&self, gateway: &Gateway, version: Option<&str>) -> Vec<Value> {
         let mut cache = self.2.lock().await;
         let version = version.unwrap_or_default();
-        if let Some((key, until, models)) = &*cache {
-            if key == version && *until > Instant::now() {
+        cache.retain(|_, (until, _)| *until > Instant::now());
+        if let Some((until, models)) = cache.get(version) {
+            if *until > Instant::now() {
                 return models.clone();
             }
         }
         let models = gateway
             .worker
-            .call("codex-metadata", Value::Null, Value::Null)
+            .call("codex-metadata", json!({"version": version}), Value::Null)
             .await
             .ok()
             .and_then(|value| value.as_array().cloned())
             .unwrap_or_default();
         let ttl = if models.is_empty() { 60 } else { 300 };
-        *cache = Some((
+        if cache.len() >= 16 {
+            cache.clear();
+        }
+        cache.insert(
             version.to_owned(),
-            Instant::now() + Duration::from_secs(ttl),
-            models.clone(),
-        ));
+            (Instant::now() + Duration::from_secs(ttl), models.clone()),
+        );
         models
     }
 
@@ -113,8 +133,9 @@ impl Catalog {
         provider: &Provider,
         version: Option<&str>,
         claude: bool,
+        incoming: Option<&HeaderMap>,
     ) -> (Vec<Value>, bool) {
-        let key = key(alias, provider, version, claude);
+        let key = key(alias, provider, version, claude, incoming);
         let response = {
             let mut cache = self.0.lock().await;
             let now = Instant::now();
@@ -139,7 +160,7 @@ impl Catalog {
         };
         response
             .get_or_init(|| async {
-                let found = gateway.discover(provider, version, claude).await;
+                let found = gateway.discover(provider, version, claude, incoming).await;
                 let known = found.is_ok() || provider.models().is_some();
                 if let Ok(models) = &found {
                     if !claude {
@@ -248,7 +269,7 @@ impl Catalog {
         self.0
             .lock()
             .await
-            .get(&key(alias, provider, version, false))
+            .get(&key(alias, provider, version, false, None))
             .filter(|entry| entry.expires > Instant::now())
             .and_then(|entry| entry.response.get())
             .is_none_or(|(models, known)| !known || models.iter().any(|item| item["slug"] == model))
@@ -261,9 +282,10 @@ impl Gateway {
         provider: &Provider,
         version: Option<&str>,
         claude: bool,
+        incoming: Option<&HeaderMap>,
     ) -> Result<Vec<Value>> {
         if claude {
-            let (base, headers) = self.claude_headers(provider, None).await?;
+            let (base, headers) = self.claude_headers(provider, incoming).await?;
             let client = self.client();
             let candidates = if provider.is_account() {
                 vec![format!("{base}/v1/models")]
@@ -537,7 +559,7 @@ pub async fn codex_union(gateway: &Gateway, state: &State, version: Option<&str>
                 provider.is_account(),
                 gateway
                     .catalog
-                    .provider(gateway, alias, provider, version, false)
+                    .provider(gateway, alias, provider, version, false, None)
                     .await
                     .0,
             )

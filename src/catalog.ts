@@ -8,7 +8,7 @@ import { createUpstreamFetch } from './network.js';
 import { accountAuth, atomic, providerOrder } from './store.js';
 import { claudeToken, claudeHeaders, claudeEndpoint } from './claude-auth.js';
 import { providerModels, type ModelEntry } from './provider-models.js';
-import { codexVersionNumber, installedCodexVersion, resolveCodexExecutable, type CodexExecutable } from './codex-binary.js';
+import { codexVersionNumber, installedCodexVersion, resolveCodexExecutable, codexExecutableForVersion, type CodexExecutable } from './codex-binary.js';
 import type { Provider, ProviderState } from './store.js';
 import type { UpstreamFetch } from './network.js';
 
@@ -47,14 +47,15 @@ interface DiscoveryOptions {
   signal?: AbortSignal;
   clientVersion?: string;
   binary?: CodexExecutable;
-  metadataImpl?: () => Promise<Model[]>;
+  metadataImpl?: (version?: string) => Promise<Model[]>;
+  enrich?: boolean;
 }
 interface CatalogResult { models: Model[]; known: boolean; }
 interface CatalogCache {
   key: string; until: number; pending?: Promise<CatalogResult>; result?: CatalogResult;
 }
 interface SavedCatalog {
-  key: string; version: string; fetchedAt: number; models: Model[];
+  key: string; version: string; fetchedAt: number; models: Model[]; raw?: boolean;
 }
 const catalogMaxAge = 24 * 60 * 60000;
 
@@ -104,28 +105,32 @@ function metadataFromModel(model: Model) {
     default_reasoning_level: model.defaultEffort ?? null,
     supported_reasoning_levels: model.metadata?.supported_reasoning_levels || (model.efforts || []).map(effort => ({ effort, description: effort })) };
 }
-function clientCatalog(source: CodexExecutable) {
+async function clientCatalog(source: CodexExecutable, version?: string) {
   let binary: string, key: string;
   try {
-    binary = resolveCodexExecutable(source);
+    binary = await codexExecutableForVersion(source, version);
+    if (!binary) return [];
     const stat = fs.statSync(binary);
     key = `${binary}:${stat.size}:${stat.mtimeMs}`;
   } catch { binary = typeof source === 'string' ? source : ''; key = binary; }
   if (!binary) return Promise.resolve([]);
-  if (!clientCatalogs.has(key)) clientCatalogs.set(key, (async () => {
-    if (path.isAbsolute(binary)) try {
-      const directory = path.dirname(binary), reference: { version?: string; models?: Model[] } = JSON.parse(fs.readFileSync(path.join(directory, 'model-metadata.json'), 'utf8'));
-      if (reference.version === fs.readFileSync(path.join(directory, 'version.txt'), 'utf8').trim() && Array.isArray(reference.models)) return reference.models;
-    } catch { /* CLI installs and older bundles use the isolated official helper. */ }
-    return codexModels({ binary, includeHidden: true });
-  })().then(models =>
-    models.map((model, priority) => ({ ...model, metadata: { priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model) } })))
-    .catch(() => { clientCatalogs.delete(key); return []; }));
+  if (!clientCatalogs.has(key)) {
+    if (clientCatalogs.size >= 32) clientCatalogs.delete(clientCatalogs.keys().next().value);
+    clientCatalogs.set(key, (async () => {
+      if (path.isAbsolute(binary)) try {
+        const directory = path.dirname(binary), reference: { version?: string; models?: Model[] } = JSON.parse(fs.readFileSync(path.join(directory, 'model-metadata.json'), 'utf8'));
+        if (reference.version === fs.readFileSync(path.join(directory, 'version.txt'), 'utf8').trim() && Array.isArray(reference.models)) return reference.models;
+      } catch { /* CLI installs and older bundles use the isolated official helper. */ }
+      return codexModels({ binary, includeHidden: true });
+    })().then(models =>
+      models.map((model, priority) => ({ ...model, metadata: { priority, visibility: model.hidden ? 'hide' : 'list', ...metadataFromModel(model) } })))
+      .catch(() => { clientCatalogs.delete(key); return []; }));
+  }
   return clientCatalogs.get(key);
 }
 
-export async function codexModelMetadata(binary: CodexExecutable) {
-  return (await clientCatalog(binary)).map(model => ({ ...model.metadata, slug: model.id }));
+export async function codexModelMetadata(binary: CodexExecutable, version?: string) {
+  return (await clientCatalog(binary, version)).map(model => ({ ...model.metadata, slug: model.id }));
 }
 function codexTextModel(model: Pick<Model, 'id' | 'metadata' | 'hidden'>) {
   return !['hide', 'none'].includes(model.metadata?.visibility) && !model.hidden
@@ -238,7 +243,8 @@ export async function codexModels({ binary = process.env.SWITCH_CODEX_BIN || 'co
   }
 }
 
-export async function discoverModels(provider: Provider, root: string, { fetchImpl, signal, clientVersion, binary = process.env.SWITCH_CODEX_BIN || 'codex', metadataImpl = () => clientCatalog(binary) }: DiscoveryOptions = {}) {
+export async function discoverModels(provider: Provider, root: string, { fetchImpl, signal, clientVersion, binary = process.env.SWITCH_CODEX_BIN || 'codex', metadataImpl = version => clientCatalog(binary, version), enrich = true }: DiscoveryOptions = {}) {
+  const enrichModels = (models: Model[]) => enrich ? enrichCodexModels(models, () => metadataImpl(clientVersion)) : Promise.resolve(models);
   const account = provider.type === 'account';
   const version = account ? codexVersionNumber(clientVersion) || await installedCodexVersion(signal) : undefined;
   if (account && !version) throw new Error('Unable to read this subscription’s live Codex model catalog. Start Codex so fluid can detect its version, then try again.');
@@ -256,14 +262,14 @@ export async function discoverModels(provider: Provider, root: string, { fetchIm
     const result = await response.json();
     if (account) {
       if (!Array.isArray(result.models)) throw Error();
-      return { models: await enrichCodexModels(result.models.filter(item => typeof item?.slug === 'string' && !['hide', 'none'].includes(item.visibility)).map(item => ({
+      return { models: await enrichModels(result.models.filter(item => typeof item?.slug === 'string' && !['hide', 'none'].includes(item.visibility)).map(item => ({
         id: item.slug, label: item.display_name || item.slug, metadata: item, metadataSource: 'subscription',
         efforts: codexMetadata(item).supported_reasoning_levels?.map(level => level.effort) || [], defaultEffort: item.default_reasoning_level || null,
-      })), metadataImpl), notice: 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.' };
+      }))), notice: 'Models were read from this subscription’s live Codex catalog. Access depends on the account; no bundled models are added.' };
     }
     if (!Array.isArray(result.data)) throw Error();
     const entries = new Map<string, CodexMetadata>(result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && codexTextModel({ id: item.id, metadata: item })).map(item => [item.id, item]));
-    return { models: await enrichCodexModels([...entries].map(([id, metadata]) => ({ id, label: id, metadata })), metadataImpl),
+    return { models: await enrichModels([...entries].map(([id, metadata]) => ({ id, label: id, metadata }))),
       notice: entries.size ? '目录来自该服务商 /models；列出模型不代表已验证账号权限、Responses 或工具调用能力。' : '服务商 /models 返回了空目录，请检查 API 权限或服务商配置。' };
   } catch {
     if (signal?.aborted) throw signal.reason;
@@ -273,7 +279,7 @@ export async function discoverModels(provider: Provider, root: string, { fetchIm
   } finally { await client?.close(); }
 }
 
-export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITCH_CODEX_BIN || 'codex', metadataImpl = () => clientCatalog(binary), now = () => Date.now() }: DiscoveryOptions & { root: string; now?: () => number }) {
+export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITCH_CODEX_BIN || 'codex', metadataImpl = version => clientCatalog(binary, version), now = () => Date.now() }: DiscoveryOptions & { root: string; now?: () => number }) {
   const cache = new Map<string, CatalogCache>();
   const file = path.join(root, 'model-catalog-cache.json');
   let saved: Record<string, SavedCatalog> = {};
@@ -294,22 +300,23 @@ export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITC
     const prior = saved[id] ?? saved[alias];
     const reusable = prior?.key === fingerprint && (provider.type === 'api' || prior.version === version)
       && now() - prior.fetchedAt < catalogMaxAge && Array.isArray(prior.models);
+    const priorModels = reusable ? prior.models.map(model => prior.raw || provider.type === 'account' ? model : { id: model.id, label: model.id }) : [];
     const refresh = reusable ? AbortSignal.timeout(10000) : signal;
-    entry.pending = discoverModels(provider, root, { fetchImpl, signal: refresh, clientVersion: version, metadataImpl })
+    entry.pending = discoverModels(provider, root, { fetchImpl, signal: refresh, clientVersion: version, enrich: false })
       .then(result => ({ models: providerModels(provider, result.models), known: true }))
       .catch(error => {
         if (signal.aborted && !reusable) { if (cache.get(id) === entry) cache.delete(id); throw error; }
-        return { models: reusable ? prior.models : configured.models, known: configured.known };
+        return { models: reusable ? priorModels : configured.models, known: configured.known };
       }).then(result => {
         if (result.known && cache.get(id) === entry) {
-          saved[id] = { key: fingerprint, version: provider.type === 'account' ? version : '', fetchedAt: now(), models: result.models };
+          saved[id] = { key: fingerprint, version: provider.type === 'account' ? version : '', fetchedAt: now(), models: result.models, raw: true };
           try { atomic(file, saved); } catch { /* An unwritable cache must not block discovery. */ }
         }
         entry.result = result; return result;
       });
     cache.set(id, entry);
     if (reusable) {
-      const result = { models: prior.models, known: false };
+      const result = { models: priorModels, known: false };
       // Cached availability only speeds the menu. Inference still verifies stale
       // capabilities until the background refresh has answered.
       entry.result = result;
@@ -336,7 +343,7 @@ export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITC
         if (!models.has(model.id)) models.set(model.id, model);
         else if (models.get(model.id).metadataSource !== 'subscription' && model.metadataSource === 'subscription') models.set(model.id, { ...model, label: models.get(model.id).label });
       }
-      const ordered = await enrichCodexModels([...models.values()], metadataImpl);
+      const ordered = await enrichCodexModels([...models.values()], () => metadataImpl(version));
       return { models: ordered.map((model, priority) => ({
         base_instructions: 'Help the user with their coding tasks.', supported_reasoning_levels: [],
         shell_type: 'shell_command', support_verbosity: false, truncation_policy: { mode: 'tokens', limit: 10000 },
@@ -354,12 +361,12 @@ export function createCodexCatalog({ root, fetchImpl, binary = process.env.SWITC
   };
 }
 
-export async function discoverClaudeModels(provider: Provider, root: string, { fetchImpl, signal }: Pick<DiscoveryOptions, 'fetchImpl' | 'signal'> = {}) {
+export async function discoverClaudeModels(provider: Provider, root: string, { fetchImpl, signal, headers: incoming = {} }: Pick<DiscoveryOptions, 'fetchImpl' | 'signal'> & { headers?: NodeJS.Dict<string | string[]> } = {}) {
   const client = fetchImpl ? null : createUpstreamFetch(root);
   fetchImpl ??= client.fetch;
   try {
     const token = provider.type === 'account' ? await claudeToken(provider, fetchImpl) : null;
-    const headers = claudeHeaders(provider, token), models: Model[] = [], seen = new Set(), cursors = new Set();
+    const headers = claudeHeaders(provider, token, incoming), models: Model[] = [], seen = new Set(), cursors = new Set();
     const base = claudeEndpoint(provider);
     const endpoints = [...new Set([base + '/v1/models', ...(provider.type === 'api' ? [base + '/models', base.replace(/\/anthropic$/, '') + '/models'] : [])])];
     let endpoint = endpoints[0];
@@ -377,7 +384,7 @@ export async function discoverClaudeModels(provider: Provider, root: string, { f
       const data = await response.json();
       if (!Array.isArray(data.data)) throw Error();
       for (const item of data.data) if (typeof item?.id === 'string' && !seen.has(item.id)) {
-        seen.add(item.id); models.push({ id: item.id, label: item.display_name || item.id,
+        seen.add(item.id); models.push({ ...item, id: item.id, label: item.display_name || item.id,
           reportedContextWindow: item.max_input_tokens ?? item.context_window,
           efforts: (item.capabilities?.effort?.supported_efforts || []).filter(effort => ['low', 'medium', 'high', 'max'].includes(effort)), defaultEffort: null });
       }

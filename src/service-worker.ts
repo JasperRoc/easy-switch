@@ -39,7 +39,7 @@ changed = serveWorker(async (action, payload) => {
     case 'service-start': taskSync.start(); return;
     case 'service-stop': await taskSync.close(); restoreClaude(record); return;
     case 'installed-version': return installedCodexVersion();
-    case 'codex-metadata': return codexModelMetadata(codexBinary);
+    case 'codex-metadata': return codexModelMetadata(codexBinary, payload?.version);
     case 'auth-required': {
       if (Object.values(init(root).providers).some(provider => provider.accountHome === payload.accountHome))
         return reauth.prompt(payload);

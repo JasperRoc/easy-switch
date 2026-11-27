@@ -47,7 +47,8 @@ export function claudeDesktopRoutes(provider: Partial<Pick<Provider, 'type' | 'c
 }
 export function claudeDesktopModels(provider: Parameters<typeof claudeDesktopRoutes>[0], alias: string, models: ModelEntry[]) {
   const data = claudeDesktopRoutes(provider, models).map(({ id, model, label }) => {
-    return { id, type: 'model', display_name: label, created_at: '2024-01-01T00:00:00Z', description: `${alias} · ${model}`.slice(0, 100) };
+    const original = models.find(entry => entry.id === model);
+    return { ...original, id, type: 'model', display_name: label, created_at: '2024-01-01T00:00:00Z', description: `${alias} · ${model}`.slice(0, 100) };
   });
   return { data, has_more: false, first_id: data[0]?.id || null, last_id: data.at(-1)?.id || null };
 }
